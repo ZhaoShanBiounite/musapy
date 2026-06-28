@@ -1,14 +1,4 @@
-pub fn add(left: u64, right: u64) -> u64 {
-    left + right
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn it_works() {
-        let result = add(2, 2);
-        assert_eq!(result, 4);
-    }
-}
+//! musapy-python: PyO3 绑定层（ADR L2-6, L2-7）
+//!
+//! Phase 1: 空骨架
+//! Phase 5: 加 PyDevice/PyDtype/PyStream/PyArray + ms.array() 等
