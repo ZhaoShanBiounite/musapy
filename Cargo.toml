@@ -1,0 +1,21 @@
+[workspace]
+resolver = "2"
+members = [
+    "rust/musapy-core",
+    "rust/musapy-ops",
+    "rust/musapy-python",
+]
+
+[workspace.package]
+version = "0.1.0-alpha"
+edition = "2021"
+license = "MIT"
+repository = "https://github.com/yourorg/musapy"
+
+[workspace.dependencies]
+musapy-core = { path = "rust/musapy-core" }
+musapy-ops = { path = "rust/musapy-ops" }
+musapy-python = { path = "rust/musapy-python" }
+thiserror = "1"
+parking_lot = "0.12"
+dashmap = "5"

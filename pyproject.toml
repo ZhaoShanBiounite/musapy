@@ -1,0 +1,26 @@
+[build-system]
+requires = ["maturin>=1.5,<2.0"]
+build-backend = "maturin"
+
+[project]
+name = "musapy"
+version = "0.1.0-alpha"
+description = "Python + Rust + MUSA scientific computing library"
+readme = "README.md"
+license = { text = "MIT" }
+requires-python = ">=3.9"
+keywords = ["MUSA", "Moore Threads", "GPU", "scientific computing", "Rust"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Rust",
+    "Topic :: Scientific/Engineering",
+]
+
+[tool.maturin]
+# Rust crate 路径
+manifest-path = "rust/musapy-python/Cargo.toml"
+# Python 模块名（import musapy 用的）
+python-source = "python"
+# 模块名
+module-name = "musapy._core"
