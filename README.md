@@ -1,3 +1,9 @@
 # musapy
+
 Python + Rust + MUSA scientific computing library.
-See `docs/ADR.md` for architecture decisions.
+
+## License
+
+MIT License — see [LICENSE](LICENSE) for details.
+
+See `docs/` for architecture decisions and implementation plans.

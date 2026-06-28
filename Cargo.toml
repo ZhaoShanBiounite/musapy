@@ -8,9 +8,9 @@ members = [
 
 [workspace.package]
 version = "0.1.0-alpha"
-edition = "2021"
+edition = "2026"
 license = "MIT"
-repository = "https://github.com/yourorg/musapy"
+repository = "https://github.com/ZhaoShanBiounite/musapy.git"
 
 [workspace.dependencies]
 musapy-core = { path = "rust/musapy-core" }
