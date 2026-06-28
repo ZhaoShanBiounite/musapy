@@ -1,14 +1,5 @@
-pub fn add(left: u64, right: u64) -> u64 {
-    left + right
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn it_works() {
-        let result = add(2, 2);
-        assert_eq!(result, 4);
-    }
-}
+//! musapy-ops: 算子层（ADR L2-4, L2-5）
+//!
+//! Phase 1: 空骨架
+//! Phase 2: 加 OpBuilder + elementwise（add only）
+//! Phase 3+: 加 reduction/init/linalg/random/fft/sparse/indexing/broadcast/comparison
