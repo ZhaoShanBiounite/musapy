@@ -4,7 +4,6 @@ MUSA C kernel source files (`.mu` extension).
 
 ## Structure
 kernels/
-├── include/ # shared headers (common.h, elementwise.h, ...)
 ├── elementwise.mu # elementwise ops (add, sub, mul, div, sin, ...)
 ├── reduction.mu # reduction ops (sum, max, min, mean, ...)
 ├── indexing.mu # indexing ops (slice, gather, scatter, ...)
