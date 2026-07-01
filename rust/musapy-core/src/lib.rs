@@ -4,6 +4,7 @@
 //! Phase 2+: 加入 device/dtype/stream/buffer/array 等模块
 
 pub mod error;
+pub mod abi;
 
 pub use error::{
     DeviceError, DtypeError, InteropError, KernelError, MemoryError, MusapyError, Result,

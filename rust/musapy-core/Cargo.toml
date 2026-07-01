@@ -1,7 +1,11 @@
 [package]
 name = "musapy-core"
-version = "0.1.0"
+version = "0.1.0-alpha"
 edition = "2024"
+build = "build.rs"   # 显式声明（不叫 build.rs 时必须写；叫 build.rs 可省略）
 
 [dependencies]
 thiserror.workspace = true
+
+[build-dependencies]
+pkg-config = "0.3"   # 双探针中的第二个探针依赖此 crate
