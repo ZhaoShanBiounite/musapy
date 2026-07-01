@@ -32,8 +32,7 @@ fn main() {
             probe_mcc_version(&home);
             // 把路径注入环境，供运行期 FFI 模块读取
             println!("cargo:rustc-env=MUSAPY_MUSA_HOME={}", home.display());
-            // 正常构建，不开启 mock
-            println!("cargo:rustc-cfg=not(musapy_mock_musa)");
+          
         }
         None => {
             // 没找到 —— 走 mock 降级或直接失败
