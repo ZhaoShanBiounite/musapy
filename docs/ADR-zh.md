@@ -308,7 +308,7 @@ Green Context 是优化项，非必需。
 - ABI 版本嵌入符号名：`musapy_mul_f32_v1`
 - runtime 启动时校验 kernel ABI
 - MUSA SDK 探测：`MUSA_HOME` env + pkg-config 双重探测
-- mcc 版本 vs runtime 版本兼容矩阵检查
+- MUSA Runtime 版本（来自 musart_version.h）与运行时 ABI 版本兼容性矩阵检查
 
 **禁止**：
 - build 脚本含运行时逻辑
@@ -539,7 +539,11 @@ MusapyError(Exception)
 **决策**：v1 完整实现 stream-ordered alloc/free（不简化）。
 
 **依据**：MUSA SDK 5.1.0 支持 `musaMallocAsync`/`musaFreeAsync`（通过 torch_musa
-生产使用 + MUSA 对标 CUDA 12.8 + 761 兼容接口确认）。完整实现技术上可行。
+生产环境使用验证 + MUSA 对标 CUDA 12.8 + 761 兼容 API）。全量实现在技术上可行。
+
+**已验证**：在 MUSA Runtime API 3.1.0（musart_version.h `__MUSA_API_VER__` = 3.1.0，
+编码值 30100）上，`libmusart.so` 链接成功。运行时 ABI 兼容性矩阵基于 `MUSART_VERSION`
+判断（不使用 mcc/clang 版本——mcc 基于 clang，其版本号不反映 MUSA SDK 版本）。
 
 ### L3-10：dealloc stream 选择策略
 

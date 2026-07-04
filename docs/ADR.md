@@ -312,7 +312,7 @@ first. Green Context is an optimization, not a requirement.
 - ABI version embedded in symbol names: `musapy_mul_f32_v1`
 - Runtime checks kernel ABI at startup
 - MUSA SDK detection: `MUSA_HOME` env + pkg-config dual probe
-- mcc version vs runtime version compatibility matrix check
+- MUSA Runtime version (from musart_version.h) vs runtime ABI version compatibility matrix check
 
 **Forbidden**:
 - Runtime logic in build scripts
@@ -552,6 +552,11 @@ buffers unused >5min.
 **Rationale**: MUSA SDK 5.1.0 supports `musaMallocAsync`/`musaFreeAsync` (confirmed via
 torch_musa production usage + MUSA对标CUDA 12.8 + 761 compatible APIs). Full implementation
 is technically feasible.
+
+**Verified**: On MUSA Runtime API 3.1.0 (musart_version.h `__MUSA_API_VER__` = 3.1.0,
+encoded 30100), `libmusart.so` links successfully. Runtime ABI compatibility matrix now
+based on `MUSART_VERSION` (not mcc/clang version, which is clang-based and does not
+reflect MUSA SDK version).
 
 ### L3-10: Dealloc Stream Selection Strategy
 

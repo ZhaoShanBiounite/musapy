@@ -16,6 +16,9 @@ classifiers = [
     "Programming Language :: Rust",
     "Topic :: Scientific/Engineering",
 ]
+dependencies = [
+    "maturin>=1.14.1",
+]
 
 [tool.maturin]
 # Rust crate 路径
