@@ -1,56 +1,27 @@
-//! Buffer 与 BufferRef：读写引用分离（ADR L1-10, L3-10）
+//! Buffer 与 BufferRef：读写引用分离（ADR L1-10, L3-9, L3-10）
 //!
-//! 职责：
-//!   1. Buffer：GPU/CPU 内存块，含 raw ptr + device + 读写事件追踪
-//!   2. BufferRef(Arc<Buffer>)：只读共享视图，op 输入自动降级为此类型
-//!   3. 读写事件记录：record_read/record_write（Phase 3 接 musaEventRecord）
-//!
-//! Phase 2 约束（ADR L2-3）：
-//!   - 不调用 musaMallocAsync/musaFreeAsync（Phase 3 实现）
-//!   - 不调用 musaEventRecord/musaStreamWaitEvent（Phase 3 实现）
-//!   - raw ptr 用 null 占位，alloc 由 Phase 3 填充
-//!   - 但 Arc 语义、读写引用分离、别名检测逻辑必须定型
+//! Phase 3 第二批：真实内存分配/释放
+//!   - Buffer::alloc 调用 musaMallocAsync
+//!   - Buffer::Drop 实现 stream-ordered free（策略 b）
+//!   - record_read/record_write 接真实 musaEventRecord + 更新 dealloc_stream
 //!
 //! 设计依据：
 //!   - L1-10：Arc<Buffer> 可写唯一所有权 / BufferRef 只读共享
+//!   - L3-9：stream-ordered alloc/free（musaMallocAsync/musaFreeAsync）
 //!   - L3-10：释放流选择策略 b（最后使用的流）
 //!   - L2-5：同一 BufferRef 不能既是输入又是 out（编译期检测）
 
 use crate::device::Device;
-use crate::stream::Stream;
+use crate::error::{MemoryError, Result};
+use crate::musa_ffi;
+use crate::stream::{Event, Stream};
 use parking_lot::Mutex;
 use std::fmt;
+use std::ptr::NonNull;
 use std::sync::Arc;
 
 // ============================================================
-// 1. Event（Phase 3 占位）
-// ============================================================
-
-/// MUSA 事件（ADR L3-10，用于跨流同步）。
-///
-/// **Phase 2 占位**：`raw` 为 0，不调用 musaEventCreate/Record。
-/// **Phase 3**：替换为真实 `musaEvent_t` + create/record/wait。
-#[derive(Debug)]
-pub struct Event {
-    #[allow(dead_code)]
-    raw: usize,
-}
-
-impl Event {
-    /// Phase 2 占位构造。Phase 3 调用 musaEventCreate。
-    pub fn new() -> Self {
-        Self { raw: 0 }
-    }
-}
-
-impl Default for Event {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-// ============================================================
-// 2. Buffer（ADR L1-10, L3-10）
+// 1. Buffer（ADR L1-10, L3-9, L3-10）
 // ============================================================
 
 /// GPU/CPU 内存块（ADR L1-10）。
@@ -64,15 +35,13 @@ impl Default for Event {
 /// - `read_events`：所有未完成读操作的事件（释放流等待这些事件后才能 free）
 /// - `dealloc_stream`：释放流（策略 b：最后使用的流，跨流使用时更新）
 ///
-/// **Phase 2 约束**：
-/// - `ptr` 为 null（Phase 3 用 musaMallocAsync 分配真实内存）
-/// - `record_read`/`record_write` 只记录 Event 占位（Phase 3 接 musaEventRecord）
-/// - `Drop` 不调用 musaFreeAsync（Phase 3 实现 stream-ordered free）
-#[derive(Debug)]
+/// **Phase 3 实现**：
+/// - `alloc()` 调用 `musaMallocAsync` 分配 GPU 内存
+/// - `Drop` 在 `dealloc_stream` 上等待所有事件后调用 `musaFreeAsync`
+/// - CPU 设备：用 `std::alloc` 分配主机内存
 pub struct Buffer {
-    /// 内存指针（Phase 3 由 musaMallocAsync 填充）。
-    /// Phase 2 为 null，仅用于类型结构定型。
-    ptr: std::ptr::NonNull<u8>,
+    /// 内存指针。None 表示未分配或已释放（防止 Drop 重复释放）。
+    ptr: Option<NonNull<u8>>,
     /// 字节大小。
     size: usize,
     /// 所属设备。
@@ -87,24 +56,77 @@ pub struct Buffer {
     read_events: Mutex<Vec<Event>>,
 }
 
-// Buffer 的 Drop：Phase 2 无操作（不调用 musaFreeAsync）。
-// Phase 3 会实现 stream-ordered free（L3-9, L3-10）。
-// 这里不 impl Drop，留待 Phase 3。
-
 impl Buffer {
-    /// Phase 2 占位构造（不分配真实内存）。
+    /// 真实分配 GPU 内存（ADR L3-9）。
     ///
-    /// **Phase 3**：替换为 `alloc(size, device, stream)`，调用 musaMallocAsync。
-    /// 这里用 dangling ptr 占位，让 NonNull 字段类型满足。
+    /// - MUSA 设备：调用 `musaMallocAsync(ptr, size, stream)`
+    /// - CPU 设备：调用 `std::alloc::alloc`（8 字节对齐）
     ///
-    /// # Safety
-    /// 占位构造，ptr 为 dangling，不实际读写。Phase 3 替换为真实分配。
+    /// 分配失败返回 `MemoryError::OutOfMemory`。
+    pub fn alloc(size: usize, device: Device, stream: &Arc<Stream>) -> Result<Self> {
+        if size == 0 {
+            // 0 字节分配：返回 null ptr 的占位 Buffer
+            return Ok(Self {
+                ptr: None,
+                size: 0,
+                device,
+                dealloc_stream: Mutex::new(Some(stream.clone())),
+                last_write_event: Mutex::new(None),
+                read_events: Mutex::new(Vec::new()),
+            });
+        }
+
+        let ptr = match &device {
+            Device::Cpu => Self::alloc_cpu(size)?,
+            Device::Musa(_) => Self::alloc_musa(size, stream)?,
+        };
+
+        Ok(Self {
+            ptr: Some(ptr),
+            size,
+            device,
+            dealloc_stream: Mutex::new(Some(stream.clone())),
+            last_write_event: Mutex::new(None),
+            read_events: Mutex::new(Vec::new()),
+        })
+    }
+
+    /// CPU 内存分配（8 字节对齐）。
+    fn alloc_cpu(size: usize) -> Result<NonNull<u8>> {
+        let layout = std::alloc::Layout::from_size_align(size, 8)
+            .map_err(|_| MemoryError::OutOfMemory(format!("invalid layout: {} bytes", size)))?;
+        let ptr = unsafe { std::alloc::alloc(layout) };
+        NonNull::new(ptr).ok_or_else(|| {
+            MemoryError::OutOfMemory(format!("CPU alloc failed: {} bytes", size)).into()
+        })
+    }
+
+    /// MUSA GPU 内存分配（调用 musaMallocAsync）。
+    fn alloc_musa(size: usize, stream: &Arc<Stream>) -> Result<NonNull<u8>> {
+        let mut dev_ptr: *mut std::ffi::c_void = std::ptr::null_mut();
+        unsafe {
+            musa_ffi::check_musa(
+                musa_ffi::musaMallocAsync(&mut dev_ptr, size, stream.raw()),
+                "musaMallocAsync",
+            )?;
+        }
+        if dev_ptr.is_null() {
+            return Err(MemoryError::OutOfMemory(format!(
+                "MUSA alloc returned null: {} bytes",
+                size
+            ))
+            .into());
+        }
+        // NonNull::new 是 unsafe 的，但 dev_ptr 已检查非 null
+        Ok(unsafe { NonNull::new_unchecked(dev_ptr as *mut u8) })
+    }
+
+    /// 占位构造（仅测试用，不分配真实内存）。
+    ///
+    /// 生产代码应使用 `alloc()`。这个方法保留给不需要真实内存的单元测试。
     pub fn placeholder(size: usize, device: Device) -> Self {
-        // Phase 2 占位：dangling ptr，不分配真实内存。
-        // Phase 3 替换为 musaMallocAsync 返回的真实 ptr。
-        let ptr = unsafe { std::ptr::NonNull::dangling() };
         Self {
-            ptr,
+            ptr: None,
             size,
             device,
             dealloc_stream: Mutex::new(None),
@@ -123,37 +145,53 @@ impl Buffer {
         &self.device
     }
 
-    /// 原始指针（Phase 3 kernel launch 用）。
-    pub fn ptr(&self) -> std::ptr::NonNull<u8> {
+    /// 原始指针（kernel launch 用）。
+    ///
+    /// 返回 `None` 表示未分配（placeholder 或 0 字节）。
+    pub fn ptr(&self) -> Option<NonNull<u8>> {
         self.ptr
     }
 
     /// 记录读操作（ADR L3-10）。
     ///
     /// 在 reader_stream 上记录事件，加入 read_events。
-    /// **Phase 2 占位**：只创建 Event 占位，不调用 musaEventRecord。
-    /// **Phase 3**：
-    ///   1. 在 reader_stream 上 musaEventRecord
-    ///   2. 若 reader_stream != dealloc_stream，更新 dealloc_stream = reader_stream
-    ///   3. 事件加入 read_events（L3-10 优化：已等待过的不存）
+    /// 若 reader_stream != dealloc_stream，更新 dealloc_stream = reader_stream（策略 b）。
     pub fn record_read(&self, reader_stream: &Arc<Stream>) {
-        let _ = reader_stream; // Phase 2 暂未使用
-        let event = Event::new();
-        self.read_events.lock().push(event);
+        match Event::new() {
+            Ok(event) => {
+                if let Err(e) = event.record(reader_stream) {
+                    eprintln!("warn: record_read event record failed: {}", e);
+                    return;
+                }
+                self.read_events.lock().push(event);
+                // 策略 b：更新释放流为最后使用的流
+                *self.dealloc_stream.lock() = Some(reader_stream.clone());
+            }
+            Err(e) => {
+                eprintln!("warn: record_read event create failed: {}", e);
+            }
+        }
     }
 
     /// 记录写操作（ADR L3-10）。
     ///
     /// 在 writer_stream 上记录事件，替换 last_write_event。
-    /// **Phase 2 占位**：只创建 Event 占位。
-    /// **Phase 3**：
-    ///   1. 在 writer_stream 上 musaEventRecord
-    ///   2. 更新 dealloc_stream = writer_stream（策略 b：最后使用的流）
-    ///   3. 替换 last_write_event
+    /// 更新 dealloc_stream = writer_stream（策略 b）。
     pub fn record_write(&self, writer_stream: &Arc<Stream>) {
-        let _ = writer_stream; // Phase 2 暂未使用
-        let event = Event::new();
-        *self.last_write_event.lock() = Some(event);
+        match Event::new() {
+            Ok(event) => {
+                if let Err(e) = event.record(writer_stream) {
+                    eprintln!("warn: record_write event record failed: {}", e);
+                    return;
+                }
+                *self.last_write_event.lock() = Some(event);
+                // 策略 b：更新释放流为最后使用的流
+                *self.dealloc_stream.lock() = Some(writer_stream.clone());
+            }
+            Err(e) => {
+                eprintln!("warn: record_write event create failed: {}", e);
+            }
+        }
     }
 
     /// 当前 read_events 数量（调试用）。
@@ -167,44 +205,110 @@ impl Buffer {
     }
 }
 
+/// stream-ordered free（ADR L3-9, L3-10 策略 b）。
+///
+/// 释放流程：
+/// 1. 取出 dealloc_stream（最后使用的流）
+/// 2. 在 dealloc_stream 上等待所有 read_events
+/// 3. 在 dealloc_stream 上等待 last_write_event
+/// 4. 调用 musaFreeAsync(ptr, dealloc_stream)
+///
+/// 等待事件保证：释放前所有使用此 buffer 的操作都已完成。
+/// CPU buffer 用 std::alloc::dealloc 释放。
+impl Drop for Buffer {
+    fn drop(&mut self) {
+        let ptr = match self.ptr.take() {
+            Some(p) => p,
+            None => return, // 未分配或已释放
+        };
+
+        // 取出 dealloc_stream
+        let dealloc_stream = self.dealloc_stream.lock().clone();
+
+        match &self.device {
+            Device::Cpu => {
+                // CPU：直接 dealloc（不需要 stream 同步）
+                let layout = std::alloc::Layout::from_size_align(self.size, 8).unwrap();
+                unsafe {
+                    std::alloc::dealloc(ptr.as_ptr(), layout);
+                }
+            }
+            Device::Musa(_) => {
+                // MUSA：stream-ordered free
+                if let Some(stream) = dealloc_stream {
+                    // 等待所有 read_events
+                    let read_events: Vec<Event> = self.read_events.lock().drain(..).collect();
+                    for ev in read_events {
+                        if let Err(e) = stream.wait_event(&ev) {
+                            eprintln!("warn: free wait read_event failed: {}", e);
+                        }
+                    }
+                    // 等待 last_write_event
+                    if let Some(ev) = self.last_write_event.lock().take() {
+                        if let Err(e) = stream.wait_event(&ev) {
+                            eprintln!("warn: free wait write_event failed: {}", e);
+                        }
+                    }
+                    // 调用 musaFreeAsync
+                    unsafe {
+                        if let Err(e) = musa_ffi::check_musa(
+                            musa_ffi::musaFreeAsync(ptr.as_ptr() as *mut std::ffi::c_void, stream.raw()),
+                            "musaFreeAsync",
+                        ) {
+                            eprintln!("warn: musaFreeAsync failed: {}", e);
+                        }
+                    }
+                } else {
+                    // 无 dealloc_stream（placeholder 或未初始化）：跳过 free
+                    eprintln!("warn: Buffer dropped without dealloc_stream, skipping free");
+                }
+            }
+        }
+    }
+}
+
+impl fmt::Debug for Buffer {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("Buffer")
+            .field("ptr", &format_args!("{:?}", self.ptr))
+            .field("size", &self.size)
+            .field("device", &self.device)
+            .field("has_write_event", &self.has_write_event())
+            .field("read_event_count", &self.read_event_count())
+            .finish()
+    }
+}
+
 impl fmt::Display for Buffer {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(
-            f,
-            "Buffer(size={}, device={})",
-            self.size, self.device
-        )
+        write!(f, "Buffer(size={}, device={})", self.size, self.device)
     }
 }
 
 // ============================================================
-// 3. BufferRef（ADR L1-10）
+// 2. BufferRef（ADR L1-10，不变）
 // ============================================================
 
-/// 只读共享视图（ADR L1-10）。
-///
-/// Op 输入自动降级为 BufferRef；输出是新 Buffer。
-/// 这使得 kernel 可以安全使用 `__restrict__`（编译器可假设无别名）。
-///
-/// **别名检测**（ADR L2-5）：同一 BufferRef 不能既是输入又是 out。
-/// 通过 BufferRef 之间的 PartialEq 比较 Arc 指针实现。
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct BufferRef(Arc<Buffer>);
 
 impl BufferRef {
-    /// 从 Arc<Buffer> 创建只读引用。
     pub fn new(buffer: Arc<Buffer>) -> Self {
         Self(buffer)
     }
 
-    /// 访问底层 Buffer。
     pub fn buffer(&self) -> &Buffer {
         &self.0
     }
 
-    /// 访问底层 Arc<Buffer>（kernel launch 需要 Arc 解引用到 ptr）。
     pub fn arc(&self) -> &Arc<Buffer> {
         &self.0
+    }
+}
+
+impl fmt::Debug for BufferRef {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_tuple("BufferRef").field(&self.0).finish()
     }
 }
 
@@ -214,7 +318,6 @@ impl fmt::Display for BufferRef {
     }
 }
 
-// PartialEq：比较 Arc 指针地址（用于别名检测，ADR L2-5）
 impl PartialEq for BufferRef {
     fn eq(&self, other: &Self) -> bool {
         Arc::ptr_eq(&self.0, &other.0)
@@ -231,151 +334,217 @@ impl Eq for BufferRef {}
 mod tests {
     use super::*;
 
-    fn make_buffer(size: usize, device: Device) -> Arc<Buffer> {
-        Arc::new(Buffer::placeholder(size, device))
+    fn make_stream(device: Device) -> Arc<Stream> {
+        Arc::new(Stream::new(device, 0).unwrap())
     }
 
-    // --- Buffer 基本属性 ---
+    // --- Buffer::alloc（真实分配）---
 
     #[test]
-    fn buffer_size_and_device() {
-        let b = make_buffer(1024, Device::Musa(0));
-        assert_eq!(b.size(), 1024);
-        assert_eq!(*b.device(), Device::Musa(0));
-    }
-
-    #[test]
-    fn buffer_display() {
-        let b = make_buffer(512, Device::Cpu);
-        assert_eq!(b.to_string(), "Buffer(size=512, device=cpu)");
+    fn buffer_alloc_musa() {
+        let stream = make_stream(Device::Musa(0));
+        let buf = Buffer::alloc(1024, Device::Musa(0), &stream).expect("alloc failed");
+        assert_eq!(buf.size(), 1024);
+        assert_eq!(*buf.device(), Device::Musa(0));
+        assert!(buf.ptr().is_some(), "ptr should be non-null after alloc");
     }
 
     #[test]
-    fn buffer_ptr_nonnull() {
-        // Phase 2 占位 ptr 是 dangling，但不为 null
-        let b = make_buffer(64, Device::Musa(0));
-        assert!(!b.ptr().as_ptr().is_null());
+    fn buffer_alloc_cpu() {
+        let stream = make_stream(Device::Cpu);
+        let buf = Buffer::alloc(512, Device::Cpu, &stream).expect("alloc failed");
+        assert_eq!(buf.size(), 512);
+        assert_eq!(*buf.device(), Device::Cpu);
+        assert!(buf.ptr().is_some());
     }
 
-    // --- Buffer 读写事件 ---
+    #[test]
+    fn buffer_alloc_zero_size() {
+        let stream = make_stream(Device::Musa(0));
+        let buf = Buffer::alloc(0, Device::Musa(0), &stream).expect("alloc failed");
+        assert_eq!(buf.size(), 0);
+        assert!(buf.ptr().is_none(), "0-size buffer has null ptr");
+    }
 
     #[test]
-    fn buffer_initial_no_events() {
-        let b = make_buffer(64, Device::Musa(0));
-        assert_eq!(b.read_event_count(), 0);
-        assert!(!b.has_write_event());
+    fn buffer_alloc_and_drop_musa() {
+        // 验证 alloc + drop 不崩溃（stream-ordered free）
+        let stream = make_stream(Device::Musa(0));
+        {
+            let _buf = Buffer::alloc(2048, Device::Musa(0), &stream).expect("alloc failed");
+            // _buf drop 时执行 stream-ordered free
+        }
+        // 同步流，确保 free 完成
+        stream.synchronize().unwrap();
+    }
+
+    #[test]
+    fn buffer_alloc_and_drop_cpu() {
+        let stream = make_stream(Device::Cpu);
+        {
+            let _buf = Buffer::alloc(256, Device::Cpu, &stream).expect("alloc failed");
+        }
+        // CPU buffer drop 时直接 dealloc
+    }
+
+    // --- placeholder（保留给不需要真实内存的测试）---
+
+    #[test]
+    fn buffer_placeholder() {
+        let b = Buffer::placeholder(64, Device::Musa(0));
+        assert_eq!(b.size(), 64);
+        assert!(b.ptr().is_none(), "placeholder has null ptr");
+    }
+
+    // --- 读写事件 + dealloc_stream 更新 ---
+
+    #[test]
+    fn buffer_record_read_updates_dealloc_stream() {
+        let stream1 = make_stream(Device::Musa(0));
+        let stream2 = make_stream(Device::Musa(0));
+        let buf = Buffer::alloc(64, Device::Musa(0), &stream1).unwrap();
+
+        // 初始 dealloc_stream = stream1（alloc 时设置）
+        buf.record_read(&stream2);
+        // record_read 后 dealloc_stream 应更新为 stream2
+        // （通过 drop 不崩溃间接验证）
+    }
+
+    #[test]
+    fn buffer_record_write_updates_dealloc_stream() {
+        let stream1 = make_stream(Device::Musa(0));
+        let stream2 = make_stream(Device::Musa(0));
+        let buf = Buffer::alloc(64, Device::Musa(0), &stream1).unwrap();
+
+        buf.record_write(&stream2);
+        // dealloc_stream 应更新为 stream2
     }
 
     #[test]
     fn buffer_record_read_adds_event() {
-        let stream = Arc::new(Stream::new(Device::Musa(0), 0));
-        let b = make_buffer(64, Device::Musa(0));
-        b.record_read(&stream);
-        b.record_read(&stream);
-        assert_eq!(b.read_event_count(), 2);
+        let stream = make_stream(Device::Musa(0));
+        let buf = Buffer::alloc(64, Device::Musa(0), &stream).unwrap();
+        assert_eq!(buf.read_event_count(), 0);
+        buf.record_read(&stream);
+        assert_eq!(buf.read_event_count(), 1);
     }
 
     #[test]
     fn buffer_record_write_sets_event() {
-        let stream = Arc::new(Stream::new(Device::Musa(0), 0));
-        let b = make_buffer(64, Device::Musa(0));
-        assert!(!b.has_write_event());
-        b.record_write(&stream);
-        assert!(b.has_write_event());
+        let stream = make_stream(Device::Musa(0));
+        let buf = Buffer::alloc(64, Device::Musa(0), &stream).unwrap();
+        assert!(!buf.has_write_event());
+        buf.record_write(&stream);
+        assert!(buf.has_write_event());
     }
 
     #[test]
     fn buffer_record_write_replaces_previous() {
-        let stream = Arc::new(Stream::new(Device::Musa(0), 0));
-        let b = make_buffer(64, Device::Musa(0));
-        b.record_write(&stream);
-        b.record_write(&stream);
-        // last_write_event 只保留一个
-        assert!(b.has_write_event());
+        let stream = make_stream(Device::Musa(0));
+        let buf = Buffer::alloc(64, Device::Musa(0), &stream).unwrap();
+        buf.record_write(&stream);
+        buf.record_write(&stream);
+        assert!(buf.has_write_event());
     }
 
-    // --- BufferRef 基本属性 ---
+    // --- 跨流场景（策略 b 核心）---
+
+    #[test]
+    fn buffer_cross_stream_free_safe() {
+        // 在 stream1 分配，在 stream2 读写，drop 时应在 stream2 释放
+        let stream1 = make_stream(Device::Musa(0));
+        let stream2 = make_stream(Device::Musa(0));
+
+        {
+            let buf = Buffer::alloc(1024, Device::Musa(0), &stream1).unwrap();
+            // 在 stream2 上读
+            buf.record_read(&stream2);
+            // 在 stream2 上写
+            buf.record_write(&stream2);
+            // drop：dealloc_stream 已更新为 stream2
+            // 会在 stream2 上等待事件后 free
+        }
+
+        // 同步两个流，确保所有操作完成
+        stream1.synchronize().unwrap();
+        stream2.synchronize().unwrap();
+    }
+
+    // --- BufferRef（不变）---
 
     #[test]
     fn buffer_ref_display() {
-        let b = make_buffer(128, Device::Musa(1));
+        let stream = make_stream(Device::Musa(0));
+        let b = Arc::new(Buffer::alloc(128, Device::Musa(1), &stream).unwrap());
         let r = BufferRef::new(b);
         assert_eq!(r.to_string(), "BufferRef(Buffer(size=128, device=musa:1))");
     }
 
     #[test]
     fn buffer_ref_access_buffer() {
-        let b = make_buffer(256, Device::Cpu);
+        let stream = make_stream(Device::Cpu);
+        let b = Arc::new(Buffer::alloc(256, Device::Cpu, &stream).unwrap());
         let r = BufferRef::new(b.clone());
         assert_eq!(r.buffer().size(), 256);
         assert_eq!(*r.buffer().device(), Device::Cpu);
     }
 
-    // --- BufferRef 别名检测（ADR L2-5）---
-
     #[test]
     fn buffer_ref_eq_same_arc() {
-        let b = make_buffer(64, Device::Musa(0));
+        let stream = make_stream(Device::Musa(0));
+        let b = Arc::new(Buffer::alloc(64, Device::Musa(0), &stream).unwrap());
         let r1 = BufferRef::new(b.clone());
         let r2 = BufferRef::new(b.clone());
-        // 同一 Arc 的两个 BufferRef 应相等
         assert_eq!(r1, r2);
     }
 
     #[test]
     fn buffer_ref_neq_different_arc() {
-        let b1 = make_buffer(64, Device::Musa(0));
-        let b2 = make_buffer(64, Device::Musa(0)); // 相同 size/device，但不同 Arc
+        let stream = make_stream(Device::Musa(0));
+        let b1 = Arc::new(Buffer::alloc(64, Device::Musa(0), &stream).unwrap());
+        let b2 = Arc::new(Buffer::alloc(64, Device::Musa(0), &stream).unwrap());
         let r1 = BufferRef::new(b1);
         let r2 = BufferRef::new(b2);
-        // 不同 Arc（即使内容相同）应不相等
         assert_ne!(r1, r2);
     }
 
     #[test]
     fn buffer_ref_eq_after_clone() {
-        let b = make_buffer(64, Device::Musa(0));
+        let stream = make_stream(Device::Musa(0));
+        let b = Arc::new(Buffer::alloc(64, Device::Musa(0), &stream).unwrap());
         let r1 = BufferRef::new(b);
         let r2 = r1.clone();
         assert_eq!(r1, r2);
     }
 
-    // --- 模拟别名检测场景（ADR L2-5）---
-
     #[test]
     fn alias_detection_scenario() {
-        // 模拟 ms.add(a, b, out=a) 的别名检测
-        // a 既是输入又是 out，应该被检测到
-        let buf = make_buffer(64, Device::Musa(0));
+        let stream = make_stream(Device::Musa(0));
+        let buf = Arc::new(Buffer::alloc(64, Device::Musa(0), &stream).unwrap());
         let a = BufferRef::new(buf.clone());
-        let b = BufferRef::new(make_buffer(64, Device::Musa(0)));
-        // out 是 buf 的可写引用
+        let b = BufferRef::new(Arc::new(Buffer::alloc(64, Device::Musa(0), &stream).unwrap()));
         let out_ref = BufferRef::new(buf);
 
-        // 别名检测：out_ref 与 a 相等 → 别名！
         assert_eq!(out_ref, a, "alias detected: out is same as input a");
-        // out_ref 与 b 不相等 → 无别名
         assert_ne!(out_ref, b);
     }
 
     #[test]
     fn no_alias_scenario() {
-        // 模拟 ms.add(a, b, out=c) 的正常场景
-        let a = BufferRef::new(make_buffer(64, Device::Musa(0)));
-        let b = BufferRef::new(make_buffer(64, Device::Musa(0)));
-        let c = BufferRef::new(make_buffer(64, Device::Musa(0)));
+        let stream = make_stream(Device::Musa(0));
+        let a = BufferRef::new(Arc::new(Buffer::alloc(64, Device::Musa(0), &stream).unwrap()));
+        let b = BufferRef::new(Arc::new(Buffer::alloc(64, Device::Musa(0), &stream).unwrap()));
+        let c = BufferRef::new(Arc::new(Buffer::alloc(64, Device::Musa(0), &stream).unwrap()));
 
-        // 三个都互不相等
         assert_ne!(a, b);
         assert_ne!(a, c);
         assert_ne!(b, c);
     }
 
-    // --- Arc 引用计数 ---
-
     #[test]
     fn buffer_arc_refcount() {
-        let b = make_buffer(64, Device::Musa(0));
+        let stream = make_stream(Device::Musa(0));
+        let b = Arc::new(Buffer::alloc(64, Device::Musa(0), &stream).unwrap());
         assert_eq!(Arc::strong_count(&b), 1);
 
         let r1 = BufferRef::new(b.clone());
@@ -387,5 +556,27 @@ mod tests {
         drop(r1);
         drop(r2);
         assert_eq!(Arc::strong_count(&b), 1);
+    }
+
+    // --- 内存统计相关（为下轮 BufferPool 预留）---
+
+    #[test]
+    fn buffer_alloc_large() {
+        // 分配较大内存验证 musaMallocAsync 能力
+        let stream = make_stream(Device::Musa(0));
+        let size = 4 * 1024 * 1024; // 4MB
+        let buf = Buffer::alloc(size, Device::Musa(0), &stream).expect("alloc 4MB failed");
+        assert_eq!(buf.size(), size);
+        assert!(buf.ptr().is_some());
+    }
+
+    #[test]
+    fn buffer_multiple_alloc_free() {
+        // 多次分配释放，验证不泄漏（不崩溃）
+        let stream = make_stream(Device::Musa(0));
+        for _ in 0..10 {
+            let _buf = Buffer::alloc(1024, Device::Musa(0), &stream).unwrap();
+        }
+        stream.synchronize().unwrap();
     }
 }

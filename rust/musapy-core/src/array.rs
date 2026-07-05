@@ -242,7 +242,7 @@ mod tests {
         let buffer = Arc::new(Buffer::placeholder(nbytes, device.clone()));
         let data = BufferRef::new(buffer);
         let layout = Layout::from_shape(shape);
-        let stream = Arc::new(Stream::new(device.clone(), 0));
+        let stream = Arc::new(Stream::new(device.clone(), 0).unwrap());
         let device_res = DeviceResolution::new(device.clone(), ResolutionSource::Arg);
         let dtype_res = DtypeResolution::new(dtype, ResolutionSource::Arg);
         Array::new(data, layout, dtype, stream, device_res, dtype_res)
@@ -460,7 +460,7 @@ mod tests {
         // view 1: shape [2, 3]
         let data1 = BufferRef::new(buffer.clone());
         let layout1 = Layout::from_shape(vec![2, 3]);
-        let stream = Arc::new(Stream::new(device.clone(), 0));
+        let stream = Arc::new(Stream::new(device.clone(), 0).unwrap());
         let mut a1 = Array::new(
             data1,
             layout1,

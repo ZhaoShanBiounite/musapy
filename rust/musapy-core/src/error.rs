@@ -39,13 +39,15 @@ pub enum MemoryError {
 }
 
 // ── Stream errors ──
-
 #[derive(Error, Clone, Debug, PartialEq, Eq)]
 pub enum StreamError {
     #[error("poisoned stream: {0}")]
     Poisoned(String),
     #[error("sync cycle detected: {0}")]
     SyncCycle(String),
+    #[error("MUSA runtime call failed: {0}")] 
+// 新（加一个变体）
+    MusaCallFailed(String),
 }
 
 // ── Kernel errors ──
@@ -182,6 +184,7 @@ mod tests {
         let _ = MusapyError::Memory(MemoryError::AliasDetected);
         let _ = MusapyError::Stream(StreamError::Poisoned("x".into()));
         let _ = MusapyError::Stream(StreamError::SyncCycle("x".into()));
+        let _ = MusapyError::Stream(StreamError::MusaCallFailed("x".into()));
         let _ = MusapyError::Kernel(KernelError::LaunchFailed("x".into()));
         let _ = MusapyError::Kernel(KernelError::ExecutionFailed("x".into()));
         let _ = MusapyError::Interop(InteropError::DlpackExport("x".into()));
