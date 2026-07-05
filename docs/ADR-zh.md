@@ -534,16 +534,32 @@ MusapyError(Exception)
 
 **用户可配**：`ms.set_memory_policy("aggressive" | "lazy" | "manual")`
 
-### L3-9：stream-ordered dealloc —— 完整实现
+### L3-9: Stream-Ordered Dealloc — 条件实现（feature gate）
 
-**决策**：v1 完整实现 stream-ordered alloc/free（不简化）。
+**决策**: v1 同时支持两种路径，用 Cargo feature gate + runtime probe 选择：
 
-**依据**：MUSA SDK 5.1.0 支持 `musaMallocAsync`/`musaFreeAsync`（通过 torch_musa
-生产环境使用验证 + MUSA 对标 CUDA 12.8 + 761 兼容 API）。全量实现在技术上可行。
+| 构建模式 | feature | alloc/free API | 适用 SDK |
+|---|---|---|---|
+| 默认 | （无） | musaMalloc / musaFree + deferred-free 队列 | 3.x / 4.x / 5.x |
+| stream-ordered | `stream-ordered` | musaMallocAsync / musaFreeAsync | 5.x+ |
 
-**已验证**：在 MUSA Runtime API 3.1.0（musart_version.h `__MUSA_API_VER__` = 3.1.0，
-编码值 30100）上，`libmusart.so` 链接成功。运行时 ABI 兼容性矩阵基于 `MUSART_VERSION`
-判断（不使用 mcc/clang 版本——mcc 基于 clang，其版本号不反映 MUSA SDK 版本）。
+**比较**: MUSA Runtime 3.x/4.x 的 libmusart.so 不含 musaMallocAsync/musaFreeAsync
+符号（3.1.0/3.3.5/4.3.7 实测确认）。MUSA SDK 5.1.0 Release Notes 明确"新增支持
+Stream Ordered Memory Allocator API"（对标 CUDA 12.8），但 5.x 目前受限发布。
+为保证单代码库兼容所有版本，用 feature gate 控制 async API 的链接声明，
+runtime probe 做双重保险。
+
+**实测版本矩阵（2025-01）**：
+
+| MUSA Runtime | musaMallocAsync | musaFreeAsync | musaMalloc/Free |
+|---|---|---|---|
+| 3.1.0 | 头文件有声明，.so 无符号 | 头文件有声明，.so 无符号 | ✅ 可用 |
+| 3.3.5 | 头文件有声明，.so 无符号 | 头文件有声明，.so 无符号 | ✅ 可用 |
+| 4.3.7 | C++ inline 包装（转 musaMallocFromPoolAsync） | 仅声明，无实现 | ✅ 可用 |
+| 5.1.0 | ✅ 完整 | ✅ 完整 | ✅ 可用 |
+
+**未来**: 待 5.x 公开普及后，将 `stream-ordered` 改为 default feature，
+或直接删除 feature gate，统一走 stream-ordered 路径。
 
 ### L3-10：dealloc stream 选择策略
 
@@ -568,12 +584,28 @@ impl Drop for Buffer {
 }
 ```
 
-### L3-11：能力探测 + fallback
+### L3-11: Deferred-Free — 默认路径
 
-**决策**：
-- 启动探测 `musaDeviceGetAttribute(MUSA_DEVICE_ATTRIBUTE_MEMORY_POOLS_SUPPORTED)`
-- 支持 → 完整方案（策略 b）
-- 不支持 → 退化到 deferred-free 队列（buffer Drop 时入队，下次 synchronize 时回收）
+**决策**: deferred-free 是默认构建路径，适用于所有 SDK 版本（3.x/4.x/5.x）。
+stream-ordered（L3-9）作为可选 feature，5.x 环境可启用。
+
+**工作流程**：
+1. `Buffer::drop` 不立即 free，而是 `(ptr, events)` 入 deferred-free 全局队列
+2. 入队前在 `dealloc_stream` 上 wait 所有 read/write events（策略 b 保证）
+3. `Stream::synchronize` 成功后，批量 reclaim：对队列中所有 buffer 调用 `musaFree(ptr)`
+
+**安全保证**：
+- synchronize 保证流上所有 op 完成
+- 入队前已 wait events，synchronize 后 events 一定已完成
+- 所以 reclaim 时 buffer 一定不再被任何流使用
+
+**与 L3-9 的关系**：L3-11 是 L3-9 不可用时的 fallback，也是当前默认路径。
+启用 `stream-ordered` feature 后，Buffer 走 L3-9 路径，deferred-free 队列
+不再被使用（但代码保留，feature 关闭时自动恢复）。
+
+**Capability probe**：启动期探测 `musaDeviceGetAttribute(MUSA_DEV_ATTR_MEMORY_POOLS_SUPPORTED)`。
+即使编译了 `stream-ordered` feature，probe 也作为双重保险——如果运行时不支持，
+回退到 deferred-free。
 
 ### L3-12：DLPack 生命周期
 
@@ -596,10 +628,15 @@ use-after-poison。
 - `graph.replay()` 后 placeholder buffer 被填充，Array 转为普通
 - v1 replay 同步
 
-### L3-15：最小验证测试
+### L3-15: Minimal Verification Test
 
-**决策**：v1 实现前，由有 MUSA 硬件的同事跑跨 stream alloc/use/free 最小测试，验证
-stream-ordered dealloc 在真实 MUSA 硬件上可行。
+**决策**: 在版本1（v1）实现之前，使用MUSA硬件运行一个最小的跨流分配/使用/释放测试，以验证流顺序释放在实际MUSA硬件上是否可行。
+
+**现状(2025-01)**: 已在 MUSA Runtime 3.1.0 / 3.3.5 / 4.3.7 上确认 stream-ordered API
+不可用（musaFreeAsync 无实现），走 deferred-free fallback。5.1.0 环境待验证。
+
+**测试**: 5.x 环境可用后，运行 stream-ordered 验证测试（见 v0.1-alpha-plan 2.1 节）。
+通过则可启用 `stream-ordered` feature 作为推荐构建方式。
 
 ---
 
