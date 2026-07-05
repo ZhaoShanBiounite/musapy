@@ -545,18 +545,34 @@ buffers unused >5min.
 
 **User-configurable**: `ms.set_memory_policy("aggressive" | "lazy" | "manual")`
 
-### L3-9: Stream-Ordered Dealloc — Full Implementation
+### L3-9: Stream-Ordered Dealloc — Conditional Implementation (feature gate)
 
-**Decision**: v1 implements full stream-ordered alloc/free (not simplified).
+**Decision**: v1 supports both paths simultaneously, selected via Cargo feature gate
++ runtime probe:
 
-**Rationale**: MUSA SDK 5.1.0 supports `musaMallocAsync`/`musaFreeAsync` (confirmed via
-torch_musa production usage + MUSA对标CUDA 12.8 + 761 compatible APIs). Full implementation
-is technically feasible.
+| Build mode | feature | alloc/free API | SDK support |
+|---|---|---|---|
+| Default | (none) | musaMalloc / musaFree + deferred-free queue | 3.x / 4.x / 5.x |
+| stream-ordered | `stream-ordered` | musaMallocAsync / musaFreeAsync | 5.x+ |
 
-**Verified**: On MUSA Runtime API 3.1.0 (musart_version.h `__MUSA_API_VER__` = 3.1.0,
-encoded 30100), `libmusart.so` links successfully. Runtime ABI compatibility matrix now
-based on `MUSART_VERSION` (not mcc/clang version, which is clang-based and does not
-reflect MUSA SDK version).
+**Rationale**: MUSA Runtime 3.x/4.x libmusart.so does not contain musaMallocAsync/
+musaFreeAsync symbols (verified on 3.1.0/3.3.5/4.3.7). MUSA SDK 5.1.0 Release Notes
+explicitly states "added support for Stream Ordered Memory Allocator API" (CUDA 12.8
+equivalent), but 5.x is currently restricted release. To keep a single codebase
+compatible with all versions, feature gate controls async API link declarations,
+runtime probe acts as double safety.
+
+**Verified version matrix (2025-01)**:
+
+| MUSA Runtime | musaMallocAsync | musaFreeAsync | musaMalloc/Free |
+|---|---|---|---|
+| 3.1.0 | header declares, .so no symbol | header declares, .so no symbol | ✅ available |
+| 3.3.5 | header declares, .so no symbol | header declares, .so no symbol | ✅ available |
+| 4.3.7 | C++ inline wrapper (forwards to musaMallocFromPoolAsync) | declared only, no impl | ✅ available |
+| 5.1.0 | ✅ full | ✅ full | ✅ available |
+
+**Future**: Once 5.x is publicly available, change `stream-ordered` to default feature,
+or remove the feature gate entirely, unifying on stream-ordered path.
 
 ### L3-10: Dealloc Stream Selection Strategy
 
