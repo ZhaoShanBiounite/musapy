@@ -597,12 +597,31 @@ impl Drop for Buffer {
 }
 ```
 
-### L3-11: Capability Probe + Fallback
+### L3-11: Deferred-Free — Default Path
 
-**Decision**:
-- Startup probes `musaDeviceGetAttribute(MUSA_DEVICE_ATTRIBUTE_MEMORY_POOLS_SUPPORTED)`
-- Supported → full stream-ordered scheme (strategy b)
-- Unsupported → fallback to deferred-free queue (buffer Drop enqueues, next synchronize reclaims)
+**Decision**: deferred-free is the default build path, compatible with all SDK versions
+(3.x/4.x/5.x). stream-ordered (L3-9) is an optional feature, enabled on 5.x environments.
+
+**Workflow**:
+1. `Buffer::drop` does not free immediately; instead enqueues `(ptr, events)` to a
+global deferred-free queue
+2. Before enqueuing, wait all read/write events on `dealloc_stream` (strategy b guarantee)
+3. After `Stream::synchronize` succeeds, batch reclaim: call `musaFree(ptr)` for all
+buffers in the queue
+
+**Safety guarantees**:
+- synchronize guarantees all ops on the stream are complete
+- events are waited before enqueuing, so after synchronize they are certainly complete
+- Therefore when reclaiming, the buffer is certainly not in use by any stream
+
+**Relationship with L3-9**: L3-11 is the fallback when L3-9 is unavailable, and also the
+current default path. When `stream-ordered` feature is enabled, Buffer takes the L3-9 path,
+and the deferred-free queue is no longer used (code is preserved, auto-restored when
+feature is off).
+
+**Capability probe**: Startup probes `musaDeviceGetAttribute(MUSA_DEV_ATTR_MEMORY_POOLS_SUPPORTED)`.
+Even when compiled with `stream-ordered` feature, probe acts as double safety — if the
+runtime doesn't support it, fallback to deferred-free.
 
 ### L3-12: DLPack Lifecycle
 
@@ -631,6 +650,13 @@ Conservative strategy avoids use-after-poison.
 **Decision**: Before v1 implementation, a colleague with MUSA hardware runs a minimal
 cross-stream alloc/use/free test to verify stream-ordered dealloc works on real MUSA hardware.
 
+**Status (2025-01)**: Verified on MUSA Runtime 3.1.0 / 3.3.5 / 4.3.7 that stream-ordered
+API is unavailable (musaFreeAsync has no implementation), falling back to deferred-free.
+5.1.0 environment pending verification.
+
+**Test scope**: Once 5.x is available, run the stream-ordered verification test (see
+v0.1-alpha-plan section 2.1). If it passes, the `stream-ordered` feature can be enabled
+as the recommended build mode.
 ---
 
 ## Layer 3.3: Interoperability
