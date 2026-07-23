@@ -277,8 +277,9 @@ mod tests {
 
     #[test]
     fn array_device() {
-        let a = make_array(vec![3], Dtype::Float32, Device::Musa(1));
-        assert_eq!(*a.device(), Device::Musa(1));
+        // 单 GPU 环境用 Musa(0)；测试目的是验证 device 字段被正确保留。
+        let a = make_array(vec![3], Dtype::Float32, Device::Musa(0));
+        assert_eq!(*a.device(), Device::Musa(0));
     }
 
     #[test]
