@@ -13,6 +13,7 @@ pub mod layout;
 pub mod stream;
 pub mod buffer;
 pub mod array;
+pub mod resolution;
 // deferred-free 队列仅在默认内存路径编译（ADR L3-11）。
 // 启用 stream-ordered feature 后走 musaFreeAsync，本模块不编译。
 #[cfg(not(feature = "stream-ordered"))]
