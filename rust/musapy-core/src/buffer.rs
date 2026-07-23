@@ -57,10 +57,12 @@ pub struct Buffer {
 }
 
 impl Buffer {
-    /// 真实分配 GPU 内存（ADR L3-9）。
+    /// 真实分配 GPU/CPU 内存（ADR L3-9, L3-11）。
     ///
-    /// - MUSA 设备：调用 `musaMallocAsync(ptr, size, stream)`
-    /// - CPU 设备：调用 `std::alloc::alloc`（8 字节对齐）
+    /// - MUSA 设备：
+    ///   - 默认路径：`musaSetDevice(id)` + `musaMalloc`（同步，所有 SDK 版本可用）
+    ///   - stream-ordered feature：`musaMallocAsync(ptr, size, stream)`（仅 5.x+）
+    /// - CPU 设备：`std::alloc::alloc`（8 字节对齐）
     ///
     /// 分配失败返回 `MemoryError::OutOfMemory`。
     pub fn alloc(size: usize, device: Device, stream: &Arc<Stream>) -> Result<Self> {
@@ -78,7 +80,7 @@ impl Buffer {
 
         let ptr = match &device {
             Device::Cpu => Self::alloc_cpu(size)?,
-            Device::Musa(_) => Self::alloc_musa(size, stream)?,
+            Device::Musa(id) => Self::alloc_musa(*id, size, stream)?,
         };
 
         Ok(Self {
@@ -101,8 +103,15 @@ impl Buffer {
         })
     }
 
-    /// MUSA GPU 内存分配（调用 musaMallocAsync）。
-    fn alloc_musa(size: usize, stream: &Arc<Stream>) -> Result<NonNull<u8>> {
+    /// MUSA GPU 内存分配。
+    ///
+    /// 双路径（ADR L3-9, L3-11）：
+    /// - stream-ordered feature：`musaMallocAsync`（stream-ordered，5.x+）
+    /// - 默认：`musaSetDevice(id)` + `musaMalloc`（同步，3.x/4.x/5.x 全可用）
+    ///
+    /// `musaMalloc` 绑定调用线程的当前设备，所以必须先 `musaSetDevice`。
+    #[cfg(feature = "stream-ordered")]
+    fn alloc_musa(_device_id: u32, size: usize, stream: &Arc<Stream>) -> Result<NonNull<u8>> {
         let mut dev_ptr: *mut std::ffi::c_void = std::ptr::null_mut();
         unsafe {
             musa_ffi::check_musa(
@@ -110,6 +119,23 @@ impl Buffer {
                 "musaMallocAsync",
             )?;
         }
+        Self::check_musa_ptr(dev_ptr, size)
+    }
+
+    /// MUSA GPU 内存分配（默认路径，ADR L3-11）。
+    #[cfg(not(feature = "stream-ordered"))]
+    fn alloc_musa(device_id: u32, size: usize, _stream: &Arc<Stream>) -> Result<NonNull<u8>> {
+        // musaMalloc 绑定当前设备，必须先 set（修复 Musa(1) 落到设备 0 的隐患）
+        musa_ffi::set_device(device_id as i32)?;
+        let mut dev_ptr: *mut std::ffi::c_void = std::ptr::null_mut();
+        unsafe {
+            musa_ffi::check_musa(musa_ffi::musaMalloc(&mut dev_ptr, size), "musaMalloc")?;
+        }
+        Self::check_musa_ptr(dev_ptr, size)
+    }
+
+    /// 校验 musaMalloc/musaMallocAsync 返回的指针非空，转 NonNull。
+    fn check_musa_ptr(dev_ptr: *mut std::ffi::c_void, size: usize) -> Result<NonNull<u8>> {
         if dev_ptr.is_null() {
             return Err(MemoryError::OutOfMemory(format!(
                 "MUSA alloc returned null: {} bytes",
@@ -117,7 +143,7 @@ impl Buffer {
             ))
             .into());
         }
-        // NonNull::new 是 unsafe 的，但 dev_ptr 已检查非 null
+        // dev_ptr 已检查非 null，NonNull::new_unchecked 安全
         Ok(unsafe { NonNull::new_unchecked(dev_ptr as *mut u8) })
     }
 
@@ -205,13 +231,16 @@ impl Buffer {
     }
 }
 
-/// stream-ordered free（ADR L3-9, L3-10 策略 b）。
+/// Buffer 释放（ADR L3-9, L3-10 策略 b, L3-11）。
 ///
-/// 释放流程：
-/// 1. 取出 dealloc_stream（最后使用的流）
+/// 释放流程（两路径共用的前 3 步）：
+/// 1. 取出 dealloc_stream（最后使用的流，策略 b）
 /// 2. 在 dealloc_stream 上等待所有 read_events
 /// 3. 在 dealloc_stream 上等待 last_write_event
-/// 4. 调用 musaFreeAsync(ptr, dealloc_stream)
+///
+/// 然后按路径分流：
+/// - stream-ordered feature：`musaFreeAsync(ptr, dealloc_stream)`（立即 stream-ordered free）
+/// - 默认路径：`deferred_free::enqueue(ptr, device)`（入队，等 synchronize 批量 musaFree）
 ///
 /// 等待事件保证：释放前所有使用此 buffer 的操作都已完成。
 /// CPU buffer 用 std::alloc::dealloc 释放。
@@ -234,9 +263,8 @@ impl Drop for Buffer {
                 }
             }
             Device::Musa(_) => {
-                // MUSA：stream-ordered free
                 if let Some(stream) = dealloc_stream {
-                    // 等待所有 read_events
+                    // 等待所有 read_events（策略 b：在最后使用的流上等待）
                     let read_events: Vec<Event> = self.read_events.lock().drain(..).collect();
                     for ev in read_events {
                         if let Err(e) = stream.wait_event(&ev) {
@@ -249,14 +277,29 @@ impl Drop for Buffer {
                             eprintln!("warn: free wait write_event failed: {}", e);
                         }
                     }
-                    // 调用 musaFreeAsync
-                    unsafe {
-                        if let Err(e) = musa_ffi::check_musa(
-                            musa_ffi::musaFreeAsync(ptr.as_ptr() as *mut std::ffi::c_void, stream.raw()),
-                            "musaFreeAsync",
-                        ) {
-                            eprintln!("warn: musaFreeAsync failed: {}", e);
+
+                    // 路径分流
+                    #[cfg(feature = "stream-ordered")]
+                    {
+                        // stream-ordered free（5.x+）：musaFreeAsync 立即流序释放
+                        unsafe {
+                            if let Err(e) = musa_ffi::check_musa(
+                                musa_ffi::musaFreeAsync(
+                                    ptr.as_ptr() as *mut std::ffi::c_void,
+                                    stream.raw(),
+                                ),
+                                "musaFreeAsync",
+                            ) {
+                                eprintln!("warn: musaFreeAsync failed: {}", e);
+                            }
                         }
+                    }
+                    #[cfg(not(feature = "stream-ordered"))]
+                    {
+                        // 默认路径（3.x/4.x/5.x）：入 deferred-free 队列，
+                        // 等 Stream::synchronize 成功后批量 musaFree（ADR L3-11）。
+                        // 入队前已 wait events，synchronize 后 buffer 必不再被使用。
+                        crate::deferred_free::enqueue(ptr, self.device.clone());
                     }
                 } else {
                     // 无 dealloc_stream（placeholder 或未初始化）：跳过 free
@@ -475,9 +518,9 @@ mod tests {
     #[test]
     fn buffer_ref_display() {
         let stream = make_stream(Device::Musa(0));
-        let b = Arc::new(Buffer::alloc(128, Device::Musa(1), &stream).unwrap());
+        let b = Arc::new(Buffer::alloc(128, Device::Musa(0), &stream).unwrap());
         let r = BufferRef::new(b);
-        assert_eq!(r.to_string(), "BufferRef(Buffer(size=128, device=musa:1))");
+        assert_eq!(r.to_string(), "BufferRef(Buffer(size=128, device=musa:0))");
     }
 
     #[test]

@@ -191,14 +191,17 @@ unsafe impl Sync for Stream {}
 impl Stream {
     /// 创建流。
     ///
-    /// - MUSA 设备：调用 `musaStreamCreateWithPriority`，priority 对齐 MUSA 流优先级
+    /// - MUSA 设备：先 `musaSetDevice(id)` 绑定当前设备，再
+    ///   `musaStreamCreateWithPriority`（stream 绑定到当前设备）。priority 对齐 MUSA 流优先级
     /// - CPU 设备：raw = null，不调用 FFI（CPU 无 MUSA 流概念）
     ///
     /// 创建失败返回 `StreamError::MusaCallFailed`。
     pub fn new(device: Device, priority: i32) -> Result<Self> {
         let raw = match &device {
             Device::Cpu => std::ptr::null_mut(),
-            Device::Musa(_) => {
+            Device::Musa(id) => {
+                // stream 创建绑定当前设备，必须先 set（修复 Musa(1) 流落到设备 0 的隐患）
+                musa_ffi::set_device(*id as i32)?;
                 let mut stream: musa_ffi::musaStream_t = std::ptr::null_mut();
                 unsafe {
                     musa_ffi::check_musa(
@@ -276,6 +279,15 @@ impl Stream {
             Ok(()) => {
                 // 成功：清空 pending ops
                 self.clear_pending_ops();
+                // 默认路径（ADR L3-11）：synchronize 保证流上所有 op 完成，
+                // 此时批量回收 deferred-free 队列中的 buffer（musaFree）。
+                // 入队的 buffer 在 drop 前已 wait events，此刻必不再被任何流使用。
+                #[cfg(not(feature = "stream-ordered"))]
+                {
+                    if let Err(e) = crate::deferred_free::reclaim_all() {
+                        eprintln!("warn: deferred_free reclaim failed: {}", e);
+                    }
+                }
                 Ok(())
             }
             Err(e) => {
