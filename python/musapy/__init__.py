@@ -17,6 +17,10 @@ from ._core import (
     device,
     dtype,
     stream,
+    memory_summary,
+    device_summary,
+    set_debug,
+    debug,
     # dtype constants
     bool as bool_,
     int8,
@@ -63,6 +67,10 @@ __all__ = [
     "device",
     "dtype",
     "stream",
+    "memory_summary",
+    "device_summary",
+    "set_debug",
+    "debug",
     # dtype constants
     "bool_",
     "int8",

@@ -14,6 +14,8 @@ pub mod stream;
 pub mod buffer;
 pub mod array;
 pub mod resolution;
+pub mod mem_stats;
+pub mod debug;
 // deferred-free 队列仅在默认内存路径编译（ADR L3-11）。
 // 启用 stream-ordered feature 后走 musaFreeAsync，本模块不编译。
 #[cfg(not(feature = "stream-ordered"))]
@@ -29,6 +31,7 @@ pub use layout::{Layout, Shape};
 pub use stream::{OpContext, PythonFrame, Stream, Event};
 pub use buffer::{Buffer, BufferRef};
 pub use array::{Array, DtypeResolution};
+pub use debug::{is_debug, set_debug};
 
 /// musapy-core 版本号
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");

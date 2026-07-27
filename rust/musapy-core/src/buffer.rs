@@ -87,6 +87,9 @@ impl Buffer {
             Device::Musa(id) => Self::alloc_musa(*id, size, stream)?,
         };
 
+        // 内存统计插桩（ADR L3-28）
+        crate::mem_stats::record_alloc(size);
+
         Ok(Self {
             ptr: Some(ptr),
             size,
@@ -274,6 +277,7 @@ impl Drop for Buffer {
         match &self.device {
             Device::Cpu => {
                 // CPU：直接 dealloc（不需要 stream 同步）
+                crate::mem_stats::record_dealloc(self.size);
                 let layout = std::alloc::Layout::from_size_align(self.size, 8).unwrap();
                 unsafe {
                     std::alloc::dealloc(ptr.as_ptr(), layout);
@@ -299,6 +303,7 @@ impl Drop for Buffer {
                     #[cfg(feature = "stream-ordered")]
                     {
                         // stream-ordered free（5.x+）：musaFreeAsync 立即流序释放
+                        crate::mem_stats::record_dealloc(self.size);
                         unsafe {
                             if let Err(e) = musa_ffi::check_musa(
                                 musa_ffi::musaFreeAsync(
@@ -316,7 +321,8 @@ impl Drop for Buffer {
                         // 默认路径（3.x/4.x/5.x）：入 deferred-free 队列，
                         // 等 Stream::synchronize 成功后批量 musaFree（ADR L3-11）。
                         // 入队前已 wait events，synchronize 后 buffer 必不再被使用。
-                        crate::deferred_free::enqueue(ptr, self.device.clone());
+                        crate::mem_stats::record_dealloc(self.size);
+                        crate::deferred_free::enqueue(ptr, self.device.clone(), self.size);
                     }
                 } else {
                     // 无 dealloc_stream（placeholder 或未初始化）：跳过 free

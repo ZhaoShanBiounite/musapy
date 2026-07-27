@@ -10,6 +10,7 @@ use crate::error;
 use musapy_core::musa_ffi;
 use musapy_core::resolution;
 use musapy_core::{Buffer, BufferRef, Device, DeviceResolution, Dtype, DtypeResolution, Layout, Stream};
+use musapy_core::{debug, PythonFrame};
 use musapy_ops;
 use pyo3::prelude::*;
 use std::sync::Arc;
@@ -92,10 +93,34 @@ pub fn array(
 /// 有 `out=` 时写入 out 的 Buffer，在 out 的 stream 上执行（ADR L1-8）。
 #[pyfunction]
 #[pyo3(signature = (a, b, out=None))]
-pub fn add(a: &PyArray, b: &PyArray, out: Option<&PyArray>) -> PyResult<PyArray> {
+pub fn add(py: Python<'_>, a: &PyArray, b: &PyArray, out: Option<&PyArray>) -> PyResult<PyArray> {
+    // Debug 模式：捕获 Python 调用帧（ADR L3-26）
+    if debug::is_debug() {
+        if let Some(frame) = extract_caller_frame(py) {
+            debug::set_debug_frame(Some(frame));
+        }
+    }
+
     let result = musapy_ops::add(&a.inner, &b.inner, out.map(|o| &o.inner))
         .map_err(error::to_pyerr)?;
     Ok(PyArray::from_array(result))
+}
+
+/// 从 Python 调用栈提取调用者帧信息（debug 模式用，ADR L3-26）。
+///
+/// 使用 `sys._getframe(0)`：C 扩展内调用时，frame(0) = 调用本扩展的 Python 代码。
+fn extract_caller_frame(py: Python<'_>) -> Option<PythonFrame> {
+    let sys = py.import("sys").ok()?;
+    let frame = sys.call_method1("_getframe", (0,)).ok()?;
+    let code = frame.getattr("f_code").ok()?;
+    let filename: String = code.getattr("co_filename").ok()?.extract().ok()?;
+    let lineno: u32 = frame.getattr("f_lineno").ok()?.extract().ok()?;
+    let function: String = code.getattr("co_name").ok()?.extract().ok()?;
+    Some(PythonFrame {
+        filename,
+        lineno,
+        function,
+    })
 }
 
 /// 从 Python list/tuple 按 dtype 提取 raw bytes 和 shape。

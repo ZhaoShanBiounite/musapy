@@ -20,7 +20,7 @@ use std::time::Instant;
 // 1. PythonFrame（debug 模式，ADR L3-26，不变）
 // ============================================================
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct PythonFrame {
     pub filename: String,
     pub lineno: u32,
