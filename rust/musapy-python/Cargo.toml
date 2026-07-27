@@ -11,3 +11,4 @@ crate-type = ["cdylib"]
 [dependencies]
 pyo3 = { workspace = true, features = ["extension-module"] }
 musapy-core = { workspace = true }
+musapy-ops = { workspace = true }

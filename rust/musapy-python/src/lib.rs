@@ -157,6 +157,7 @@ fn _core(m: &Bound<'_, PyModule>) -> PyResult<()> {
 
     // --- 模块级函数 ---
     m.add_function(wrap_pyfunction!(ops::array, m)?)?;
+    m.add_function(wrap_pyfunction!(ops::add, m)?)?;
     m.add_function(wrap_pyfunction!(set_default_device, m)?)?;
     m.add_function(wrap_pyfunction!(set_default_dtype, m)?)?;
     m.add_function(wrap_pyfunction!(device_context, m)?)?;

@@ -2,13 +2,18 @@
 //!
 //! 从 Buffer + Layout + resolution 构造，提供只读属性和 name 管理。
 //! `device` getter 返回带 resolution source 的 PyDevice（L0-8 反馈原则）。
+//! Phase 6: `__add__` / `tolist()` / `item()`（ADR L1-11 显式 sync + D2H）。
 
 use crate::device::PyDevice;
 use crate::dtype::PyDtype;
+use crate::error;
 use crate::stream::PyStream;
-use musapy_core::Array;
+use musapy_core::musa_ffi;
+use musapy_core::{Array, Device, Dtype};
+use musapy_ops;
 use pyo3::prelude::*;
-use pyo3::types::PyTuple;
+use pyo3::types::{PyList, PyTuple};
+use std::ffi::c_void;
 
 /// Python Array 类。
 ///
@@ -29,8 +34,8 @@ impl PyArray {
 impl PyArray {
     /// 形状元组，如 `(3,)` 或 `(2, 3)`。
     #[getter]
-    fn shape<'py>(&self, py: Python<'py>) -> PyResult<PyObject> {
-        Ok(PyTuple::new(py, self.inner.shape())?.to_object(py))
+    fn shape<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyTuple>> {
+        PyTuple::new(py, self.inner.shape())
     }
 
     /// 维度数。
@@ -104,6 +109,39 @@ impl PyArray {
         self.inner.is_0d()
     }
 
+    /// `a + b` — 逐元素加法（ADR L1-12）。
+    ///
+    /// 等价于 `ms.add(self, other)`，分配新 Buffer 返回。
+    fn __add__(&self, other: &PyArray) -> PyResult<PyArray> {
+        let result = musapy_ops::add(&self.inner, &other.inner, None)
+            .map_err(error::to_pyerr)?;
+        Ok(PyArray::from_array(result))
+    }
+
+    /// 将数组数据取回 host 并转为 Python list（ADR L1-11: 显式 sync + D2H）。
+    ///
+    /// `a.tolist()` → `[5.0, 7.0, 9.0]`
+    fn tolist(&self, py: Python<'_>) -> PyResult<PyObject> {
+        let bytes = self.sync_and_copy_to_host(py)?;
+        let n = self.inner.size();
+        let dtype = self.inner.dtype();
+        bytes_to_pylist(py, &bytes, n, dtype)
+    }
+
+    /// 0-dim 或 size=1 数组取标量值（ADR L1-11）。
+    ///
+    /// `a.item()` → `3.14`（Python float）
+    fn item(&self, py: Python<'_>) -> PyResult<PyObject> {
+        if self.inner.size() != 1 {
+            return Err(pyo3::exceptions::PyValueError::new_err(
+                "can only convert size-1 arrays to scalar",
+            ));
+        }
+        let bytes = self.sync_and_copy_to_host(py)?;
+        let dtype = self.inner.dtype();
+        bytes_to_scalar(py, &bytes, dtype)
+    }
+
     /// `Array(shape=(3,), dtype=float32, device=musa:0)`
     fn __repr__(&self) -> String {
         let shape = self.inner.shape();
@@ -127,5 +165,136 @@ impl PyArray {
     /// 与 `__repr__` 相同。
     fn __str__(&self) -> String {
         self.__repr__()
+    }
+}
+
+// ============================================================
+// 内部辅助方法
+// ============================================================
+
+impl PyArray {
+    /// 显式同步 stream + D2H 拷贝（ADR L1-11）。
+    ///
+    /// 先 `stream.synchronize()`，然后 `musaMemcpy(D2H)`（或 CPU 直接拷贝）。
+    /// 返回原始字节序列。
+    fn sync_and_copy_to_host(&self, _py: Python<'_>) -> PyResult<Vec<u8>> {
+        // 1. stream 同步
+        self.inner.stream()
+            .synchronize()
+            .map_err(error::to_pyerr)?;
+
+        let nbytes = self.inner.nbytes();
+        let mut bytes = vec![0u8; nbytes];
+        if nbytes == 0 {
+            return Ok(bytes);
+        }
+
+        // 2. D2H 拷贝
+        let ptr = self.inner.data().buffer().ptr();
+        match self.inner.device() {
+            Device::Cpu => {
+                if let Some(p) = ptr {
+                    unsafe {
+                        std::ptr::copy_nonoverlapping(
+                            p.as_ptr(),
+                            bytes.as_mut_ptr(),
+                            nbytes,
+                        );
+                    }
+                }
+            }
+            Device::Musa(_) => {
+                if let Some(p) = ptr {
+                    unsafe {
+                        musa_ffi::check_musa(
+                            musa_ffi::musaMemcpy(
+                                bytes.as_mut_ptr() as *mut c_void,
+                                p.as_ptr() as *const c_void,
+                                nbytes,
+                                musa_ffi::musaMemcpyKind::DeviceToHost,
+                            ),
+                            "musaMemcpy(D2H)",
+                        )
+                        .map_err(error::to_pyerr)?;
+                    }
+                }
+            }
+        }
+        Ok(bytes)
+    }
+}
+
+// ============================================================
+// bytes → Python 转换辅助函数
+// ============================================================
+
+/// 将原始字节按 dtype 解释为 Python list。
+fn bytes_to_pylist(
+    py: Python<'_>,
+    bytes: &[u8],
+    n: usize,
+    dtype: Dtype,
+) -> PyResult<PyObject> {
+    if n == 0 {
+        return Ok(PyList::empty(py).into());
+    }
+
+    macro_rules! to_list {
+        ($t:ty) => {{
+            let v: &[$t] =
+                unsafe { std::slice::from_raw_parts(bytes.as_ptr() as *const $t, n) };
+            return Ok(PyList::new(py, v.iter().copied())?.into());
+        }};
+    }
+
+    match dtype {
+        Dtype::Bool => to_list!(bool),
+        Dtype::Int8 => to_list!(i8),
+        Dtype::Int16 => to_list!(i16),
+        Dtype::Int32 => to_list!(i32),
+        Dtype::Int64 => to_list!(i64),
+        Dtype::Uint8 => to_list!(u8),
+        Dtype::Uint16 => to_list!(u16),
+        Dtype::Uint32 => to_list!(u32),
+        Dtype::Uint64 => to_list!(u64),
+        Dtype::Float32 => to_list!(f32),
+        Dtype::Float64 => to_list!(f64),
+        Dtype::Float16 | Dtype::Bfloat16 | Dtype::Complex64 | Dtype::Complex128 => {
+            Err(pyo3::exceptions::PyNotImplementedError::new_err(format!(
+                "tolist not yet supported for dtype {}",
+                dtype
+            )))
+        }
+    }
+}
+
+/// 将单个元素的原始字节按 dtype 解释为 Python 标量。
+#[allow(deprecated)]
+fn bytes_to_scalar(py: Python<'_>, bytes: &[u8], dtype: Dtype) -> PyResult<PyObject> {
+    macro_rules! to_scalar {
+        ($t:ty) => {{
+            let v: $t = unsafe { std::ptr::read_unaligned(bytes.as_ptr() as *const $t) };
+            return Ok(v.into_py(py));
+        }};
+    }
+
+    match dtype {
+        Dtype::Bool => to_scalar!(bool),
+        Dtype::Int8 => to_scalar!(i8),
+        Dtype::Int16 => to_scalar!(i16),
+        Dtype::Int32 => to_scalar!(i32),
+        Dtype::Int64 => to_scalar!(i64),
+        Dtype::Uint8 => to_scalar!(u8),
+        Dtype::Uint16 => to_scalar!(u16),
+        Dtype::Uint32 => to_scalar!(u32),
+        Dtype::Uint64 => to_scalar!(u64),
+        Dtype::Float32 => to_scalar!(f32),
+        Dtype::Float64 => to_scalar!(f64),
+        Dtype::Float16 | Dtype::Bfloat16 | Dtype::Complex64 | Dtype::Complex128 => {
+            Err(pyo3::exceptions::PyNotImplementedError::new_err(format!(
+                "item not yet supported for dtype {}",
+                dtype
+            )))
+        }
     }
 }

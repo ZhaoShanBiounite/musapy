@@ -12,7 +12,7 @@
 //! mock 模式（musapy_mock_musa）：提供 Rust stub，不调用真实 FFI。
 
 #![allow(non_camel_case_types)]
-use crate::error::{MusapyError, Result, StreamError};
+use crate::error::{KernelError, MusapyError, Result, StreamError};
 use std::ffi::{c_char, c_int, c_uint, c_void, CStr};
 
 // ============================================================
@@ -120,6 +120,7 @@ mod real {
 
         // --- Error（ADR L3-1）---
         pub fn musaGetErrorString(error: musaError_t) -> *const c_char;
+        pub fn musaGetLastError() -> musaError_t;
     }
 }
 
@@ -300,6 +301,10 @@ mod mock {
     pub fn musaGetErrorString(_error: musaError_t) -> *const c_char {
         b"mock MUSA error\0".as_ptr() as *const c_char
     }
+
+    pub unsafe fn musaGetLastError() -> musaError_t {
+        MUSA_SUCCESS
+    }
 }
 
 // ============================================================
@@ -339,6 +344,23 @@ unsafe fn musa_error_to_string(err: musaError_t) -> String {
         } else {
             CStr::from_ptr(s).to_string_lossy().into_owned()
         }
+    }
+}
+
+/// 检查最近一次 kernel launch 是否有错误（ADR L3-1 即时检测）。
+///
+/// 与 `check_musa` 不同，此处返回 `KernelError::LaunchFailed`，
+/// 因为 kernel launch 错误属于 launch 层而非 stream 层。
+pub fn check_last_kernel_launch(context: &str) -> Result<()> {
+    let err = unsafe { musaGetLastError() };
+    if err == MUSA_SUCCESS {
+        Ok(())
+    } else {
+        let msg = unsafe { musa_error_to_string(err) };
+        Err(MusapyError::Kernel(KernelError::LaunchFailed(format!(
+            "{}: {} (error code {})",
+            context, msg, err
+        ))))
     }
 }
 

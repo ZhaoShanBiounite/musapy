@@ -233,6 +233,19 @@ impl Buffer {
     pub fn has_write_event(&self) -> bool {
         self.last_write_event.lock().is_some()
     }
+
+    /// 若此 buffer 有未完成的写操作事件，让 target_stream 等待之（ADR L1-8 自动 stream wait）。
+    ///
+    /// 用于 op 执行时，当输入 buffer 是在另一个 stream 上写入的，
+    /// 让输出 stream 自动等待输入的写操作完成。
+    /// CPU stream 的 `wait_event` 是 no-op，不影响 CPU 路径。
+    pub fn wait_last_write_on(&self, target_stream: &Arc<Stream>) -> Result<()> {
+        let guard = self.last_write_event.lock();
+        if let Some(event) = guard.as_ref() {
+            target_stream.wait_event(event)?;
+        }
+        Ok(())
+    }
 }
 
 /// Buffer 释放（ADR L3-9, L3-10 策略 b, L3-11）。

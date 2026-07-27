@@ -29,16 +29,23 @@ use std::cell::RefCell;
 use std::sync::Arc;
 
 // ============================================================
-// 1. thread-local 栈 + 全局 SEED（ADR L0-11）
+// 1. thread-local 默认 + context 栈 + 全局 SEED（ADR L0-11）
+//
+// 默认值与 context 栈分离存储，避免「无 default 时 context 层
+// 被误认为 default」的 bug（原来用单一栈 + len>1 启发式判断）。
 // ============================================================
 
 thread_local! {
-    /// 默认 device 栈（L0-11）。栈底 = set_default_device 设的；栈顶 = context push 的。
-    static DEVICE_STACK: RefCell<Vec<Device>> = RefCell::new(Vec::new());
-    /// 默认 dtype 栈（L0-7，对称于 device）。
-    static DTYPE_STACK: RefCell<Vec<Dtype>> = RefCell::new(Vec::new());
-    /// 当前 stream 栈（L1-7）。栈顶 = 当前 context 的 stream。
-    static STREAM_STACK: RefCell<Vec<Arc<Stream>>> = RefCell::new(Vec::new());
+    /// 全局默认 device（ADR L0-6 级 4, L0-11）。
+    static DEVICE_DEFAULT: RefCell<Option<Device>> = RefCell::new(None);
+    /// device context 栈（ADR L2-7，`with ms.device()` push 的）。
+    static DEVICE_CONTEXT: RefCell<Vec<Device>> = RefCell::new(Vec::new());
+    /// 全局默认 dtype（ADR L0-7 级 4, L0-11，对称于 device）。
+    static DTYPE_DEFAULT: RefCell<Option<Dtype>> = RefCell::new(None);
+    /// dtype context 栈（ADR L2-7）。
+    static DTYPE_CONTEXT: RefCell<Vec<Dtype>> = RefCell::new(Vec::new());
+    /// stream context 栈（L1-7）。栈顶 = 当前 context 的 stream。
+    static STREAM_CONTEXT: RefCell<Vec<Arc<Stream>>> = RefCell::new(Vec::new());
     /// 标记当前线程是否已从 device SEED snapshot 过初始值（L0-11：snapshot 后解耦）。
     static DEVICE_SEED_SNAPSHOT_TAKEN: RefCell<bool> = RefCell::new(false);
     /// 标记当前线程是否已从 dtype SEED snapshot 过初始值。
@@ -47,7 +54,7 @@ thread_local! {
 
 /// 全局 device SEED：新线程继承父线程当前的默认（值快照，L0-11）。
 ///
-/// `set_default_device` 写此 SEED；新线程首次访问 device 栈为空时从此 snapshot。
+/// `set_default_device` 写此 SEED；新线程首次访问 device 默认为空时从此 snapshot。
 /// snapshot 后线程与 SEED 解耦：后续兄弟线程/父线程的变更不影响本线程。
 /// 注意：只有首次 set_default_device 或从未 snapshot 的线程会更新 SEED。
 static SEED_DEVICE: Mutex<Option<Device>> = Mutex::new(None);
@@ -56,52 +63,40 @@ static SEED_DEVICE: Mutex<Option<Device>> = Mutex::new(None);
 static SEED_DTYPE: Mutex<Option<Dtype>> = Mutex::new(None);
 
 // ============================================================
-// 2. device 默认栈 API（P4.1, P4.4）
+// 2. device 默认 + context API（P4.1, P4.4）
 // ============================================================
 
 /// 设置全局默认 device（ADR L0-6 级 4，L0-11）。
 ///
-/// 压入当前线程的 device 栈底（替换已有默认），并更新全局 SEED 供新线程继承。
-/// 后续 `resolve_device` 无更高优先级来源时用此值。
+/// 写入当前线程的 device 默认，并更新全局 SEED 供新线程继承。
 /// L0-11：snapshot 后线程与 SEED 解耦，只有未 snapshot 的线程首次 set_default_device 才会更新 SEED。
 pub fn set_default_device(device: Device) {
-    DEVICE_STACK.with(|stack| {
-        let mut s = stack.borrow_mut();
-        let snapshot_taken = DEVICE_SEED_SNAPSHOT_TAKEN.with(|taken| *taken.borrow());
-        if s.is_empty() {
-            s.push(device.clone());
-            // 首次设置时，若未 snapshot 过，更新 SEED 供新线程继承
-            if !snapshot_taken {
-                *SEED_DEVICE.lock() = Some(device);
-            }
-        } else {
-            // 替换栈底（全局默认），保留上方 context 层
-            s[0] = device.clone();
-            // 若未 snapshot 过，更新 SEED
-            if !snapshot_taken {
-                *SEED_DEVICE.lock() = Some(device);
-            }
-        }
+    let snapshot_taken = DEVICE_SEED_SNAPSHOT_TAKEN.with(|taken| *taken.borrow());
+    DEVICE_DEFAULT.with(|dflt| {
+        *dflt.borrow_mut() = Some(device.clone());
     });
+    if !snapshot_taken {
+        *SEED_DEVICE.lock() = Some(device);
+    }
 }
 
 /// 获取当前线程的默认 device（ADR L0-6 级 4）。
 ///
-/// 线程栈非空 → 返回栈底（全局默认）。
-/// 线程栈空 → 从全局 SEED snapshot 一份压栈（L0-11 继承），之后解耦。
+/// 线程默认已设 → 返回。
+/// 线程默认未设 → 从全局 SEED snapshot 一份（L0-11 继承），之后解耦。
 /// SEED 也空（从未 set_default_device）→ 返回 None（触发 L0-9 DeviceNotConfigured）。
 pub fn get_default_device() -> Option<Device> {
-    DEVICE_STACK.with(|stack| {
-        let mut s = stack.borrow_mut();
-        if !s.is_empty() {
-            return Some(s[0].clone());
+    DEVICE_DEFAULT.with(|dflt| {
+        let mut d = dflt.borrow_mut();
+        if let Some(dev) = d.as_ref() {
+            return Some(dev.clone());
         }
-        // 栈空：从 SEED snapshot（L0-11 继承）
+        // 默认未设：从 SEED snapshot（L0-11 继承）
         let seed = SEED_DEVICE.lock().clone();
-        if let Some(d) = seed {
-            s.push(d.clone());
+        if let Some(dev) = seed {
+            *d = Some(dev.clone());
             DEVICE_SEED_SNAPSHOT_TAKEN.with(|taken| *taken.borrow_mut() = true);
-            return Some(d);
+            return Some(dev);
         }
         None
     })
@@ -109,57 +104,37 @@ pub fn get_default_device() -> Option<Device> {
 
 /// 获取当前 device context 的栈顶（ADR L0-6 级 2，`with ms.device()` push 的）。
 ///
-/// 注意：这与全局默认（栈底）不同。context 层在栈底之上。
-/// 栈只有 1 层（仅 set_default_device，无 context）时返回 None（context 未用）。
+/// context 栈独立于默认值存储，栈非空即有 context 层。
 pub fn get_context_device() -> Option<Device> {
-    DEVICE_STACK.with(|stack| {
-        let s = stack.borrow();
-        // 栈深 > 1 表示有 context 层；栈顶是最近 push 的 context
-        if s.len() > 1 {
-            Some(s.last().cloned().unwrap())
-        } else {
-            None
-        }
-    })
+    DEVICE_CONTEXT.with(|stack| stack.borrow().last().cloned())
 }
 
 /// 压入 device context 到栈（内部，`with ms.device()` 用）。
 fn push_device_stack(device: Device) {
-    DEVICE_STACK.with(|stack| stack.borrow_mut().push(device));
+    DEVICE_CONTEXT.with(|stack| stack.borrow_mut().push(device));
 }
 
 /// 弹出 device context（guard Drop 时调用）。
 fn pop_device_context() {
-    DEVICE_STACK.with(|stack| {
+    DEVICE_CONTEXT.with(|stack| {
         stack.borrow_mut().pop();
     });
 }
 
 // ============================================================
-// 3. dtype 默认栈 API（P4.2, 对称于 device）
+// 3. dtype 默认 + context API（P4.2, 对称于 device）
 // ============================================================
 
 /// 设置全局默认 dtype（ADR L0-7 级 4）。
 /// L0-11：snapshot 后线程与 SEED 解耦，只有未 snapshot 的线程首次 set_default_dtype 才会更新 SEED。
 pub fn set_default_dtype(dtype: Dtype) {
-    DTYPE_STACK.with(|stack| {
-        let mut s = stack.borrow_mut();
-        let snapshot_taken = DTYPE_SEED_SNAPSHOT_TAKEN.with(|taken| *taken.borrow());
-        if s.is_empty() {
-            s.push(dtype.clone());
-            // 首次设置时，若未 snapshot 过，更新 SEED 供新线程继承
-            if !snapshot_taken {
-                *SEED_DTYPE.lock() = Some(dtype);
-            }
-        } else {
-            // 替换栈底（全局默认）
-            s[0] = dtype.clone();
-            // 若未 snapshot 过，更新 SEED
-            if !snapshot_taken {
-                *SEED_DTYPE.lock() = Some(dtype);
-            }
-        }
+    let snapshot_taken = DTYPE_SEED_SNAPSHOT_TAKEN.with(|taken| *taken.borrow());
+    DTYPE_DEFAULT.with(|dflt| {
+        *dflt.borrow_mut() = Some(dtype);
     });
+    if !snapshot_taken {
+        *SEED_DTYPE.lock() = Some(dtype);
+    }
 }
 
 /// 获取当前线程的默认 dtype（ADR L0-7 级 4）。
@@ -167,17 +142,17 @@ pub fn set_default_dtype(dtype: Dtype) {
 /// 与 device 对称，但 dtype 总有 float32 兜底（L0-7：不会 DeviceNotConfigured）。
 /// 此函数返回 Option（None 表示未设），兜底逻辑在 resolve_dtype 里做。
 pub fn get_default_dtype() -> Option<Dtype> {
-    DTYPE_STACK.with(|stack| {
-        let mut s = stack.borrow_mut();
-        if !s.is_empty() {
-            return Some(s[0]);
+    DTYPE_DEFAULT.with(|dflt| {
+        let mut d = dflt.borrow_mut();
+        if let Some(dt) = *d {
+            return Some(dt);
         }
-        // 栈空：从 SEED snapshot（L0-11 继承）
+        // 默认未设：从 SEED snapshot（L0-11 继承）
         let seed = *SEED_DTYPE.lock();
-        if let Some(d) = seed {
-            s.push(d);
+        if let Some(dt) = seed {
+            *d = Some(dt);
             DTYPE_SEED_SNAPSHOT_TAKEN.with(|taken| *taken.borrow_mut() = true);
-            return Some(d);
+            return Some(dt);
         }
         None
     })
@@ -185,22 +160,15 @@ pub fn get_default_dtype() -> Option<Dtype> {
 
 /// 获取当前 dtype context 的栈顶（ADR L0-7 级 2）。
 pub fn get_context_dtype() -> Option<Dtype> {
-    DTYPE_STACK.with(|stack| {
-        let s = stack.borrow();
-        if s.len() > 1 {
-            Some(*s.last().unwrap())
-        } else {
-            None
-        }
-    })
+    DTYPE_CONTEXT.with(|stack| stack.borrow().last().copied())
 }
 
 fn push_dtype_stack(dtype: Dtype) {
-    DTYPE_STACK.with(|stack| stack.borrow_mut().push(dtype));
+    DTYPE_CONTEXT.with(|stack| stack.borrow_mut().push(dtype));
 }
 
 fn pop_dtype_context() {
-    DTYPE_STACK.with(|stack| {
+    DTYPE_CONTEXT.with(|stack| {
         stack.borrow_mut().pop();
     });
 }
@@ -214,15 +182,15 @@ fn pop_dtype_context() {
 /// stream 无全局默认栈底（无 set_default_stream）；新线程无 stream 上下文。
 /// 返回 None 表示用 op 默认 stream（由 runtime 决定）。
 pub fn get_current_stream() -> Option<Arc<Stream>> {
-    STREAM_STACK.with(|stack| stack.borrow().last().cloned())
+    STREAM_CONTEXT.with(|stack| stack.borrow().last().cloned())
 }
 
 fn push_stream_stack(stream: Arc<Stream>) {
-    STREAM_STACK.with(|stack| stack.borrow_mut().push(stream));
+    STREAM_CONTEXT.with(|stack| stack.borrow_mut().push(stream));
 }
 
 fn pop_stream_context() {
-    STREAM_STACK.with(|stack| {
+    STREAM_CONTEXT.with(|stack| {
         stack.borrow_mut().pop();
     });
 }
@@ -315,7 +283,7 @@ pub fn auto_probe() -> Device {
 // 7. context manager guard（P4.8, ADR L2-7）
 // ============================================================
 
-/// device context guard（ADR L2-7）。Drop 时自动 pop device 栈。
+/// device context guard（ADR L2-7）。Drop 时自动 pop device context 栈。
 ///
 /// 由 `push_device_context` 创建，PyO3 层（Phase 5）在其上实现
 /// `__enter__`/`__exit__` 以支持 `with ms.device(...):`。
@@ -343,7 +311,7 @@ pub fn push_device_context(device: Device) -> DeviceGuard {
     DeviceGuard { _private: () }
 }
 
-/// dtype context guard（ADR L2-7）。Drop 时自动 pop dtype 栈。
+/// dtype context guard（ADR L2-7）。Drop 时自动 pop dtype context 栈。
 pub struct DtypeGuard {
     _private: (),
 }
@@ -360,7 +328,7 @@ pub fn push_dtype_context(dtype: Dtype) -> DtypeGuard {
     DtypeGuard { _private: () }
 }
 
-/// stream context guard（ADR L2-7）。Drop 时自动 pop stream 栈。
+/// stream context guard（ADR L2-7）。Drop 时自动 pop stream context 栈。
 pub struct StreamGuard {
     _private: (),
 }
@@ -391,18 +359,20 @@ mod tests {
     /// 用此锁串行化所有 resolution 测试，确保隔离。
     static TEST_LOCK: StdMutex<()> = StdMutex::new(());
 
-    /// 测试辅助：清空当前线程的 device/dtype 栈与 SEED，确保测试隔离。
+    /// 测试辅助：清空当前线程的 device/dtype 默认与 context 栈与 SEED，确保测试隔离。
     fn clear_thread_state() {
-        DEVICE_STACK.with(|s| s.borrow_mut().clear());
-        DTYPE_STACK.with(|s| s.borrow_mut().clear());
-        STREAM_STACK.with(|s| s.borrow_mut().clear());
+        DEVICE_DEFAULT.with(|d| d.borrow_mut().take());
+        DTYPE_DEFAULT.with(|d| d.borrow_mut().take());
+        DEVICE_CONTEXT.with(|s| s.borrow_mut().clear());
+        DTYPE_CONTEXT.with(|s| s.borrow_mut().clear());
+        STREAM_CONTEXT.with(|s| s.borrow_mut().clear());
         *SEED_DEVICE.lock() = None;
         *SEED_DTYPE.lock() = None;
         DEVICE_SEED_SNAPSHOT_TAKEN.with(|taken| *taken.borrow_mut() = false);
         DTYPE_SEED_SNAPSHOT_TAKEN.with(|taken| *taken.borrow_mut() = false);
     }
 
-    // --- device 栈基本操作 ---
+    // --- device 默认基本操作 ---
 
     #[test]
     fn set_and_get_default_device() {
@@ -428,7 +398,7 @@ mod tests {
         assert_eq!(get_default_device(), Some(Device::Cpu));
     }
 
-    // --- dtype 栈基本操作 ---
+    // --- dtype 默认基本操作 ---
 
     #[test]
     fn set_and_get_default_dtype() {
@@ -467,6 +437,19 @@ mod tests {
             let inputs = vec![Device::Cpu]; // 级 3
             let r = resolve_device(None, &inputs).unwrap();
             assert_eq!(r.device, Device::Musa(1));
+            assert_eq!(r.source, ResolutionSource::Context);
+        }
+    }
+
+    #[test]
+    fn resolve_device_level2_context_without_default() {
+        // 无全局默认时，仅靠 context 也应解析为 Context（非 GlobalDefault）。
+        let _g = TEST_LOCK.lock().unwrap();
+        clear_thread_state();
+        {
+            let _g = push_device_context(Device::Musa(0));
+            let r = resolve_device(None, &[]).unwrap();
+            assert_eq!(r.device, Device::Musa(0));
             assert_eq!(r.source, ResolutionSource::Context);
         }
     }
@@ -525,6 +508,19 @@ mod tests {
             let _g = push_dtype_context(Dtype::Int16); // 级 2
             let r = resolve_dtype(None, &[]).unwrap();
             assert_eq!(r.dtype, Dtype::Int16);
+            assert_eq!(r.source, ResolutionSource::Context);
+        }
+    }
+
+    #[test]
+    fn resolve_dtype_level2_context_without_default() {
+        // 无全局默认时，仅靠 context 也应解析为 Context（非 GlobalDefault）。
+        let _g = TEST_LOCK.lock().unwrap();
+        clear_thread_state();
+        {
+            let _g = push_dtype_context(Dtype::Float64);
+            let r = resolve_dtype(None, &[]).unwrap();
+            assert_eq!(r.dtype, Dtype::Float64);
             assert_eq!(r.source, ResolutionSource::Context);
         }
     }
