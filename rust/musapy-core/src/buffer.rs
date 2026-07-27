@@ -56,6 +56,10 @@ pub struct Buffer {
     read_events: Mutex<Vec<Event>>,
 }
 
+// GPU 内存指针可跨线程访问（MUSA 内存模型），可变状态已用 Mutex 保护。
+unsafe impl Send for Buffer {}
+unsafe impl Sync for Buffer {}
+
 impl Buffer {
     /// 真实分配 GPU/CPU 内存（ADR L3-9, L3-11）。
     ///

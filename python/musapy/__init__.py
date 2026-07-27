@@ -1,5 +1,91 @@
 """musapy: Python + Rust + MUSA scientific computing library."""
 
-from ._core import __version__, startup_report
+from ._core import (
+    # version + startup
+    __version__,
+    startup_report,
+    # classes
+    Device,
+    Dtype,
+    Stream,
+    Array,
+    # functions
+    array,
+    set_default_device,
+    set_default_dtype,
+    device,
+    dtype,
+    stream,
+    # dtype constants
+    bool as bool_,
+    int8,
+    int16,
+    int32,
+    int64,
+    uint8,
+    uint16,
+    uint32,
+    uint64,
+    float16,
+    float32,
+    float64,
+    bfloat16,
+    complex64,
+    complex128,
+    # exceptions
+    MusapyError,
+    DeviceError,
+    DeviceNotConfiguredError,
+    DtypeError,
+    ShapeError,
+    MemoryError,
+    OutOfMemoryError,
+    StreamError,
+    KernelError,
+    InteropError,
+)
 
-__all__ = ["__version__", "startup_report"]
+__all__ = [
+    # version + startup
+    "__version__",
+    "startup_report",
+    # classes
+    "Device",
+    "Dtype",
+    "Stream",
+    "Array",
+    # functions
+    "array",
+    "set_default_device",
+    "set_default_dtype",
+    "device",
+    "dtype",
+    "stream",
+    # dtype constants
+    "bool_",
+    "int8",
+    "int16",
+    "int32",
+    "int64",
+    "uint8",
+    "uint16",
+    "uint32",
+    "uint64",
+    "float16",
+    "float32",
+    "float64",
+    "bfloat16",
+    "complex64",
+    "complex128",
+    # exceptions
+    "MusapyError",
+    "DeviceError",
+    "DeviceNotConfiguredError",
+    "DtypeError",
+    "ShapeError",
+    "MemoryError",
+    "OutOfMemoryError",
+    "StreamError",
+    "KernelError",
+    "InteropError",
+]

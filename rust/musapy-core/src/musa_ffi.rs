@@ -38,6 +38,16 @@ pub type musaDeviceAttr = c_int;
 /// ⚠️ CUDA 值为 115，MUSA 对标应一致 —— 请对照 driver_types.h 确认。
 pub const MUSA_DEV_ATTR_MEMORY_POOLS_SUPPORTED: musaDeviceAttr = 115;
 
+/// 内存拷贝方向（对标 cudaMemcpyKind / musaMemcpyKind）。
+#[repr(C)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum musaMemcpyKind {
+    HostToHost = 0,
+    HostToDevice = 1,
+    DeviceToHost = 2,
+    DeviceToDevice = 3,
+}
+
 // ============================================================
 // FFI 声明（真实模式）
 // ============================================================
@@ -97,6 +107,16 @@ mod real {
         ) -> musaError_t;
         #[cfg(feature = "stream-ordered")]
         pub fn musaFreeAsync(devPtr: *mut c_void, stream: musaStream_t) -> musaError_t;
+
+        // --- Memory: 数据拷贝（H2D/D2H/D2D，ADR L1-11）---
+        // musaMemcpy 是同步拷贝，对标 cudaMemcpy。
+        // 用于 ms.array() 时将 Python host 数据拷到 GPU buffer。
+        pub fn musaMemcpy(
+            dst: *mut c_void,
+            src: *const c_void,
+            count: usize,
+            kind: musaMemcpyKind,
+        ) -> musaError_t;
 
         // --- Error（ADR L3-1）---
         pub fn musaGetErrorString(error: musaError_t) -> *const c_char;
@@ -233,6 +253,21 @@ mod mock {
     #[cfg(feature = "stream-ordered")]
     pub unsafe fn musaFreeAsync(devPtr: *mut c_void, _stream: musaStream_t) -> musaError_t {
         mock_free(devPtr)
+    }
+
+    // --- Memory: 数据拷贝 mock stub ---
+
+    pub unsafe fn musaMemcpy(
+        dst: *mut c_void,
+        src: *const c_void,
+        count: usize,
+        _kind: musaMemcpyKind,
+    ) -> musaError_t {
+        if dst.is_null() || src.is_null() {
+            return 1;
+        }
+        std::ptr::copy_nonoverlapping(src, dst as *mut u8, count);
+        MUSA_SUCCESS
     }
 
     /// mock 共享分配器：用 std::alloc 分配真实内存，让指针非空且可读写。
