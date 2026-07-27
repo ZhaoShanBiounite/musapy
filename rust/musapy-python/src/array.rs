@@ -29,8 +29,8 @@ impl PyArray {
 impl PyArray {
     /// 形状元组，如 `(3,)` 或 `(2, 3)`。
     #[getter]
-    fn shape<'py>(&self, py: Python<'py>) -> PyResult<PyObject> {
-        Ok(PyTuple::new(py, self.inner.shape())?.into_any().unbind())
+    fn shape<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyTuple>> {
+        PyTuple::new(py, self.inner.shape())
     }
 
     /// 维度数。
