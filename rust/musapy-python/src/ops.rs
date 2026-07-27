@@ -10,6 +10,7 @@ use crate::error;
 use musapy_core::musa_ffi;
 use musapy_core::resolution;
 use musapy_core::{Buffer, BufferRef, Device, DeviceResolution, Dtype, DtypeResolution, Layout, Stream};
+use musapy_ops;
 use pyo3::prelude::*;
 use std::sync::Arc;
 
@@ -83,6 +84,18 @@ pub fn array(
     );
 
     Ok(PyArray::from_array(array))
+}
+
+/// `ms.add(a, b, out=None)` — 逐元素加法（ADR L1-12, L2-4）。
+///
+/// 无 `out=` 时分配新 Buffer 返回新 Array。
+/// 有 `out=` 时写入 out 的 Buffer，在 out 的 stream 上执行（ADR L1-8）。
+#[pyfunction]
+#[pyo3(signature = (a, b, out=None))]
+pub fn add(a: &PyArray, b: &PyArray, out: Option<&PyArray>) -> PyResult<PyArray> {
+    let result = musapy_ops::add(&a.inner, &b.inner, out.map(|o| &o.inner))
+        .map_err(error::to_pyerr)?;
+    Ok(PyArray::from_array(result))
 }
 
 /// 从 Python list/tuple 按 dtype 提取 raw bytes 和 shape。

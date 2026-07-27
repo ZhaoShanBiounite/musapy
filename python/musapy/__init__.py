@@ -11,6 +11,7 @@ from ._core import (
     Array,
     # functions
     array,
+    add,
     set_default_device,
     set_default_dtype,
     device,
@@ -56,6 +57,7 @@ __all__ = [
     "Array",
     # functions
     "array",
+    "add",
     "set_default_device",
     "set_default_dtype",
     "device",

@@ -5,3 +5,7 @@ edition.workspace = true
 license.workspace = true
 
 [dependencies]
+musapy-core = { workspace = true }
+
+[build-dependencies]
+pkg-config = "0.3"
