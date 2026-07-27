@@ -194,7 +194,7 @@ pub fn add(a: &Array, b: &Array, out: Option<&Array>) -> Result<Array> {
     out_data_ref.buffer().record_write(&out_stream);
 
     // 10. OpContext 记录（ADR L3-2）
-    let ctx = OpContext::new(
+    let mut ctx = OpContext::new(
         "add",
         vec![a.shape().clone(), b.shape().clone()],
         vec![a.device().clone(), b.device().clone()],
@@ -202,6 +202,12 @@ pub fn add(a: &Array, b: &Array, out: Option<&Array>) -> Result<Array> {
         a.shape().clone(), // 输出 shape = 输入 shape（逐元素）
         out_stream.id(),
     );
+    // Debug 模式：附加 Python 调用帧（ADR L3-26）
+    if musapy_core::debug::is_debug() {
+        if let Some(frame) = musapy_core::debug::take_debug_frame() {
+            ctx = ctx.with_frame(frame);
+        }
+    }
     out_stream.record_op(ctx);
 
     // 11. 构造输出 Array

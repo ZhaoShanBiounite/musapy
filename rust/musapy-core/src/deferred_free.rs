@@ -39,6 +39,8 @@ struct DeferredEntry {
     ptr: NonNull<u8>,
     /// 所属设备（reclaim 时需 musaSetDevice 切换到该设备）。
     device: Device,
+    /// 分配大小（字节），用于内存统计（ADR L3-28）。
+    size: usize,
 }
 
 // GPU 指针可跨线程释放：musaFree 绑定的是"当前设备"而非分配线程，
@@ -66,8 +68,9 @@ fn queue() -> &'static Mutex<Vec<DeferredEntry>> {
 /// wait 完所有 read/write events。本函数只负责记录，不做同步。
 ///
 /// 入队后指针所有权转移给队列，调用方不得再使用该指针。
-pub fn enqueue(ptr: NonNull<u8>, device: Device) {
-    queue().lock().push(DeferredEntry { ptr, device });
+pub fn enqueue(ptr: NonNull<u8>, device: Device, size: usize) {
+    crate::mem_stats::record_cached(size);
+    queue().lock().push(DeferredEntry { ptr, device, size });
 }
 
 /// 当前队列中待释放的 buffer 数量（调试/统计用）。
@@ -122,8 +125,12 @@ fn reclaim_one(entry: DeferredEntry) -> Result<()> {
         musa_ffi::check_musa(
             musa_ffi::musaFree(entry.ptr.as_ptr() as *mut std::ffi::c_void),
             "musaFree",
-        )
+        )?;
     }
+
+    // 内存统计：回收成功（ADR L3-28）
+    crate::mem_stats::record_reclaimed(entry.size);
+    Ok(())
 }
 
 // ============================================================

@@ -38,6 +38,15 @@ pub type musaDeviceAttr = c_int;
 /// ⚠️ CUDA 值为 115，MUSA 对标应一致 —— 请对照 driver_types.h 确认。
 pub const MUSA_DEV_ATTR_MEMORY_POOLS_SUPPORTED: musaDeviceAttr = 115;
 
+/// 多处理器数量（CU 数）。driver_types.h: musaDevAttrMultiProcessorCount = 16。
+pub const MUSA_DEV_ATTR_MULTIPROCESSOR_COUNT: musaDeviceAttr = 16;
+
+/// 计算能力主版本号。driver_types.h: musaDevAttrComputeCapabilityMajor = 75。
+pub const MUSA_DEV_ATTR_COMPUTE_CAPABILITY_MAJOR: musaDeviceAttr = 75;
+
+/// 计算能力次版本号。driver_types.h: musaDevAttrComputeCapabilityMinor = 76。
+pub const MUSA_DEV_ATTR_COMPUTE_CAPABILITY_MINOR: musaDeviceAttr = 76;
+
 /// 内存拷贝方向（对标 cudaMemcpyKind / musaMemcpyKind）。
 #[repr(C)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -46,6 +55,19 @@ pub enum musaMemcpyKind {
     HostToDevice = 1,
     DeviceToHost = 2,
     DeviceToDevice = 3,
+}
+
+/// MUSA 设备属性结构体（对标 musaDeviceProp / cudaDeviceProp）。
+///
+/// 仅声明 `name` 字段（偏移 0），其余用 `_opaque` 填充。
+/// 总大小 1024 字节 > SDK 实际结构体（~600 字节），安全覆盖。
+/// 通过 `musaGetDeviceProperties` 填充后读取 `name`。
+#[repr(C)]
+pub struct MusaDeviceProp {
+    /// 设备名称（ASCII，NUL 终止）。
+    pub name: [c_char; 256],
+    /// 覆盖 SDK 结构体剩余字段（uuid, totalGlobalMem, major, minor, ...）。
+    _opaque: [u8; 768],
 }
 
 // ============================================================
@@ -87,6 +109,13 @@ mod real {
         // musaMalloc/musaFree 绑定到调用线程的"当前设备"，所以必须先 set。
         pub fn musaSetDevice(device: c_int) -> musaError_t;
         pub fn musaGetDevice(device: *mut c_int) -> musaError_t;
+
+        // --- Device: 属性查询（ADR L1-3, P5.9 device_summary）---
+        pub fn musaGetDeviceProperties(
+            prop: *mut MusaDeviceProp,
+            device: c_int,
+        ) -> musaError_t;
+        pub fn musaMemGetInfo(free: *mut usize, total: *mut usize) -> musaError_t;
 
         // --- Memory: 默认路径（ADR L3-11，所有 SDK 版本可用）---
         // musaMalloc/musaFree 是同步分配/释放，无 stream 参数。
@@ -209,11 +238,12 @@ mod mock {
         if value.is_null() {
             return 1;
         }
-        // mock: 内存池支持
-        *value = if attr == MUSA_DEV_ATTR_MEMORY_POOLS_SUPPORTED {
-            1
-        } else {
-            0
+        *value = match attr {
+            MUSA_DEV_ATTR_MEMORY_POOLS_SUPPORTED => 1,
+            MUSA_DEV_ATTR_MULTIPROCESSOR_COUNT => 80,       // mock: 80 CUs
+            MUSA_DEV_ATTR_COMPUTE_CAPABILITY_MAJOR => 2,    // mock: arch 2.2
+            MUSA_DEV_ATTR_COMPUTE_CAPABILITY_MINOR => 2,
+            _ => 0,
         };
         MUSA_SUCCESS
     }
@@ -227,6 +257,31 @@ mod mock {
             return 1;
         }
         *device = 0;
+        MUSA_SUCCESS
+    }
+
+    pub unsafe fn musaGetDeviceProperties(
+        prop: *mut MusaDeviceProp,
+        _device: c_int,
+    ) -> musaError_t {
+        if prop.is_null() {
+            return 1;
+        }
+        // mock: 填充设备名 "Mock MUSA GPU"
+        let name = b"Mock MUSA GPU\0";
+        let dst = (*prop).name.as_mut_ptr();
+        std::ptr::copy_nonoverlapping(name.as_ptr() as *const c_char, dst, name.len());
+        // 其余字节已零初始化（调用方用 MaybeUninit::zeroed）
+        MUSA_SUCCESS
+    }
+
+    pub unsafe fn musaMemGetInfo(free: *mut usize, total: *mut usize) -> musaError_t {
+        if free.is_null() || total.is_null() {
+            return 1;
+        }
+        // mock: 24 GB 总内存，16 GB 空闲
+        *total = 24 * 1024 * 1024 * 1024;
+        *free = 16 * 1024 * 1024 * 1024;
         MUSA_SUCCESS
     }
 
@@ -400,6 +455,97 @@ pub fn probe_memory_pools_supported(device_id: i32) -> bool {
     err == MUSA_SUCCESS && value != 0
 }
 
+/// 设备属性快照（ADR L1-3，P5.9 device_summary）。
+#[derive(Clone, Debug)]
+pub struct DeviceProperties {
+    /// 设备名称（如 "MTT S4000"）。
+    pub name: String,
+    /// 计算能力主版本号。
+    pub arch_major: i32,
+    /// 计算能力次版本号。
+    pub arch_minor: i32,
+    /// 总显存（字节）。
+    pub total_memory: usize,
+    /// 空闲显存（字节）。
+    pub free_memory: usize,
+    /// 多处理器数量（CU 数）。
+    pub multiprocessor_count: i32,
+}
+
+/// 查询指定设备的属性（ADR L1-3）。
+///
+/// 组合 `musaGetDeviceProperties`（名称）、`musaDeviceGetAttribute`（arch/CU 数）
+/// 和 `musaMemGetInfo`（显存）的结果。
+///
+/// 调用前会自动 `musaSetDevice(device_id)`（musaMemGetInfo 绑定当前设备）。
+pub fn get_device_properties(device_id: i32) -> Result<DeviceProperties> {
+    // musaMemGetInfo 绑定当前设备，必须先 set
+    set_device(device_id)?;
+
+    // 1. 设备名称（musaGetDeviceProperties）
+    let mut prop = std::mem::MaybeUninit::<MusaDeviceProp>::zeroed();
+    unsafe {
+        check_musa(
+            musaGetDeviceProperties(prop.as_mut_ptr(), device_id),
+            "musaGetDeviceProperties",
+        )?;
+    }
+    let prop = unsafe { prop.assume_init() };
+    let name = unsafe { CStr::from_ptr(prop.name.as_ptr()) }
+        .to_string_lossy()
+        .into_owned();
+
+    // 2. 计算能力 + CU 数（musaDeviceGetAttribute）
+    let mut arch_major: c_int = 0;
+    let mut arch_minor: c_int = 0;
+    let mut mp_count: c_int = 0;
+    unsafe {
+        check_musa(
+            musaDeviceGetAttribute(
+                &mut arch_major,
+                MUSA_DEV_ATTR_COMPUTE_CAPABILITY_MAJOR,
+                device_id,
+            ),
+            "musaDeviceGetAttribute(major)",
+        )?;
+        check_musa(
+            musaDeviceGetAttribute(
+                &mut arch_minor,
+                MUSA_DEV_ATTR_COMPUTE_CAPABILITY_MINOR,
+                device_id,
+            ),
+            "musaDeviceGetAttribute(minor)",
+        )?;
+        check_musa(
+            musaDeviceGetAttribute(
+                &mut mp_count,
+                MUSA_DEV_ATTR_MULTIPROCESSOR_COUNT,
+                device_id,
+            ),
+            "musaDeviceGetAttribute(mp_count)",
+        )?;
+    }
+
+    // 3. 显存信息（musaMemGetInfo）
+    let mut free_mem: usize = 0;
+    let mut total_mem: usize = 0;
+    unsafe {
+        check_musa(
+            musaMemGetInfo(&mut free_mem, &mut total_mem),
+            "musaMemGetInfo",
+        )?;
+    }
+
+    Ok(DeviceProperties {
+        name,
+        arch_major,
+        arch_minor,
+        total_memory: total_mem,
+        free_memory: free_mem,
+        multiprocessor_count: mp_count,
+    })
+}
+
 // ============================================================
 // 单元测试
 // ============================================================
@@ -458,5 +604,14 @@ mod tests {
             }
             _ => panic!("expected MusaCallFailed error"),
         }
+    }
+
+    #[test]
+    fn get_device_properties_works() {
+        // 真实环境返回真实设备名；mock 返回 "Mock MUSA GPU"
+        let props = get_device_properties(0).unwrap();
+        assert!(!props.name.is_empty());
+        assert!(props.total_memory > 0);
+        assert!(props.multiprocessor_count > 0);
     }
 }
