@@ -6,6 +6,8 @@ L0-9（DeviceNotConfigured）、L0-11（线程继承）、L2-7（context 对称�
 
 import subprocess
 import sys
+import threading
+from concurrent.futures import ThreadPoolExecutor
 
 import pytest
 
@@ -241,3 +243,122 @@ class TestStreamClass:
         s1 = Stream("cpu")
         s2 = Stream("cpu")
         assert s1.id != s2.id
+
+
+# ============================================================
+# Thread-local 默认隔离（ADR L0-11）
+# ============================================================
+
+
+class TestThreadIsolation:
+    """thread-local 默认 device/dtype 隔离验证（P7.3）。
+
+    ADR L0-11：
+    - 新线程在 spawn 时继承父线程当前的默认（值快照，之后解耦）
+    - 兄弟线程互不影响
+    """
+
+    def test_child_inherits_parent_default(self):
+        """子线程继承父线程的 default device。"""
+        ms.set_default_device("cpu")
+        result = {}
+
+        def worker():
+            # 子线程应继承父线程的 cpu 默认
+            a = ms.array([1.0], dtype=ms.float32)
+            result["device"] = str(a.device)
+            result["source"] = repr(a.device)
+
+        t = threading.Thread(target=worker)
+        t.start()
+        t.join()
+
+        assert "cpu" in result["device"]
+
+    def test_child_change_does_not_affect_parent(self):
+        """子线程修改 default 不影响主线程。"""
+        ms.set_default_device("cpu")
+
+        def worker():
+            # 子线程重新设置（对主线程无影响）
+            ms.set_default_device("cpu")
+            a = ms.array([1.0], dtype=ms.float32)
+            assert "cpu" in str(a.device)
+
+        t = threading.Thread(target=worker)
+        t.start()
+        t.join()
+
+        # 主线程仍然是 cpu
+        a = ms.array([2.0], dtype=ms.float32)
+        assert "cpu" in str(a.device)
+        assert "global_default" in repr(a.device)
+
+    def test_sibling_threads_independent(self):
+        """兄弟线程互不影响。"""
+        ms.set_default_device("cpu")
+        results = {}
+        barrier = threading.Barrier(3)
+
+        def worker(name):
+            # 所有线程继承 cpu
+            a = ms.array([1.0], dtype=ms.float32)
+            results[f"{name}_before"] = str(a.device)
+            # 同步点：确保所有线程都读了初始值
+            barrier.wait()
+            # 每个线程重新设置（不影响其他线程）
+            ms.set_default_device("cpu")
+            b = ms.array([2.0], dtype=ms.float32)
+            results[f"{name}_after"] = str(b.device)
+
+        threads = [
+            threading.Thread(target=worker, args=(f"t{i}",))
+            for i in range(3)
+        ]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+
+        # 所有线程都成功创建了 array
+        for i in range(3):
+            assert "cpu" in results[f"t{i}_before"]
+            assert "cpu" in results[f"t{i}_after"]
+
+    def test_thread_pool_isolation(self):
+        """ThreadPoolExecutor 中各任务线程隔离。"""
+        ms.set_default_device("cpu")
+
+        def task(idx):
+            a = ms.array([float(idx)], dtype=ms.float32)
+            return (idx, a.tolist()[0], str(a.device))
+
+        with ThreadPoolExecutor(max_workers=4) as pool:
+            futures = [pool.submit(task, i) for i in range(8)]
+            results = [f.result() for f in futures]
+
+        for idx, val, dev in results:
+            assert val == float(idx)
+            assert "cpu" in dev
+
+    def test_dtype_thread_isolation(self):
+        """dtype 默认也是 thread-local 隔离的。"""
+        ms.set_default_device("cpu")
+        results = {}
+
+        def worker(name):
+            # 继承全局 float32 兜底
+            a = ms.array([1.0])
+            results[f"{name}_dtype"] = a.dtype
+
+        threads = [
+            threading.Thread(target=worker, args=(f"t{i}",))
+            for i in range(3)
+        ]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+
+        for i in range(3):
+            assert results[f"t{i}_dtype"] == ms.float32
