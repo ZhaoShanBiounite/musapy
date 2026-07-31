@@ -3,8 +3,34 @@
 // 纯并行计算 kernel，无内存分配、无 host 代码、无错误返回。
 // 所有指针 __restrict__（由 ops 层 alias 检测保证）。
 // ABI 版本嵌入符号名：musapy_<op>_<dtype>_v<abi>（ADR L2-1）
+//
+// ABI 版本：
+//   _v1: flat contiguous（v0.1-alpha，保留兼容）
+//   _v2: stride-aware N-dimensional（v0.2-alpha, ADR-002-D2）
 
 #include "include/common.h"
+#include <math.h>
+
+// ── 公共结构 ─────────────────────────────────────────────────
+
+#define MUSAPY_MAX_NDIM 32
+
+/// Binary kernel 参数（两个输入 strides）。
+struct NdMeta {
+    int ndim;
+    size_t shape[MUSAPY_MAX_NDIM];
+    ssize_t a_strides[MUSAPY_MAX_NDIM];
+    ssize_t b_strides[MUSAPY_MAX_NDIM];
+};
+
+/// Unary kernel 参数（单输入 strides）。
+struct NdMetaUnary {
+    int ndim;
+    size_t shape[MUSAPY_MAX_NDIM];
+    ssize_t a_strides[MUSAPY_MAX_NDIM];
+};
+
+// ── v1: flat contiguous（v0.1-alpha，保留）──────────────────────
 
 template <typename T>
 __global__ void musapy_add_kernel(
@@ -19,26 +45,374 @@ __global__ void musapy_add_kernel(
     }
 }
 
+// ── v2 Binary kernels（ADR-002-D2）────────────────────────────
+
+template <typename T>
+__global__ void musapy_add_kernel_v2(
+    const T* __restrict__ a, const T* __restrict__ b, T* __restrict__ c,
+    NdMeta meta, size_t n
+) {
+    size_t idx = blockIdx.x * blockDim.x + threadIdx.x;
+    if (idx < n) {
+        size_t a_off = offset_nd(idx, meta.shape, meta.a_strides, meta.ndim);
+        size_t b_off = offset_nd(idx, meta.shape, meta.b_strides, meta.ndim);
+        c[idx] = a[a_off] + b[b_off];
+    }
+}
+
+template <typename T>
+__global__ void musapy_sub_kernel_v2(
+    const T* __restrict__ a, const T* __restrict__ b, T* __restrict__ c,
+    NdMeta meta, size_t n
+) {
+    size_t idx = blockIdx.x * blockDim.x + threadIdx.x;
+    if (idx < n) {
+        size_t a_off = offset_nd(idx, meta.shape, meta.a_strides, meta.ndim);
+        size_t b_off = offset_nd(idx, meta.shape, meta.b_strides, meta.ndim);
+        c[idx] = a[a_off] - b[b_off];
+    }
+}
+
+template <typename T>
+__global__ void musapy_mul_kernel_v2(
+    const T* __restrict__ a, const T* __restrict__ b, T* __restrict__ c,
+    NdMeta meta, size_t n
+) {
+    size_t idx = blockIdx.x * blockDim.x + threadIdx.x;
+    if (idx < n) {
+        size_t a_off = offset_nd(idx, meta.shape, meta.a_strides, meta.ndim);
+        size_t b_off = offset_nd(idx, meta.shape, meta.b_strides, meta.ndim);
+        c[idx] = a[a_off] * b[b_off];
+    }
+}
+
+template <typename T>
+__global__ void musapy_div_kernel_v2(
+    const T* __restrict__ a, const T* __restrict__ b, T* __restrict__ c,
+    NdMeta meta, size_t n
+) {
+    size_t idx = blockIdx.x * blockDim.x + threadIdx.x;
+    if (idx < n) {
+        size_t a_off = offset_nd(idx, meta.shape, meta.a_strides, meta.ndim);
+        size_t b_off = offset_nd(idx, meta.shape, meta.b_strides, meta.ndim);
+        c[idx] = a[a_off] / b[b_off];
+    }
+}
+
+template <typename T>
+__global__ void musapy_pow_kernel_v2(
+    const T* __restrict__ a, const T* __restrict__ b, T* __restrict__ c,
+    NdMeta meta, size_t n
+) {
+    size_t idx = blockIdx.x * blockDim.x + threadIdx.x;
+    if (idx < n) {
+        size_t a_off = offset_nd(idx, meta.shape, meta.a_strides, meta.ndim);
+        size_t b_off = offset_nd(idx, meta.shape, meta.b_strides, meta.ndim);
+        c[idx] = pow(a[a_off], b[b_off]);
+    }
+}
+
+// ── v2 Unary kernels ─────────────────────────────────────────
+
+template <typename T>
+__global__ void musapy_sin_kernel_v2(
+    const T* __restrict__ a, T* __restrict__ c, NdMetaUnary meta, size_t n
+) {
+    size_t idx = blockIdx.x * blockDim.x + threadIdx.x;
+    if (idx < n) {
+        size_t a_off = offset_nd(idx, meta.shape, meta.a_strides, meta.ndim);
+        c[idx] = sin(a[a_off]);
+    }
+}
+
+template <typename T>
+__global__ void musapy_cos_kernel_v2(
+    const T* __restrict__ a, T* __restrict__ c, NdMetaUnary meta, size_t n
+) {
+    size_t idx = blockIdx.x * blockDim.x + threadIdx.x;
+    if (idx < n) {
+        size_t a_off = offset_nd(idx, meta.shape, meta.a_strides, meta.ndim);
+        c[idx] = cos(a[a_off]);
+    }
+}
+
+template <typename T>
+__global__ void musapy_exp_kernel_v2(
+    const T* __restrict__ a, T* __restrict__ c, NdMetaUnary meta, size_t n
+) {
+    size_t idx = blockIdx.x * blockDim.x + threadIdx.x;
+    if (idx < n) {
+        size_t a_off = offset_nd(idx, meta.shape, meta.a_strides, meta.ndim);
+        c[idx] = exp(a[a_off]);
+    }
+}
+
+template <typename T>
+__global__ void musapy_log_kernel_v2(
+    const T* __restrict__ a, T* __restrict__ c, NdMetaUnary meta, size_t n
+) {
+    size_t idx = blockIdx.x * blockDim.x + threadIdx.x;
+    if (idx < n) {
+        size_t a_off = offset_nd(idx, meta.shape, meta.a_strides, meta.ndim);
+        c[idx] = log(a[a_off]);
+    }
+}
+
+template <typename T>
+__global__ void musapy_abs_kernel_v2(
+    const T* __restrict__ a, T* __restrict__ c, NdMetaUnary meta, size_t n
+) {
+    size_t idx = blockIdx.x * blockDim.x + threadIdx.x;
+    if (idx < n) {
+        size_t a_off = offset_nd(idx, meta.shape, meta.a_strides, meta.ndim);
+        c[idx] = fabs(a[a_off]);
+    }
+}
+
+template <typename T>
+__global__ void musapy_sign_kernel_v2(
+    const T* __restrict__ a, T* __restrict__ c, NdMetaUnary meta, size_t n
+) {
+    size_t idx = blockIdx.x * blockDim.x + threadIdx.x;
+    if (idx < n) {
+        size_t a_off = offset_nd(idx, meta.shape, meta.a_strides, meta.ndim);
+        T v = a[a_off];
+        c[idx] = (v > T(0)) - (v < T(0));
+    }
+}
+
+// ── v2 Neg kernel ────────────────────────────────────────────
+
+template <typename T>
+__global__ void musapy_neg_kernel_v2(
+    const T* __restrict__ a, T* __restrict__ c, NdMetaUnary meta, size_t n
+) {
+    size_t idx = blockIdx.x * blockDim.x + threadIdx.x;
+    if (idx < n) {
+        size_t a_off = offset_nd(idx, meta.shape, meta.a_strides, meta.ndim);
+        c[idx] = -a[a_off];
+    }
+}
+
+// ── v2 Clamp kernel ──────────────────────────────────────────
+
+template <typename T>
+__global__ void musapy_clamp_kernel_v2(
+    const T* __restrict__ a, T* __restrict__ c, T lo, T hi,
+    NdMetaUnary meta, size_t n
+) {
+    size_t idx = blockIdx.x * blockDim.x + threadIdx.x;
+    if (idx < n) {
+        size_t a_off = offset_nd(idx, meta.shape, meta.a_strides, meta.ndim);
+        T v = a[a_off];
+        c[idx] = v < lo ? lo : (v > hi ? hi : v);
+    }
+}
+
+// ── v2 Cast kernel ───────────────────────────────────────────
+
+template <typename Src, typename Dst>
+__global__ void musapy_cast_kernel_v2(
+    const Src* __restrict__ a, Dst* __restrict__ c, NdMetaUnary meta, size_t n
+) {
+    size_t idx = blockIdx.x * blockDim.x + threadIdx.x;
+    if (idx < n) {
+        size_t a_off = offset_nd(idx, meta.shape, meta.a_strides, meta.ndim);
+        c[idx] = static_cast<Dst>(a[a_off]);
+    }
+}
+
+// ── extern "C" 稳定 ABI ────────────────────────────────────────
+
 extern "C" {
 
+// ── v1 符号（保留，L4-3 兼容性）──
+
 void musapy_add_f32_v1(
-    const float* __restrict__ a,
-    const float* __restrict__ b,
-    float* __restrict__ c,
-    size_t n,
-    musaStream_t stream
+    const float* __restrict__ a, const float* __restrict__ b,
+    float* __restrict__ c, size_t n, musaStream_t stream
 ) {
     musapy_add_kernel<float><<<grid_size_1d(n), 256, 0, stream>>>(a, b, c, n);
 }
 
 void musapy_add_f64_v1(
-    const double* __restrict__ a,
-    const double* __restrict__ b,
-    double* __restrict__ c,
-    size_t n,
-    musaStream_t stream
+    const double* __restrict__ a, const double* __restrict__ b,
+    double* __restrict__ c, size_t n, musaStream_t stream
 ) {
     musapy_add_kernel<double><<<grid_size_1d(n), 256, 0, stream>>>(a, b, c, n);
 }
+
+// ── v2 Binary 符号 ──
+// 宏：生成 binary op 的 f32/f64 wrapper
+#define BINARY_V2(OP)                                                         \
+void musapy_##OP##_f32_v2(                                                   \
+    const float* __restrict__ a, const float* __restrict__ b,                \
+    float* __restrict__ c, int ndim, const size_t* shape,                    \
+    const ssize_t* a_strides, const ssize_t* b_strides, musaStream_t stream  \
+) {                                                                          \
+    size_t n = 1;                                                            \
+    NdMeta meta;                                                             \
+    meta.ndim = ndim;                                                        \
+    for (int i = 0; i < ndim; i++) {                                         \
+        meta.shape[i] = shape[i];                                            \
+        meta.a_strides[i] = a_strides[i];                                    \
+        meta.b_strides[i] = b_strides[i];                                    \
+        n *= shape[i];                                                       \
+    }                                                                        \
+    musapy_##OP##_kernel_v2<float><<<grid_size_1d(n), 256, 0, stream>>>(     \
+        a, b, c, meta, n);                                                   \
+}                                                                            \
+void musapy_##OP##_f64_v2(                                                   \
+    const double* __restrict__ a, const double* __restrict__ b,              \
+    double* __restrict__ c, int ndim, const size_t* shape,                   \
+    const ssize_t* a_strides, const ssize_t* b_strides, musaStream_t stream  \
+) {                                                                          \
+    size_t n = 1;                                                            \
+    NdMeta meta;                                                             \
+    meta.ndim = ndim;                                                        \
+    for (int i = 0; i < ndim; i++) {                                         \
+        meta.shape[i] = shape[i];                                            \
+        meta.a_strides[i] = a_strides[i];                                    \
+        meta.b_strides[i] = b_strides[i];                                    \
+        n *= shape[i];                                                       \
+    }                                                                        \
+    musapy_##OP##_kernel_v2<double><<<grid_size_1d(n), 256, 0, stream>>>(    \
+        a, b, c, meta, n);                                                   \
+}
+
+BINARY_V2(add)
+BINARY_V2(sub)
+BINARY_V2(mul)
+BINARY_V2(div)
+BINARY_V2(pow)
+
+#undef BINARY_V2
+
+// ── v2 Unary 符号 ──
+#define UNARY_V2(OP)                                                          \
+void musapy_##OP##_f32_v2(                                                   \
+    const float* __restrict__ a, float* __restrict__ c,                      \
+    int ndim, const size_t* shape, const ssize_t* a_strides,                 \
+    musaStream_t stream                                                      \
+) {                                                                          \
+    size_t n = 1;                                                            \
+    NdMetaUnary meta;                                                        \
+    meta.ndim = ndim;                                                        \
+    for (int i = 0; i < ndim; i++) {                                         \
+        meta.shape[i] = shape[i];                                            \
+        meta.a_strides[i] = a_strides[i];                                    \
+        n *= shape[i];                                                       \
+    }                                                                        \
+    musapy_##OP##_kernel_v2<float><<<grid_size_1d(n), 256, 0, stream>>>(     \
+        a, c, meta, n);                                                      \
+}                                                                            \
+void musapy_##OP##_f64_v2(                                                   \
+    const double* __restrict__ a, double* __restrict__ c,                    \
+    int ndim, const size_t* shape, const ssize_t* a_strides,                 \
+    musaStream_t stream                                                      \
+) {                                                                          \
+    size_t n = 1;                                                            \
+    NdMetaUnary meta;                                                        \
+    meta.ndim = ndim;                                                        \
+    for (int i = 0; i < ndim; i++) {                                         \
+        meta.shape[i] = shape[i];                                            \
+        meta.a_strides[i] = a_strides[i];                                    \
+        n *= shape[i];                                                       \
+    }                                                                        \
+    musapy_##OP##_kernel_v2<double><<<grid_size_1d(n), 256, 0, stream>>>(    \
+        a, c, meta, n);                                                      \
+}
+
+UNARY_V2(sin)
+UNARY_V2(cos)
+UNARY_V2(exp)
+UNARY_V2(log)
+UNARY_V2(abs)
+UNARY_V2(sign)
+UNARY_V2(neg)
+
+#undef UNARY_V2
+
+// ── v2 Clamp 符号 ──
+
+void musapy_clamp_f32_v2(
+    const float* __restrict__ a, float* __restrict__ c,
+    float lo, float hi,
+    int ndim, const size_t* shape, const ssize_t* a_strides,
+    musaStream_t stream
+) {
+    size_t n = 1;
+    NdMetaUnary meta;
+    meta.ndim = ndim;
+    for (int i = 0; i < ndim; i++) {
+        meta.shape[i] = shape[i];
+        meta.a_strides[i] = a_strides[i];
+        n *= shape[i];
+    }
+    musapy_clamp_kernel_v2<float><<<grid_size_1d(n), 256, 0, stream>>>(
+        a, c, lo, hi, meta, n);
+}
+
+void musapy_clamp_f64_v2(
+    const double* __restrict__ a, double* __restrict__ c,
+    double lo, double hi,
+    int ndim, const size_t* shape, const ssize_t* a_strides,
+    musaStream_t stream
+) {
+    size_t n = 1;
+    NdMetaUnary meta;
+    meta.ndim = ndim;
+    for (int i = 0; i < ndim; i++) {
+        meta.shape[i] = shape[i];
+        meta.a_strides[i] = a_strides[i];
+        n *= shape[i];
+    }
+    musapy_clamp_kernel_v2<double><<<grid_size_1d(n), 256, 0, stream>>>(
+        a, c, lo, hi, meta, n);
+}
+
+// ── v2 Cast 符号 ──
+// 宏：生成 cast 的 wrapper（Src → Dst）
+#define CAST_V2(SRC_C, SRC_T, DST_C, DST_T)                                  \
+void musapy_cast_##SRC_C##_##DST_C##_v2(                                     \
+    const SRC_T* __restrict__ a, DST_T* __restrict__ c,                      \
+    int ndim, const size_t* shape, const ssize_t* a_strides,                 \
+    musaStream_t stream                                                      \
+) {                                                                          \
+    size_t n = 1;                                                            \
+    NdMetaUnary meta;                                                        \
+    meta.ndim = ndim;                                                        \
+    for (int i = 0; i < ndim; i++) {                                         \
+        meta.shape[i] = shape[i];                                            \
+        meta.a_strides[i] = a_strides[i];                                    \
+        n *= shape[i];                                                       \
+    }                                                                        \
+    musapy_cast_kernel_v2<SRC_T, DST_T><<<grid_size_1d(n), 256, 0, stream>>>(\
+        a, c, meta, n);                                                      \
+}
+
+// → float32
+CAST_V2(i8,  int8_t,   f32, float)
+CAST_V2(i16, int16_t,  f32, float)
+CAST_V2(i32, int32_t,  f32, float)
+CAST_V2(i64, int64_t,  f32, float)
+CAST_V2(u8,  uint8_t,  f32, float)
+CAST_V2(u16, uint16_t, f32, float)
+CAST_V2(u32, uint32_t, f32, float)
+CAST_V2(u64, uint64_t, f32, float)
+CAST_V2(f64, double,   f32, float)
+
+// → float64
+CAST_V2(i8,  int8_t,   f64, double)
+CAST_V2(i16, int16_t,  f64, double)
+CAST_V2(i32, int32_t,  f64, double)
+CAST_V2(i64, int64_t,  f64, double)
+CAST_V2(u8,  uint8_t,  f64, double)
+CAST_V2(u16, uint16_t, f64, double)
+CAST_V2(u32, uint32_t, f64, double)
+CAST_V2(u64, uint64_t, f64, double)
+CAST_V2(f32, float,    f64, double)
+
+#undef CAST_V2
 
 } // extern "C"

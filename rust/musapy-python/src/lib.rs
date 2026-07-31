@@ -10,7 +10,7 @@ pub mod error;
 pub mod ops;
 pub mod stream;
 
-use musapy_core::{debug, mem_stats, resolution, Device};
+use musapy_core::{Device, debug, mem_stats, resolution};
 use pyo3::prelude::*;
 
 // ============================================================
@@ -300,6 +300,18 @@ fn _core(m: &Bound<'_, PyModule>) -> PyResult<()> {
     // --- 模块级函数 ---
     m.add_function(wrap_pyfunction!(ops::array, m)?)?;
     m.add_function(wrap_pyfunction!(ops::add, m)?)?;
+    m.add_function(wrap_pyfunction!(ops::sub, m)?)?;
+    m.add_function(wrap_pyfunction!(ops::mul, m)?)?;
+    m.add_function(wrap_pyfunction!(ops::div, m)?)?;
+    m.add_function(wrap_pyfunction!(ops::pow, m)?)?;
+    m.add_function(wrap_pyfunction!(ops::sin, m)?)?;
+    m.add_function(wrap_pyfunction!(ops::cos, m)?)?;
+    m.add_function(wrap_pyfunction!(ops::exp, m)?)?;
+    m.add_function(wrap_pyfunction!(ops::log, m)?)?;
+    m.add_function(wrap_pyfunction!(ops::abs, m)?)?;
+    m.add_function(wrap_pyfunction!(ops::sign, m)?)?;
+    m.add_function(wrap_pyfunction!(ops::neg, m)?)?;
+    m.add_function(wrap_pyfunction!(ops::clamp, m)?)?;
     m.add_function(wrap_pyfunction!(set_default_device, m)?)?;
     m.add_function(wrap_pyfunction!(set_default_dtype, m)?)?;
     m.add_function(wrap_pyfunction!(device_context, m)?)?;

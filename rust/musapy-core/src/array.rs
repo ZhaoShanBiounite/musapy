@@ -48,10 +48,7 @@ impl DtypeResolution {
         }
     }
 
-    pub fn with_location(
-        mut self,
-        loc: crate::device::SourceLocation,
-    ) -> Self {
+    pub fn with_location(mut self, loc: crate::device::SourceLocation) -> Self {
         self.source_location = Some(loc);
         self
     }
@@ -232,11 +229,7 @@ mod tests {
     use crate::stream::Stream;
 
     // 测试辅助：创建一个 Array
-    fn make_array(
-        shape: Shape,
-        dtype: Dtype,
-        device: Device,
-    ) -> Array {
+    fn make_array(shape: Shape, dtype: Dtype, device: Device) -> Array {
         let size: usize = shape.iter().product::<usize>().max(1);
         let nbytes = size * dtype.element_size();
         let buffer = Arc::new(Buffer::placeholder(nbytes, device.clone()));
@@ -421,24 +414,19 @@ mod tests {
     #[test]
     fn dtype_resolution_display() {
         let r = DtypeResolution::new(Dtype::Float32, ResolutionSource::GlobalDefault);
-        assert_eq!(
-            r.to_string(),
-            "float32  # resolved from: global_default"
-        );
+        assert_eq!(r.to_string(), "float32  # resolved from: global_default");
     }
 
     #[test]
     fn dtype_resolution_with_location() {
-        let r = DtypeResolution::new(Dtype::Float32, ResolutionSource::Arg)
-            .with_location(crate::device::SourceLocation {
+        let r = DtypeResolution::new(Dtype::Float32, ResolutionSource::Arg).with_location(
+            crate::device::SourceLocation {
                 file: "test.py".to_string(),
                 line: 5,
                 column: 0,
-            });
-        assert_eq!(
-            r.to_string(),
-            "float32  # resolved from: arg at test.py:5"
+            },
         );
+        assert_eq!(r.to_string(), "float32  # resolved from: arg at test.py:5");
     }
 
     #[test]

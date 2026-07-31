@@ -115,10 +115,7 @@ impl Event {
     pub fn new() -> Result<Self> {
         let mut raw: musa_ffi::musaEvent_t = std::ptr::null_mut();
         unsafe {
-            musa_ffi::check_musa(
-                musa_ffi::musaEventCreate(&mut raw),
-                "musaEventCreate",
-            )?;
+            musa_ffi::check_musa(musa_ffi::musaEventCreate(&mut raw), "musaEventCreate")?;
         }
         Ok(Self { raw })
     }
@@ -520,8 +517,22 @@ mod tests {
     #[test]
     fn stream_synchronize_clears_pending() {
         let s = Stream::new(Device::Musa(0), 0).unwrap();
-        s.record_op(OpContext::new("add", vec![], vec![], vec![], vec![], s.id()));
-        s.record_op(OpContext::new("mul", vec![], vec![], vec![], vec![], s.id()));
+        s.record_op(OpContext::new(
+            "add",
+            vec![],
+            vec![],
+            vec![],
+            vec![],
+            s.id(),
+        ));
+        s.record_op(OpContext::new(
+            "mul",
+            vec![],
+            vec![],
+            vec![],
+            vec![],
+            s.id(),
+        ));
         assert_eq!(s.pending_count(), 2);
 
         s.synchronize().unwrap();
@@ -554,9 +565,30 @@ mod tests {
     fn stream_fifo_order() {
         let s = Stream::new(Device::Musa(0), 0).unwrap();
 
-        s.record_op(OpContext::new("op1", vec![], vec![], vec![], vec![], s.id()));
-        s.record_op(OpContext::new("op2", vec![], vec![], vec![], vec![], s.id()));
-        s.record_op(OpContext::new("op3", vec![], vec![], vec![], vec![], s.id()));
+        s.record_op(OpContext::new(
+            "op1",
+            vec![],
+            vec![],
+            vec![],
+            vec![],
+            s.id(),
+        ));
+        s.record_op(OpContext::new(
+            "op2",
+            vec![],
+            vec![],
+            vec![],
+            vec![],
+            s.id(),
+        ));
+        s.record_op(OpContext::new(
+            "op3",
+            vec![],
+            vec![],
+            vec![],
+            vec![],
+            s.id(),
+        ));
 
         assert_eq!(s.pop_oldest_op().unwrap().op_name, "op1");
         assert_eq!(s.pop_oldest_op().unwrap().op_name, "op2");
@@ -567,8 +599,22 @@ mod tests {
     #[test]
     fn stream_oldest_op_context_string() {
         let s = Stream::new(Device::Musa(0), 0).unwrap();
-        s.record_op(OpContext::new("op1", vec![], vec![], vec![], vec![], s.id()));
-        s.record_op(OpContext::new("op2", vec![], vec![], vec![], vec![], s.id()));
+        s.record_op(OpContext::new(
+            "op1",
+            vec![],
+            vec![],
+            vec![],
+            vec![],
+            s.id(),
+        ));
+        s.record_op(OpContext::new(
+            "op2",
+            vec![],
+            vec![],
+            vec![],
+            vec![],
+            s.id(),
+        ));
 
         let ctx_str = s.oldest_op_context_string().unwrap();
         assert!(ctx_str.contains("op1"));
@@ -578,8 +624,22 @@ mod tests {
     #[test]
     fn stream_clear_pending() {
         let s = Stream::new(Device::Musa(0), 0).unwrap();
-        s.record_op(OpContext::new("op1", vec![], vec![], vec![], vec![], s.id()));
-        s.record_op(OpContext::new("op2", vec![], vec![], vec![], vec![], s.id()));
+        s.record_op(OpContext::new(
+            "op1",
+            vec![],
+            vec![],
+            vec![],
+            vec![],
+            s.id(),
+        ));
+        s.record_op(OpContext::new(
+            "op2",
+            vec![],
+            vec![],
+            vec![],
+            vec![],
+            s.id(),
+        ));
         assert_eq!(s.pending_count(), 2);
 
         s.clear_pending_ops();

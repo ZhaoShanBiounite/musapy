@@ -1,9 +1,13 @@
 //! musapy-ops: 算子层（ADR L2-4, L2-5）
 //!
-//! Phase 6: OpBuilder + elementwise（add only）
-//! Phase 3+: 加 reduction/init/linalg/random/fft/sparse/indexing/broadcast/comparison
+//! v0.1: OpBuilder + elementwise（add only）
+//! v0.2: broadcast + stride-aware ABI（Phase 1）;
+//!       elementwise 全家桶 + 类型提升（Phase 2）
 
+pub mod broadcast;
+pub mod elementwise;
 pub mod kernels;
 pub mod op_builder;
 
-pub use op_builder::add;
+// 公开 API 在 elementwise 模块；根级再导出保持 `musapy_ops::add` 兼容。
+pub use elementwise::*;

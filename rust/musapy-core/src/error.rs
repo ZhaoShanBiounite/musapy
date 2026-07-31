@@ -45,8 +45,8 @@ pub enum StreamError {
     Poisoned(String),
     #[error("sync cycle detected: {0}")]
     SyncCycle(String),
-    #[error("MUSA runtime call failed: {0}")] 
-// 新（加一个变体）
+    #[error("MUSA runtime call failed: {0}")]
+    // 新（加一个变体）
     MusaCallFailed(String),
 }
 

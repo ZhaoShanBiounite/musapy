@@ -11,8 +11,8 @@
 
 use crate::stream::PythonFrame;
 use std::cell::RefCell;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Once;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 // ============================================================
 // 全局 debug 标志

@@ -54,7 +54,8 @@ impl Layout {
                 "shape rank {} != strides rank {}",
                 shape.len(),
                 strides.len()
-            )).into());
+            ))
+            .into());
         }
         Ok(Self {
             shape,
@@ -84,6 +85,53 @@ impl Layout {
         self.strides == expected
     }
 
+    /// 广播到目标 shape（ADR-002-D2, P1.5）。
+    ///
+    /// 返回新 Layout：target shape + 广播 strides（广播维 stride=0），offset 保持不变。
+    /// 遵循 NumPy 广播规则：右对齐，每维相等或其一为 1。
+    ///
+    /// # 示例
+    ///
+    /// ```ignore
+    /// Layout::from_shape(vec![3, 1]).broadcast_to(&[3, 4])
+    ///   → Layout { shape: [3, 4], strides: [1, 0], offset: 0 }
+    /// ```
+    pub fn broadcast_to(&self, target: &[usize]) -> Result<Layout> {
+        let target_ndim = target.len();
+        if target_ndim < self.ndim() {
+            return Err(ShapeError::Mismatch(format!(
+                "broadcast_to: target rank {} < input rank {}",
+                target_ndim,
+                self.ndim()
+            ))
+            .into());
+        }
+
+        let offset = target_ndim - self.ndim();
+        let mut new_strides = vec![0usize; target_ndim];
+
+        for (i, (&dim, &stride)) in self.shape.iter().zip(self.strides.iter()).enumerate() {
+            let out_i = offset + i;
+            if dim == target[out_i] {
+                new_strides[out_i] = stride;
+            } else if dim == 1 {
+                new_strides[out_i] = 0; // 广播维
+            } else {
+                return Err(ShapeError::Mismatch(format!(
+                    "broadcast_to: cannot broadcast dim {} (size {}) to target size {}",
+                    out_i, dim, target[out_i]
+                ))
+                .into());
+            }
+        }
+
+        Ok(Layout {
+            shape: target.to_vec(),
+            strides: new_strides,
+            offset: self.offset,
+        })
+    }
+
     /// 计算给定多维索引的线性偏移（元素数）。
     ///
     /// 返回 `offset + sum(indices[i] * strides[i])`。
@@ -94,7 +142,8 @@ impl Layout {
                 "index rank {} != layout rank {}",
                 indices.len(),
                 self.shape.len()
-            )).into());
+            ))
+            .into());
         }
         let mut off = self.offset;
         for i in 0..indices.len() {
@@ -102,7 +151,8 @@ impl Layout {
                 return Err(ShapeError::Mismatch(format!(
                     "index {} out of bounds for dimension {} (size {})",
                     indices[i], i, self.shape[i]
-                )).into());
+                ))
+                .into());
             }
             off += indices[i] * self.strides[i];
         }
@@ -264,6 +314,52 @@ mod tests {
         let l = Layout::from_shape(vec![3, 4]);
         assert!(l.linear_offset(&[3, 0]).is_err()); // dim 0 越界
         assert!(l.linear_offset(&[0, 4]).is_err()); // dim 1 越界
+    }
+
+    // --- broadcast_to ---
+
+    #[test]
+    fn broadcast_to_same_shape() {
+        let l = Layout::from_shape(vec![2, 3]);
+        let b = l.broadcast_to(&[2, 3]).unwrap();
+        assert_eq!(b.shape, vec![2, 3]);
+        assert_eq!(b.strides, vec![3, 1]);
+    }
+
+    #[test]
+    fn broadcast_to_expand_dim() {
+        let l = Layout::from_shape(vec![3, 1]);
+        let b = l.broadcast_to(&[3, 4]).unwrap();
+        assert_eq!(b.shape, vec![3, 4]);
+        assert_eq!(b.strides, vec![1, 0]);
+    }
+
+    #[test]
+    fn broadcast_to_add_leading_dim() {
+        let l = Layout::from_shape(vec![4]);
+        let b = l.broadcast_to(&[3, 4]).unwrap();
+        assert_eq!(b.shape, vec![3, 4]);
+        assert_eq!(b.strides, vec![0, 1]);
+    }
+
+    #[test]
+    fn broadcast_to_0dim() {
+        let l = Layout::from_shape(vec![]);
+        let b = l.broadcast_to(&[3, 4]).unwrap();
+        assert_eq!(b.shape, vec![3, 4]);
+        assert_eq!(b.strides, vec![0, 0]);
+    }
+
+    #[test]
+    fn broadcast_to_incompatible() {
+        let l = Layout::from_shape(vec![2, 3]);
+        assert!(l.broadcast_to(&[2, 4]).is_err());
+    }
+
+    #[test]
+    fn broadcast_to_lower_rank() {
+        let l = Layout::from_shape(vec![2, 3]);
+        assert!(l.broadcast_to(&[3]).is_err());
     }
 
     // --- Display ---

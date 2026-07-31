@@ -101,15 +101,9 @@ pub const MCC_VERSION_RAW: &str = match option_env!("MUSAPY_MCC_VERSION") {
 #[derive(Debug)]
 pub enum AbiError {
     /// kernel 期望的 ABI 版本低于运行时最低支持版本
-    KernelAbiTooOld {
-        kernel_abi: u32,
-        min_supported: u32,
-    },
+    KernelAbiTooOld { kernel_abi: u32, min_supported: u32 },
     /// kernel 期望的 ABI 版本高于运行时当前版本（运行时需升级）
-    KernelAbiTooNew {
-        kernel_abi: u32,
-        runtime_abi: u32,
-    },
+    KernelAbiTooNew { kernel_abi: u32, runtime_abi: u32 },
     /// 无法从 kernel 符号名中解析出版本后缀
     InvalidKernelSymbol(String),
     /// MUSA Runtime 版本不支持当前运行时 ABI 版本
@@ -221,11 +215,7 @@ pub fn check_kernel_abi(kernel_abi: u32) -> Result<(), AbiError> {
 /// 未来引入 ABI v2 时，在此函数追加分支，gate 在支持 v2 特性的最低 musart 版本上
 /// （该版本需在真实硬件上测试确认）。
 pub fn musart_max_supported_abi(musart: u32) -> u32 {
-    if musart >= 10000 {
-        1
-    } else {
-        0
-    }
+    if musart >= 10000 { 1 } else { 0 }
 }
 
 /// 启动期校验：MUSA Runtime 版本与运行时 ABI 的兼容性。
