@@ -27,7 +27,7 @@ pub enum Device {
 }
 
 impl Device {
-        /// 从字符串解析设备标识。
+    /// 从字符串解析设备标识。
     ///
     /// 支持格式（大小写不敏感，容忍前后空格）：
     /// - `"cpu"` → `Device::Cpu`
@@ -52,7 +52,8 @@ impl Device {
             _ => Err(DeviceError::Unavailable(format!(
                 "cannot parse device '{}': expected 'cpu' or 'musa:<id>'",
                 s
-            )).into()),
+            ))
+            .into()),
         }
     }
 
@@ -287,7 +288,10 @@ mod tests {
     #[test]
     fn resolution_source_display() {
         assert_eq!(ResolutionSource::Arg.to_string(), "arg");
-        assert_eq!(ResolutionSource::GlobalDefault.to_string(), "global_default");
+        assert_eq!(
+            ResolutionSource::GlobalDefault.to_string(),
+            "global_default"
+        );
     }
 
     // --- DeviceResolution ---
@@ -295,10 +299,7 @@ mod tests {
     #[test]
     fn device_resolution_display_without_location() {
         let r = DeviceResolution::new(Device::Musa(0), ResolutionSource::GlobalDefault);
-        assert_eq!(
-            r.to_string(),
-            "musa:0  # resolved from: global_default"
-        );
+        assert_eq!(r.to_string(), "musa:0  # resolved from: global_default");
     }
 
     #[test]

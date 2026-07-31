@@ -9,8 +9,10 @@ use crate::dtype::PyDtype;
 use crate::error;
 use musapy_core::musa_ffi;
 use musapy_core::resolution;
-use musapy_core::{Buffer, BufferRef, Device, DeviceResolution, Dtype, DtypeResolution, Layout, Stream};
-use musapy_core::{debug, PythonFrame};
+use musapy_core::{
+    Buffer, BufferRef, Device, DeviceResolution, Dtype, DtypeResolution, Layout, Stream,
+};
+use musapy_core::{PythonFrame, debug};
 use musapy_ops;
 use pyo3::prelude::*;
 use std::sync::Arc;
@@ -66,7 +68,8 @@ pub fn array(
     // --- 5. 分配 Buffer ---
     let nbytes = bytes.len();
     let stream = Arc::new(Stream::new(resolved_device.clone(), 0).map_err(error::to_pyerr)?);
-    let buffer = Buffer::alloc(nbytes, resolved_device.clone(), &stream).map_err(error::to_pyerr)?;
+    let buffer =
+        Buffer::alloc(nbytes, resolved_device.clone(), &stream).map_err(error::to_pyerr)?;
     let buffer_arc = Arc::new(buffer);
     let data_ref = BufferRef::new(buffer_arc);
 
@@ -101,8 +104,83 @@ pub fn add(py: Python<'_>, a: &PyArray, b: &PyArray, out: Option<&PyArray>) -> P
         }
     }
 
-    let result = musapy_ops::add(&a.inner, &b.inner, out.map(|o| &o.inner))
-        .map_err(error::to_pyerr)?;
+    let result =
+        musapy_ops::add(&a.inner, &b.inner, out.map(|o| &o.inner)).map_err(error::to_pyerr)?;
+    Ok(PyArray::from_array(result))
+}
+
+// ── Phase 2: Binary elementwise ops ─────────────────────────
+
+macro_rules! py_binary_op {
+    ($name:ident, $doc:expr) => {
+        #[pyfunction]
+        #[pyo3(signature = (a, b, out=None))]
+        #[doc = $doc]
+        pub fn $name(py: Python<'_>, a: &PyArray, b: &PyArray, out: Option<&PyArray>) -> PyResult<PyArray> {
+            if debug::is_debug() {
+                if let Some(frame) = extract_caller_frame(py) {
+                    debug::set_debug_frame(Some(frame));
+                }
+            }
+            let result = musapy_ops::$name(&a.inner, &b.inner, out.map(|o| &o.inner))
+                .map_err(error::to_pyerr)?;
+            Ok(PyArray::from_array(result))
+        }
+    };
+}
+
+py_binary_op!(sub, "ms.sub(a, b, out=None) — 逐元素减法");
+py_binary_op!(mul, "ms.mul(a, b, out=None) — 逐元素乘法");
+py_binary_op!(div, "ms.div(a, b, out=None) — 逐元素除法");
+py_binary_op!(pow, "ms.pow(a, b, out=None) — 逐元素幂运算");
+
+// ── Phase 2: Unary elementwise ops ──────────────────────────
+
+macro_rules! py_unary_op {
+    ($name:ident, $doc:expr) => {
+        #[pyfunction]
+        #[pyo3(signature = (a, out=None))]
+        #[doc = $doc]
+        pub fn $name(py: Python<'_>, a: &PyArray, out: Option<&PyArray>) -> PyResult<PyArray> {
+            if debug::is_debug() {
+                if let Some(frame) = extract_caller_frame(py) {
+                    debug::set_debug_frame(Some(frame));
+                }
+            }
+            let result = musapy_ops::$name(&a.inner, out.map(|o| &o.inner))
+                .map_err(error::to_pyerr)?;
+            Ok(PyArray::from_array(result))
+        }
+    };
+}
+
+py_unary_op!(sin, "ms.sin(a, out=None) — 逐元素正弦");
+py_unary_op!(cos, "ms.cos(a, out=None) — 逐元素余弦");
+py_unary_op!(exp, "ms.exp(a, out=None) — 逐元素指数");
+py_unary_op!(log, "ms.log(a, out=None) — 逐元素自然对数");
+py_unary_op!(abs, "ms.abs(a, out=None) — 逐元素绝对值");
+py_unary_op!(sign, "ms.sign(a, out=None) — 逐元素符号函数");
+py_unary_op!(neg, "ms.neg(a, out=None) — 逐元素取反");
+
+// ── Phase 2: Clamp + Astype ─────────────────────────────────
+
+/// `ms.clamp(a, lo, hi, out=None)` — 逐元素截断到 [lo, hi]。
+#[pyfunction]
+#[pyo3(signature = (a, lo, hi, out=None))]
+pub fn clamp(
+    py: Python<'_>,
+    a: &PyArray,
+    lo: f64,
+    hi: f64,
+    out: Option<&PyArray>,
+) -> PyResult<PyArray> {
+    if debug::is_debug() {
+        if let Some(frame) = extract_caller_frame(py) {
+            debug::set_debug_frame(Some(frame));
+        }
+    }
+    let result =
+        musapy_ops::clamp(&a.inner, lo, hi, out.map(|o| &o.inner)).map_err(error::to_pyerr)?;
     Ok(PyArray::from_array(result))
 }
 
@@ -123,18 +201,98 @@ fn extract_caller_frame(py: Python<'_>) -> Option<PythonFrame> {
     })
 }
 
-/// 从 Python list/tuple 按 dtype 提取 raw bytes 和 shape。
+/// 从 Python 数据按 dtype 提取 raw bytes 和 shape。
 ///
-/// 当前支持 1D list/tuple。多维数组和 numpy 支持后续添加。
+/// 支持：
+/// - 标量（int/float/bool）→ 0-dim，shape=[]
+/// - 1D list/tuple → shape=[n]
+/// - 嵌套 list/tuple → shape=[d0, d1, ...]（必须矩形）
 fn extract_data(data: &Bound<PyAny>, dtype: Dtype) -> PyResult<(Vec<u8>, Vec<usize>)> {
+    // 尝试作为序列提取（list/tuple）
+    if let Ok(seq) = data.downcast::<pyo3::types::PySequence>() {
+        let len = seq.len()?;
+        if len == 0 {
+            // 空列表 → shape=[0]
+            return Ok((vec![], vec![0]));
+        }
+        // 检查第一个元素：如果也是序列 → 多维
+        let first = seq.get_item(0)?;
+        if first.downcast::<pyo3::types::PySequence>().is_ok()
+            && !first.downcast::<pyo3::types::PyString>().is_ok()
+        {
+            // 多维：递归提取每个子数组，验证矩形
+            return extract_nested(seq, dtype);
+        }
+        // 1D：直接提取
+        return extract_flat(data, dtype);
+    }
+
+    // 标量 → 0-dim
+    extract_scalar(data, dtype)
+}
+
+/// 提取多维嵌套序列。
+fn extract_nested(
+    seq: &Bound<pyo3::types::PySequence>,
+    dtype: Dtype,
+) -> PyResult<(Vec<u8>, Vec<usize>)> {
+    let len = seq.len()?;
+    let mut all_bytes: Vec<u8> = Vec::new();
+    let mut sub_shape: Option<Vec<usize>> = None;
+
+    for i in 0..len {
+        let item = seq.get_item(i)?;
+        let item_seq = item.downcast::<pyo3::types::PySequence>().map_err(|_| {
+            pyo3::exceptions::PyValueError::new_err(
+                "inhomogeneous shape: all sub-arrays must have the same length",
+            )
+        })?;
+        let (bytes, shape) = if item_seq.len()? > 0
+            && item_seq
+                .get_item(0)?
+                .downcast::<pyo3::types::PySequence>()
+                .is_ok()
+            && !item_seq
+                .get_item(0)?
+                .downcast::<pyo3::types::PyString>()
+                .is_ok()
+        {
+            extract_nested(item_seq, dtype)?
+        } else {
+            extract_flat(&item, dtype)?
+        };
+
+        // 验证所有子数组 shape 一致
+        match &sub_shape {
+            None => sub_shape = Some(shape),
+            Some(expected) => {
+                if *expected != shape {
+                    return Err(pyo3::exceptions::PyValueError::new_err(format!(
+                        "inhomogeneous shape: sub-array {} has shape {:?}, expected {:?}",
+                        i, shape, expected
+                    )));
+                }
+            }
+        }
+        all_bytes.extend_from_slice(&bytes);
+    }
+
+    let mut result_shape = vec![len];
+    if let Some(ss) = sub_shape {
+        result_shape.extend_from_slice(&ss);
+    }
+    Ok((all_bytes, result_shape))
+}
+
+/// 提取 1D flat 序列。
+fn extract_flat(data: &Bound<PyAny>, dtype: Dtype) -> PyResult<(Vec<u8>, Vec<usize>)> {
     macro_rules! extract_typed {
         ($t:ty) => {{
             let v: Vec<$t> = data.extract()?;
             let shape = vec![v.len()];
             let nbytes = v.len() * std::mem::size_of::<$t>();
-            let bytes = unsafe {
-                std::slice::from_raw_parts(v.as_ptr() as *const u8, nbytes).to_vec()
-            };
+            let bytes =
+                unsafe { std::slice::from_raw_parts(v.as_ptr() as *const u8, nbytes).to_vec() };
             Ok::<_, pyo3::PyErr>((bytes, shape))
         }};
     }
@@ -154,11 +312,47 @@ fn extract_data(data: &Bound<PyAny>, dtype: Dtype) -> PyResult<(Vec<u8>, Vec<usi
         Dtype::Float16 | Dtype::Bfloat16 => Err(pyo3::exceptions::PyNotImplementedError::new_err(
             "float16/bfloat16 array creation not yet supported",
         )),
-        Dtype::Complex64 | Dtype::Complex128 => Err(
-            pyo3::exceptions::PyNotImplementedError::new_err(
+        Dtype::Complex64 | Dtype::Complex128 => {
+            Err(pyo3::exceptions::PyNotImplementedError::new_err(
                 "complex dtypes not yet supported for array creation",
-            ),
-        ),
+            ))
+        }
+    }
+}
+
+/// 提取标量 → 0-dim array（shape=[]）。
+fn extract_scalar(data: &Bound<PyAny>, dtype: Dtype) -> PyResult<(Vec<u8>, Vec<usize>)> {
+    macro_rules! extract_one {
+        ($t:ty) => {{
+            let v: $t = data.extract()?;
+            let bytes = unsafe {
+                std::slice::from_raw_parts(&v as *const $t as *const u8, std::mem::size_of::<$t>())
+                    .to_vec()
+            };
+            Ok::<_, pyo3::PyErr>((bytes, vec![]))
+        }};
+    }
+
+    match dtype {
+        Dtype::Bool => extract_one!(bool),
+        Dtype::Int8 => extract_one!(i8),
+        Dtype::Int16 => extract_one!(i16),
+        Dtype::Int32 => extract_one!(i32),
+        Dtype::Int64 => extract_one!(i64),
+        Dtype::Uint8 => extract_one!(u8),
+        Dtype::Uint16 => extract_one!(u16),
+        Dtype::Uint32 => extract_one!(u32),
+        Dtype::Uint64 => extract_one!(u64),
+        Dtype::Float32 => extract_one!(f32),
+        Dtype::Float64 => extract_one!(f64),
+        Dtype::Float16 | Dtype::Bfloat16 => Err(pyo3::exceptions::PyNotImplementedError::new_err(
+            "float16/bfloat16 array creation not yet supported",
+        )),
+        Dtype::Complex64 | Dtype::Complex128 => {
+            Err(pyo3::exceptions::PyNotImplementedError::new_err(
+                "complex dtypes not yet supported for array creation",
+            ))
+        }
     }
 }
 

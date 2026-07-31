@@ -73,10 +73,7 @@ fn probe_via_env() -> Option<PathBuf> {
         if let Ok(raw) = env::var(var) {
             let path = PathBuf::from(&raw);
             if validate(&path) {
-                println!(
-                    "cargo:warning=MUSAPY: MUSA SDK found via {}={}",
-                    var, raw
-                );
+                println!("cargo:warning=MUSAPY: MUSA SDK found via {}={}", var, raw);
                 return Some(path);
             } else {
                 println!(

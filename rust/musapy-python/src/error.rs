@@ -52,9 +52,7 @@ pub fn to_pyerr(e: musapy_core::MusapyError) -> PyErr {
     let msg = e.to_string();
     match e {
         musapy_core::MusapyError::Device(de) => match de {
-            musapy_core::DeviceError::NotConfigured => {
-                DeviceNotConfiguredError::new_err(msg)
-            }
+            musapy_core::DeviceError::NotConfigured => DeviceNotConfiguredError::new_err(msg),
             _ => DeviceError::new_err(msg),
         },
         musapy_core::MusapyError::Dtype(_) => DtypeError::new_err(msg),

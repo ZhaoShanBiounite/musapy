@@ -113,19 +113,74 @@ impl PyArray {
     ///
     /// 等价于 `ms.add(self, other)`，分配新 Buffer 返回。
     fn __add__(&self, other: &PyArray) -> PyResult<PyArray> {
-        let result = musapy_ops::add(&self.inner, &other.inner, None)
-            .map_err(error::to_pyerr)?;
+        let result = musapy_ops::add(&self.inner, &other.inner, None).map_err(error::to_pyerr)?;
+        Ok(PyArray::from_array(result))
+    }
+
+    /// `a - b` — 逐元素减法。
+    fn __sub__(&self, other: &PyArray) -> PyResult<PyArray> {
+        let result = musapy_ops::sub(&self.inner, &other.inner, None).map_err(error::to_pyerr)?;
+        Ok(PyArray::from_array(result))
+    }
+
+    /// `a * b` — 逐元素乘法。
+    fn __mul__(&self, other: &PyArray) -> PyResult<PyArray> {
+        let result = musapy_ops::mul(&self.inner, &other.inner, None).map_err(error::to_pyerr)?;
+        Ok(PyArray::from_array(result))
+    }
+
+    /// `a / b` — 逐元素除法。
+    fn __truediv__(&self, other: &PyArray) -> PyResult<PyArray> {
+        let result = musapy_ops::div(&self.inner, &other.inner, None).map_err(error::to_pyerr)?;
+        Ok(PyArray::from_array(result))
+    }
+
+    /// `a ** b` — 逐元素幂运算。
+    fn __pow__(&self, other: &PyArray, _modulo: Option<i32>) -> PyResult<PyArray> {
+        let result = musapy_ops::pow(&self.inner, &other.inner, None).map_err(error::to_pyerr)?;
+        Ok(PyArray::from_array(result))
+    }
+
+    /// `-a` — 逐元素取负（0 - a）。
+    fn __neg__(&self) -> PyResult<PyArray> {
+        let result = musapy_ops::neg(&self.inner, None).map_err(error::to_pyerr)?;
+        Ok(PyArray::from_array(result))
+    }
+
+    /// `abs(a)` — 逐元素绝对值。
+    fn __abs__(&self) -> PyResult<PyArray> {
+        let result = musapy_ops::abs(&self.inner, None).map_err(error::to_pyerr)?;
+        Ok(PyArray::from_array(result))
+    }
+
+    /// `a.astype(dtype)` — 类型转换。
+    fn astype(&self, dtype: PyDtype) -> PyResult<PyArray> {
+        let result =
+            musapy_ops::astype(&self.inner, dtype.0, None).map_err(error::to_pyerr)?;
         Ok(PyArray::from_array(result))
     }
 
     /// 将数组数据取回 host 并转为 Python list（ADR L1-11: 显式 sync + D2H）。
     ///
-    /// `a.tolist()` → `[5.0, 7.0, 9.0]`
+    /// 多维数组返回嵌套 list（NumPy 行为）：
+    /// `a.tolist()` → `[[1.0, 2.0], [3.0, 4.0]]`（shape=(2,2)）
+    /// 0-dim 返回单元素 list：`[3.14]`
     fn tolist(&self, py: Python<'_>) -> PyResult<PyObject> {
         let bytes = self.sync_and_copy_to_host(py)?;
         let n = self.inner.size();
         let dtype = self.inner.dtype();
-        bytes_to_pylist(py, &bytes, n, dtype)
+        let shape = self.inner.shape();
+
+        // 先获取 flat list
+        let flat = bytes_to_pylist(py, &bytes, n, dtype)?;
+
+        // 0-dim 或 1D：直接返回 flat list
+        if shape.len() <= 1 {
+            return Ok(flat);
+        }
+
+        // 多维：递归嵌套
+        nest_flat_list(py, flat.bind(py), shape, 0)
     }
 
     /// 0-dim 或 size=1 数组取标量值（ADR L1-11）。
@@ -179,9 +234,7 @@ impl PyArray {
     /// 返回原始字节序列。
     fn sync_and_copy_to_host(&self, _py: Python<'_>) -> PyResult<Vec<u8>> {
         // 1. stream 同步
-        self.inner.stream()
-            .synchronize()
-            .map_err(error::to_pyerr)?;
+        self.inner.stream().synchronize().map_err(error::to_pyerr)?;
 
         let nbytes = self.inner.nbytes();
         let mut bytes = vec![0u8; nbytes];
@@ -195,11 +248,7 @@ impl PyArray {
             Device::Cpu => {
                 if let Some(p) = ptr {
                     unsafe {
-                        std::ptr::copy_nonoverlapping(
-                            p.as_ptr(),
-                            bytes.as_mut_ptr(),
-                            nbytes,
-                        );
+                        std::ptr::copy_nonoverlapping(p.as_ptr(), bytes.as_mut_ptr(), nbytes);
                     }
                 }
             }
@@ -228,21 +277,50 @@ impl PyArray {
 // bytes → Python 转换辅助函数
 // ============================================================
 
-/// 将原始字节按 dtype 解释为 Python list。
-fn bytes_to_pylist(
+/// 将 flat Python list 按 shape 递归嵌套为多维 list。
+///
+/// 例如 flat=[1,2,3,4,5,6], shape=[2,3] → [[1,2,3],[4,5,6]]
+fn nest_flat_list(
     py: Python<'_>,
-    bytes: &[u8],
-    n: usize,
-    dtype: Dtype,
+    flat: &Bound<PyAny>,
+    shape: &[usize],
+    dim: usize,
 ) -> PyResult<PyObject> {
+    use pyo3::types::PyList;
+
+    let outer_len = shape[dim];
+    // 每个子数组的元素数（剩余维度的乘积）
+    let inner_size: usize = shape[dim + 1..].iter().product();
+
+    let flat_list = flat.downcast::<PyList>()?;
+    let result = PyList::empty(py);
+
+    for i in 0..outer_len {
+        let start = i * inner_size;
+        let end = start + inner_size;
+        let sub = flat_list.get_slice(start, end);
+        if dim + 1 < shape.len() - 1 {
+            // 还有更深层：继续递归嵌套
+            let nested = nest_flat_list(py, &sub, shape, dim + 1)?;
+            result.append(nested)?;
+        } else {
+            // 最内层：直接添加子 list
+            result.append(sub)?;
+        }
+    }
+
+    Ok(result.into())
+}
+
+/// 将原始字节按 dtype 解释为 Python list。
+fn bytes_to_pylist(py: Python<'_>, bytes: &[u8], n: usize, dtype: Dtype) -> PyResult<PyObject> {
     if n == 0 {
         return Ok(PyList::empty(py).into());
     }
 
     macro_rules! to_list {
         ($t:ty) => {{
-            let v: &[$t] =
-                unsafe { std::slice::from_raw_parts(bytes.as_ptr() as *const $t, n) };
+            let v: &[$t] = unsafe { std::slice::from_raw_parts(bytes.as_ptr() as *const $t, n) };
             return Ok(PyList::new(py, v.iter().copied())?.into());
         }};
     }

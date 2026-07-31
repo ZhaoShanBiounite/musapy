@@ -189,11 +189,7 @@ fn compile_kernels(kernels_dir: &Path, elementwise_mu: &Path, home: &Path) {
     }
 
     // -------- 2. ar 打包 .o → .a --------
-    let ar_status = Command::new("ar")
-        .arg("rcs")
-        .arg(&lib)
-        .arg(&obj)
-        .status();
+    let ar_status = Command::new("ar").arg("rcs").arg(&lib).arg(&obj).status();
 
     match ar_status {
         Ok(s) if s.success() => {
@@ -203,10 +199,7 @@ fn compile_kernels(kernels_dir: &Path, elementwise_mu: &Path, home: &Path) {
             );
         }
         Ok(s) => {
-            panic!(
-                "MUSAPY-OPS: ar failed with exit code {:?}",
-                s.code()
-            );
+            panic!("MUSAPY-OPS: ar failed with exit code {:?}", s.code());
         }
         Err(e) => {
             panic!("MUSAPY-OPS: failed to execute ar: {}", e);

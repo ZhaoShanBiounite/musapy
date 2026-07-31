@@ -588,7 +588,9 @@ mod tests {
         let stream = make_stream(Device::Musa(0));
         let buf = Arc::new(Buffer::alloc(64, Device::Musa(0), &stream).unwrap());
         let a = BufferRef::new(buf.clone());
-        let b = BufferRef::new(Arc::new(Buffer::alloc(64, Device::Musa(0), &stream).unwrap()));
+        let b = BufferRef::new(Arc::new(
+            Buffer::alloc(64, Device::Musa(0), &stream).unwrap(),
+        ));
         let out_ref = BufferRef::new(buf);
 
         assert_eq!(out_ref, a, "alias detected: out is same as input a");
@@ -598,9 +600,15 @@ mod tests {
     #[test]
     fn no_alias_scenario() {
         let stream = make_stream(Device::Musa(0));
-        let a = BufferRef::new(Arc::new(Buffer::alloc(64, Device::Musa(0), &stream).unwrap()));
-        let b = BufferRef::new(Arc::new(Buffer::alloc(64, Device::Musa(0), &stream).unwrap()));
-        let c = BufferRef::new(Arc::new(Buffer::alloc(64, Device::Musa(0), &stream).unwrap()));
+        let a = BufferRef::new(Arc::new(
+            Buffer::alloc(64, Device::Musa(0), &stream).unwrap(),
+        ));
+        let b = BufferRef::new(Arc::new(
+            Buffer::alloc(64, Device::Musa(0), &stream).unwrap(),
+        ));
+        let c = BufferRef::new(Arc::new(
+            Buffer::alloc(64, Device::Musa(0), &stream).unwrap(),
+        ));
 
         assert_ne!(a, b);
         assert_ne!(a, c);

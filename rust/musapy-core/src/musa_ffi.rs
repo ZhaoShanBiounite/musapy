@@ -13,7 +13,7 @@
 
 #![allow(non_camel_case_types)]
 use crate::error::{KernelError, MusapyError, Result, StreamError};
-use std::ffi::{c_char, c_int, c_uint, c_void, CStr};
+use std::ffi::{CStr, c_char, c_int, c_uint, c_void};
 
 // ============================================================
 // 类型定义（对标 CUDA/MUSA）
@@ -111,10 +111,7 @@ mod real {
         pub fn musaGetDevice(device: *mut c_int) -> musaError_t;
 
         // --- Device: 属性查询（ADR L1-3, P5.9 device_summary）---
-        pub fn musaGetDeviceProperties(
-            prop: *mut MusaDeviceProp,
-            device: c_int,
-        ) -> musaError_t;
+        pub fn musaGetDeviceProperties(prop: *mut MusaDeviceProp, device: c_int) -> musaError_t;
         pub fn musaMemGetInfo(free: *mut usize, total: *mut usize) -> musaError_t;
 
         // --- Memory: 默认路径（ADR L3-11，所有 SDK 版本可用）---
@@ -160,8 +157,8 @@ mod real {
 #[cfg(musapy_mock_musa)]
 mod mock {
     use super::*;
-    use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::Mutex;
+    use std::sync::atomic::{AtomicUsize, Ordering};
 
     static MOCK_HANDLE_COUNTER: AtomicUsize = AtomicUsize::new(1);
 
@@ -240,8 +237,8 @@ mod mock {
         }
         *value = match attr {
             MUSA_DEV_ATTR_MEMORY_POOLS_SUPPORTED => 1,
-            MUSA_DEV_ATTR_MULTIPROCESSOR_COUNT => 80,       // mock: 80 CUs
-            MUSA_DEV_ATTR_COMPUTE_CAPABILITY_MAJOR => 2,    // mock: arch 2.2
+            MUSA_DEV_ATTR_MULTIPROCESSOR_COUNT => 80, // mock: 80 CUs
+            MUSA_DEV_ATTR_COMPUTE_CAPABILITY_MAJOR => 2, // mock: arch 2.2
             MUSA_DEV_ATTR_COMPUTE_CAPABILITY_MINOR => 2,
             _ => 0,
         };
@@ -366,10 +363,10 @@ mod mock {
 // 统一导出
 // ============================================================
 
-#[cfg(not(musapy_mock_musa))]
-pub use real::*;
 #[cfg(musapy_mock_musa)]
 pub use mock::*;
+#[cfg(not(musapy_mock_musa))]
+pub use real::*;
 
 // ============================================================
 // 高层辅助函数
@@ -517,11 +514,7 @@ pub fn get_device_properties(device_id: i32) -> Result<DeviceProperties> {
             "musaDeviceGetAttribute(minor)",
         )?;
         check_musa(
-            musaDeviceGetAttribute(
-                &mut mp_count,
-                MUSA_DEV_ATTR_MULTIPROCESSOR_COUNT,
-                device_id,
-            ),
+            musaDeviceGetAttribute(&mut mp_count, MUSA_DEV_ATTR_MULTIPROCESSOR_COUNT, device_id),
             "musaDeviceGetAttribute(mp_count)",
         )?;
     }

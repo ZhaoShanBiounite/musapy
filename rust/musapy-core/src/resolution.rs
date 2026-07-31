@@ -223,7 +223,10 @@ pub fn resolve_device(arg: Option<Device>, inputs: &[Device]) -> Result<DeviceRe
     }
     // 级 3：InputArray（ufunc 风格，跟随第一个输入）
     if let Some(d) = inputs.first() {
-        return Ok(DeviceResolution::new(d.clone(), ResolutionSource::InputArray));
+        return Ok(DeviceResolution::new(
+            d.clone(),
+            ResolutionSource::InputArray,
+        ));
     }
     // 级 4：GlobalDefault
     if let Some(d) = get_default_device() {

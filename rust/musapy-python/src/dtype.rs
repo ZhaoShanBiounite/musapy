@@ -52,11 +52,9 @@ impl PyDtype {
     /// 从字符串构造：`Dtype("float32")`。
     #[new]
     fn new(name: &str) -> PyResult<Self> {
-        parse_dtype(name)
-            .map(Self)
-            .ok_or_else(|| {
-                pyo3::exceptions::PyValueError::new_err(format!("unknown dtype: {}", name))
-            })
+        parse_dtype(name).map(Self).ok_or_else(|| {
+            pyo3::exceptions::PyValueError::new_err(format!("unknown dtype: {}", name))
+        })
     }
 
     /// `"float32"` 等。

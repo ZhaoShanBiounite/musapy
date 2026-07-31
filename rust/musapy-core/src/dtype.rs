@@ -276,10 +276,7 @@ fn jax_promote(a: Dtype, b: Dtype) -> Result<Dtype> {
     }
 
     // 理论上不会到达（所有类别组合已覆盖）
-    Err(DtypeError::Unsupported(format!(
-        "cannot promote {} with {}",
-        a, b
-    )).into())
+    Err(DtypeError::Unsupported(format!("cannot promote {} with {}", a, b)).into())
 }
 
 // ============================================================
@@ -408,17 +405,32 @@ mod tests {
 
     #[test]
     fn promote_same_type() {
-        assert_eq!(promote(Dtype::Float32, Dtype::Float32, false).unwrap(), Dtype::Float32);
-        assert_eq!(promote(Dtype::Int64, Dtype::Int64, true).unwrap(), Dtype::Int64);
+        assert_eq!(
+            promote(Dtype::Float32, Dtype::Float32, false).unwrap(),
+            Dtype::Float32
+        );
+        assert_eq!(
+            promote(Dtype::Int64, Dtype::Int64, true).unwrap(),
+            Dtype::Int64
+        );
     }
 
     // --- promote: bool ---
 
     #[test]
     fn promote_bool_with_anything() {
-        assert_eq!(promote(Dtype::Bool, Dtype::Float32, false).unwrap(), Dtype::Float32);
-        assert_eq!(promote(Dtype::Int64, Dtype::Bool, false).unwrap(), Dtype::Int64);
-        assert_eq!(promote(Dtype::Bool, Dtype::Complex128, false).unwrap(), Dtype::Complex128);
+        assert_eq!(
+            promote(Dtype::Bool, Dtype::Float32, false).unwrap(),
+            Dtype::Float32
+        );
+        assert_eq!(
+            promote(Dtype::Int64, Dtype::Bool, false).unwrap(),
+            Dtype::Int64
+        );
+        assert_eq!(
+            promote(Dtype::Bool, Dtype::Complex128, false).unwrap(),
+            Dtype::Complex128
+        );
     }
 
     // --- promote: ADR L1-14 扩展表（JAX 模式，all_gpu=false）---
@@ -426,50 +438,95 @@ mod tests {
     #[test]
     fn jax_float_narrow_to_wide() {
         // f16 + f32 → f32（JAX 取宽）
-        assert_eq!(promote(Dtype::Float16, Dtype::Float32, false).unwrap(), Dtype::Float32);
+        assert_eq!(
+            promote(Dtype::Float16, Dtype::Float32, false).unwrap(),
+            Dtype::Float32
+        );
         // bf16 + f32 → f32
-        assert_eq!(promote(Dtype::Bfloat16, Dtype::Float32, false).unwrap(), Dtype::Float32);
+        assert_eq!(
+            promote(Dtype::Bfloat16, Dtype::Float32, false).unwrap(),
+            Dtype::Float32
+        );
     }
 
     #[test]
     fn jax_f16_plus_bf16_is_f32() {
         // f16 + bf16 → f32（同宽冲突）
-        assert_eq!(promote(Dtype::Float16, Dtype::Bfloat16, false).unwrap(), Dtype::Float32);
-        assert_eq!(promote(Dtype::Bfloat16, Dtype::Float16, false).unwrap(), Dtype::Float32);
+        assert_eq!(
+            promote(Dtype::Float16, Dtype::Bfloat16, false).unwrap(),
+            Dtype::Float32
+        );
+        assert_eq!(
+            promote(Dtype::Bfloat16, Dtype::Float16, false).unwrap(),
+            Dtype::Float32
+        );
     }
 
     #[test]
     fn jax_float_int() {
         // f32 + i32 → f32
-        assert_eq!(promote(Dtype::Float32, Dtype::Int32, false).unwrap(), Dtype::Float32);
+        assert_eq!(
+            promote(Dtype::Float32, Dtype::Int32, false).unwrap(),
+            Dtype::Float32
+        );
         // f16 + i8 → f32（float 至少 f32）
-        assert_eq!(promote(Dtype::Float16, Dtype::Int8, false).unwrap(), Dtype::Float32);
+        assert_eq!(
+            promote(Dtype::Float16, Dtype::Int8, false).unwrap(),
+            Dtype::Float32
+        );
         // f64 + i64 → f64
-        assert_eq!(promote(Dtype::Float64, Dtype::Int64, false).unwrap(), Dtype::Float64);
+        assert_eq!(
+            promote(Dtype::Float64, Dtype::Int64, false).unwrap(),
+            Dtype::Float64
+        );
     }
 
     #[test]
     fn jax_int_signed_unsigned() {
         // i32 + u32 → i64（signed+unsigned 同宽升一级，防溢出）
-        assert_eq!(promote(Dtype::Int32, Dtype::Uint32, false).unwrap(), Dtype::Int64);
+        assert_eq!(
+            promote(Dtype::Int32, Dtype::Uint32, false).unwrap(),
+            Dtype::Int64
+        );
         // i8 + u8 → i16
-        assert_eq!(promote(Dtype::Int8, Dtype::Uint8, false).unwrap(), Dtype::Int16);
+        assert_eq!(
+            promote(Dtype::Int8, Dtype::Uint8, false).unwrap(),
+            Dtype::Int16
+        );
         // i32 + u8 → i32（int 更宽，能容纳）
-        assert_eq!(promote(Dtype::Int32, Dtype::Uint8, false).unwrap(), Dtype::Int32);
+        assert_eq!(
+            promote(Dtype::Int32, Dtype::Uint8, false).unwrap(),
+            Dtype::Int32
+        );
         // i8 + u32 → i64（uint 更宽，升到 i64）
-        assert_eq!(promote(Dtype::Int8, Dtype::Uint32, false).unwrap(), Dtype::Int64);
+        assert_eq!(
+            promote(Dtype::Int8, Dtype::Uint32, false).unwrap(),
+            Dtype::Int64
+        );
     }
 
     #[test]
     fn jax_complex() {
         // f32 + c64 → c64
-        assert_eq!(promote(Dtype::Float32, Dtype::Complex64, false).unwrap(), Dtype::Complex64);
+        assert_eq!(
+            promote(Dtype::Float32, Dtype::Complex64, false).unwrap(),
+            Dtype::Complex64
+        );
         // f64 + c64 → c128
-        assert_eq!(promote(Dtype::Float64, Dtype::Complex64, false).unwrap(), Dtype::Complex128);
+        assert_eq!(
+            promote(Dtype::Float64, Dtype::Complex64, false).unwrap(),
+            Dtype::Complex128
+        );
         // c64 + c128 → c128
-        assert_eq!(promote(Dtype::Complex64, Dtype::Complex128, false).unwrap(), Dtype::Complex128);
+        assert_eq!(
+            promote(Dtype::Complex64, Dtype::Complex128, false).unwrap(),
+            Dtype::Complex128
+        );
         // i32 + c64 → c64
-        assert_eq!(promote(Dtype::Int32, Dtype::Complex64, false).unwrap(), Dtype::Complex64);
+        assert_eq!(
+            promote(Dtype::Int32, Dtype::Complex64, false).unwrap(),
+            Dtype::Complex64
+        );
     }
 
     // --- promote: ADR L1-14 扩展表（GPU narrow 模式，all_gpu=true）---
@@ -477,62 +534,95 @@ mod tests {
     #[test]
     fn gpu_f16_plus_f32_is_f16() {
         // f16 + f32 → f16（narrow priority）
-        assert_eq!(promote(Dtype::Float16, Dtype::Float32, true).unwrap(), Dtype::Float16);
-        assert_eq!(promote(Dtype::Float32, Dtype::Float16, true).unwrap(), Dtype::Float16);
+        assert_eq!(
+            promote(Dtype::Float16, Dtype::Float32, true).unwrap(),
+            Dtype::Float16
+        );
+        assert_eq!(
+            promote(Dtype::Float32, Dtype::Float16, true).unwrap(),
+            Dtype::Float16
+        );
     }
 
     #[test]
     fn gpu_bf16_plus_f32_is_bf16() {
         // bf16 + f32 → bf16（narrow priority）
-        assert_eq!(promote(Dtype::Bfloat16, Dtype::Float32, true).unwrap(), Dtype::Bfloat16);
+        assert_eq!(
+            promote(Dtype::Bfloat16, Dtype::Float32, true).unwrap(),
+            Dtype::Bfloat16
+        );
     }
 
     #[test]
     fn gpu_f16_plus_bf16_is_f32() {
         // f16 + bf16 → f32（同宽冲突 → JAX）
-        assert_eq!(promote(Dtype::Float16, Dtype::Bfloat16, true).unwrap(), Dtype::Float32);
+        assert_eq!(
+            promote(Dtype::Float16, Dtype::Bfloat16, true).unwrap(),
+            Dtype::Float32
+        );
     }
 
     #[test]
     fn gpu_f32_plus_f64_is_f32() {
         // f32 + f64 → f32（narrow priority）
-        assert_eq!(promote(Dtype::Float32, Dtype::Float64, true).unwrap(), Dtype::Float32);
+        assert_eq!(
+            promote(Dtype::Float32, Dtype::Float64, true).unwrap(),
+            Dtype::Float32
+        );
     }
 
     #[test]
     fn gpu_f32_plus_i32_is_f32() {
         // f32 + i32 → f32（跨类，JAX）
-        assert_eq!(promote(Dtype::Float32, Dtype::Int32, true).unwrap(), Dtype::Float32);
+        assert_eq!(
+            promote(Dtype::Float32, Dtype::Int32, true).unwrap(),
+            Dtype::Float32
+        );
     }
 
     #[test]
     fn gpu_i32_plus_i64_is_i32() {
         // i32 + i64 → i32（int narrow priority）
-        assert_eq!(promote(Dtype::Int32, Dtype::Int64, true).unwrap(), Dtype::Int32);
+        assert_eq!(
+            promote(Dtype::Int32, Dtype::Int64, true).unwrap(),
+            Dtype::Int32
+        );
     }
 
     #[test]
     fn gpu_i32_plus_u32_is_i64() {
         // i32 + u32 → i64（跨类 signed+unsigned，JAX 溢出保护）
-        assert_eq!(promote(Dtype::Int32, Dtype::Uint32, true).unwrap(), Dtype::Int64);
+        assert_eq!(
+            promote(Dtype::Int32, Dtype::Uint32, true).unwrap(),
+            Dtype::Int64
+        );
     }
 
     #[test]
     fn gpu_f32_plus_complex64_is_complex64() {
         // f32 + c64 → c64（跨类，JAX narrow）
-        assert_eq!(promote(Dtype::Float32, Dtype::Complex64, true).unwrap(), Dtype::Complex64);
+        assert_eq!(
+            promote(Dtype::Float32, Dtype::Complex64, true).unwrap(),
+            Dtype::Complex64
+        );
     }
 
     #[test]
     fn gpu_complex64_plus_complex128_is_complex64() {
         // c64 + c128 → c64（complex narrow priority）
-        assert_eq!(promote(Dtype::Complex64, Dtype::Complex128, true).unwrap(), Dtype::Complex64);
+        assert_eq!(
+            promote(Dtype::Complex64, Dtype::Complex128, true).unwrap(),
+            Dtype::Complex64
+        );
     }
 
     #[test]
     fn gpu_bool_plus_f32_is_f32() {
         // bool + f32 → f32（跨类，JAX）
-        assert_eq!(promote(Dtype::Bool, Dtype::Float32, true).unwrap(), Dtype::Float32);
+        assert_eq!(
+            promote(Dtype::Bool, Dtype::Float32, true).unwrap(),
+            Dtype::Float32
+        );
     }
 
     // --- promote: 对称性 ---

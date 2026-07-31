@@ -10,7 +10,7 @@ pub mod error;
 pub mod ops;
 pub mod stream;
 
-use musapy_core::{debug, mem_stats, resolution, Device};
+use musapy_core::{Device, debug, mem_stats, resolution};
 use pyo3::prelude::*;
 
 // ============================================================
@@ -192,11 +192,13 @@ fn memory_summary(device: Option<&Bound<'_, PyAny>>) -> PyResult<String> {
         if let Device::Musa(id) = dev {
             match musapy_core::musa_ffi::get_device_properties(id as i32) {
                 Ok(props) => {
+                    let used = props.total_memory.saturating_sub(props.free_memory);
                     out.push_str(&format!(
-                        "  Device musa:{} — {} free / {} total VRAM\n",
+                        "  Device musa:{} — {:.1} MB used / {:.0} MB total VRAM ({:.1} MB free)\n",
                         id,
-                        format_bytes(props.free_memory),
-                        format_bytes(props.total_memory)
+                        used as f64 / (1024.0 * 1024.0),
+                        props.total_memory as f64 / (1024.0 * 1024.0),
+                        props.free_memory as f64 / (1024.0 * 1024.0),
                     ));
                 }
                 Err(e) => {
@@ -300,6 +302,18 @@ fn _core(m: &Bound<'_, PyModule>) -> PyResult<()> {
     // --- 模块级函数 ---
     m.add_function(wrap_pyfunction!(ops::array, m)?)?;
     m.add_function(wrap_pyfunction!(ops::add, m)?)?;
+    m.add_function(wrap_pyfunction!(ops::sub, m)?)?;
+    m.add_function(wrap_pyfunction!(ops::mul, m)?)?;
+    m.add_function(wrap_pyfunction!(ops::div, m)?)?;
+    m.add_function(wrap_pyfunction!(ops::pow, m)?)?;
+    m.add_function(wrap_pyfunction!(ops::sin, m)?)?;
+    m.add_function(wrap_pyfunction!(ops::cos, m)?)?;
+    m.add_function(wrap_pyfunction!(ops::exp, m)?)?;
+    m.add_function(wrap_pyfunction!(ops::log, m)?)?;
+    m.add_function(wrap_pyfunction!(ops::abs, m)?)?;
+    m.add_function(wrap_pyfunction!(ops::sign, m)?)?;
+    m.add_function(wrap_pyfunction!(ops::neg, m)?)?;
+    m.add_function(wrap_pyfunction!(ops::clamp, m)?)?;
     m.add_function(wrap_pyfunction!(set_default_device, m)?)?;
     m.add_function(wrap_pyfunction!(set_default_dtype, m)?)?;
     m.add_function(wrap_pyfunction!(device_context, m)?)?;

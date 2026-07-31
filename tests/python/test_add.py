@@ -99,11 +99,12 @@ class TestAddErrors:
             ms.add(a, b)
 
     def test_dtype_mismatch(self):
-        """不同 dtype → DtypeError。"""
+        """不同 float dtype → 类型提升到 float64（Phase 2 type promotion）。"""
         a = ms.array([1.0, 2.0], dtype=ms.float32, device="cpu")
         b = ms.array([3.0, 4.0], dtype=ms.float64, device="cpu")
-        with pytest.raises(ms.DtypeError):
-            ms.add(a, b)
+        c = ms.add(a, b)
+        assert c.dtype == ms.float64
+        assert c.tolist() == [4.0, 6.0]
 
 
 class TestToList:
