@@ -8,6 +8,17 @@ static inline size_t grid_size_1d(size_t n) {
     return (n + 255) / 256;
 }
 
+/// 检测 strides 是否为 C-contiguous（row-major，元素单位）。
+/// 用于 wrapper 内部选择 flat kernel 还是 stride-aware kernel。
+static inline int is_contiguous_strides(const size_t* shape, const ssize_t* strides, int ndim) {
+    ssize_t expected = 1;
+    for (int i = ndim - 1; i >= 0; i--) {
+        if (strides[i] != expected) return 0;
+        expected *= (ssize_t)shape[i];
+    }
+    return 1;
+}
+
 /// 将输出线性索引（row-major contiguous）转换为指定 stride 操作数的元素偏移。
 ///
 /// - `linear_idx`：输出（连续）的线性索引 [0, product(shape))

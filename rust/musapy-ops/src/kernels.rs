@@ -119,6 +119,61 @@ unsafe extern "C" {
     pub fn musapy_cumsum_i64_v2(a: *const i64, c: *mut i64, ndim: i32, in_shape: *const usize, in_strides: *const isize, axis: i32, out_size: usize, stream: musaStream_t);
     pub fn musapy_cumsum_f32_v2(a: *const f32, c: *mut f32, ndim: i32, in_shape: *const usize, in_strides: *const isize, axis: i32, out_size: usize, stream: musaStream_t);
     pub fn musapy_cumsum_f64_v2(a: *const f64, c: *mut f64, ndim: i32, in_shape: *const usize, in_strides: *const isize, axis: i32, out_size: usize, stream: musaStream_t);
+
+    // ── Parallel reduction: partial（Phase 1）──
+    // 签名：(a, partials, ndim, in_shape, in_strides, axis, axis_len, out_size, tiles_per_output, stream)
+    pub fn musapy_sum_partial_i64_v2(a: *const i64, partials: *mut i64, ndim: i32, in_shape: *const usize, in_strides: *const isize, axis: i32, axis_len: usize, out_size: usize, tiles_per_output: usize, stream: musaStream_t);
+    pub fn musapy_sum_partial_f32_v2(a: *const f32, partials: *mut f32, ndim: i32, in_shape: *const usize, in_strides: *const isize, axis: i32, axis_len: usize, out_size: usize, tiles_per_output: usize, stream: musaStream_t);
+    pub fn musapy_sum_partial_f64_v2(a: *const f64, partials: *mut f64, ndim: i32, in_shape: *const usize, in_strides: *const isize, axis: i32, axis_len: usize, out_size: usize, tiles_per_output: usize, stream: musaStream_t);
+    pub fn musapy_prod_partial_i64_v2(a: *const i64, partials: *mut i64, ndim: i32, in_shape: *const usize, in_strides: *const isize, axis: i32, axis_len: usize, out_size: usize, tiles_per_output: usize, stream: musaStream_t);
+    pub fn musapy_prod_partial_f32_v2(a: *const f32, partials: *mut f32, ndim: i32, in_shape: *const usize, in_strides: *const isize, axis: i32, axis_len: usize, out_size: usize, tiles_per_output: usize, stream: musaStream_t);
+    pub fn musapy_prod_partial_f64_v2(a: *const f64, partials: *mut f64, ndim: i32, in_shape: *const usize, in_strides: *const isize, axis: i32, axis_len: usize, out_size: usize, tiles_per_output: usize, stream: musaStream_t);
+    pub fn musapy_max_partial_i64_v2(a: *const i64, partials: *mut i64, ndim: i32, in_shape: *const usize, in_strides: *const isize, axis: i32, axis_len: usize, out_size: usize, tiles_per_output: usize, stream: musaStream_t);
+    pub fn musapy_max_partial_f32_v2(a: *const f32, partials: *mut f32, ndim: i32, in_shape: *const usize, in_strides: *const isize, axis: i32, axis_len: usize, out_size: usize, tiles_per_output: usize, stream: musaStream_t);
+    pub fn musapy_max_partial_f64_v2(a: *const f64, partials: *mut f64, ndim: i32, in_shape: *const usize, in_strides: *const isize, axis: i32, axis_len: usize, out_size: usize, tiles_per_output: usize, stream: musaStream_t);
+    pub fn musapy_min_partial_i64_v2(a: *const i64, partials: *mut i64, ndim: i32, in_shape: *const usize, in_strides: *const isize, axis: i32, axis_len: usize, out_size: usize, tiles_per_output: usize, stream: musaStream_t);
+    pub fn musapy_min_partial_f32_v2(a: *const f32, partials: *mut f32, ndim: i32, in_shape: *const usize, in_strides: *const isize, axis: i32, axis_len: usize, out_size: usize, tiles_per_output: usize, stream: musaStream_t);
+    pub fn musapy_min_partial_f64_v2(a: *const f64, partials: *mut f64, ndim: i32, in_shape: *const usize, in_strides: *const isize, axis: i32, axis_len: usize, out_size: usize, tiles_per_output: usize, stream: musaStream_t);
+    pub fn musapy_mean_partial_i64_v2(a: *const i64, partials: *mut i64, ndim: i32, in_shape: *const usize, in_strides: *const isize, axis: i32, axis_len: usize, out_size: usize, tiles_per_output: usize, stream: musaStream_t);
+    pub fn musapy_mean_partial_f32_v2(a: *const f32, partials: *mut f32, ndim: i32, in_shape: *const usize, in_strides: *const isize, axis: i32, axis_len: usize, out_size: usize, tiles_per_output: usize, stream: musaStream_t);
+    pub fn musapy_mean_partial_f64_v2(a: *const f64, partials: *mut f64, ndim: i32, in_shape: *const usize, in_strides: *const isize, axis: i32, axis_len: usize, out_size: usize, tiles_per_output: usize, stream: musaStream_t);
+
+    // ── Parallel reduction: final（Phase 2）──
+    // 签名：(partials, c, num_partials, out_size, stream)
+    pub fn musapy_sum_final_i64_v2(partials: *const i64, c: *mut i64, num_partials: usize, out_size: usize, stream: musaStream_t);
+    pub fn musapy_sum_final_f32_v2(partials: *const f32, c: *mut f32, num_partials: usize, out_size: usize, stream: musaStream_t);
+    pub fn musapy_sum_final_f64_v2(partials: *const f64, c: *mut f64, num_partials: usize, out_size: usize, stream: musaStream_t);
+    pub fn musapy_prod_final_i64_v2(partials: *const i64, c: *mut i64, num_partials: usize, out_size: usize, stream: musaStream_t);
+    pub fn musapy_prod_final_f32_v2(partials: *const f32, c: *mut f32, num_partials: usize, out_size: usize, stream: musaStream_t);
+    pub fn musapy_prod_final_f64_v2(partials: *const f64, c: *mut f64, num_partials: usize, out_size: usize, stream: musaStream_t);
+    pub fn musapy_max_final_i64_v2(partials: *const i64, c: *mut i64, num_partials: usize, out_size: usize, stream: musaStream_t);
+    pub fn musapy_max_final_f32_v2(partials: *const f32, c: *mut f32, num_partials: usize, out_size: usize, stream: musaStream_t);
+    pub fn musapy_max_final_f64_v2(partials: *const f64, c: *mut f64, num_partials: usize, out_size: usize, stream: musaStream_t);
+    pub fn musapy_min_final_i64_v2(partials: *const i64, c: *mut i64, num_partials: usize, out_size: usize, stream: musaStream_t);
+    pub fn musapy_min_final_f32_v2(partials: *const f32, c: *mut f32, num_partials: usize, out_size: usize, stream: musaStream_t);
+    pub fn musapy_min_final_f64_v2(partials: *const f64, c: *mut f64, num_partials: usize, out_size: usize, stream: musaStream_t);
+
+    // mean final 额外需要 axis_len
+    pub fn musapy_mean_final_f32_v2(partials: *const f32, c: *mut f32, num_partials: usize, out_size: usize, axis_len: usize, stream: musaStream_t);
+    pub fn musapy_mean_final_f64_v2(partials: *const f64, c: *mut f64, num_partials: usize, out_size: usize, axis_len: usize, stream: musaStream_t);
+
+    // ── Argmax/Argmin parallel: partial ──
+    // 签名：(a, partials_val, partials_idx, ndim, in_shape, in_strides, axis, axis_len, out_size, tiles_per_output, stream)
+    pub fn musapy_argmax_partial_i64_v2(a: *const i64, partials_val: *mut i64, partials_idx: *mut i64, ndim: i32, in_shape: *const usize, in_strides: *const isize, axis: i32, axis_len: usize, out_size: usize, tiles_per_output: usize, stream: musaStream_t);
+    pub fn musapy_argmax_partial_f32_v2(a: *const f32, partials_val: *mut f32, partials_idx: *mut i64, ndim: i32, in_shape: *const usize, in_strides: *const isize, axis: i32, axis_len: usize, out_size: usize, tiles_per_output: usize, stream: musaStream_t);
+    pub fn musapy_argmax_partial_f64_v2(a: *const f64, partials_val: *mut f64, partials_idx: *mut i64, ndim: i32, in_shape: *const usize, in_strides: *const isize, axis: i32, axis_len: usize, out_size: usize, tiles_per_output: usize, stream: musaStream_t);
+    pub fn musapy_argmin_partial_i64_v2(a: *const i64, partials_val: *mut i64, partials_idx: *mut i64, ndim: i32, in_shape: *const usize, in_strides: *const isize, axis: i32, axis_len: usize, out_size: usize, tiles_per_output: usize, stream: musaStream_t);
+    pub fn musapy_argmin_partial_f32_v2(a: *const f32, partials_val: *mut f32, partials_idx: *mut i64, ndim: i32, in_shape: *const usize, in_strides: *const isize, axis: i32, axis_len: usize, out_size: usize, tiles_per_output: usize, stream: musaStream_t);
+    pub fn musapy_argmin_partial_f64_v2(a: *const f64, partials_val: *mut f64, partials_idx: *mut i64, ndim: i32, in_shape: *const usize, in_strides: *const isize, axis: i32, axis_len: usize, out_size: usize, tiles_per_output: usize, stream: musaStream_t);
+
+    // ── Argmax/Argmin parallel: final ──
+    // 签名：(partials_val, partials_idx, c, num_partials, out_size, stream)
+    pub fn musapy_argmax_final_i64_v2(partials_val: *const i64, partials_idx: *const i64, c: *mut i64, num_partials: usize, out_size: usize, stream: musaStream_t);
+    pub fn musapy_argmax_final_f32_v2(partials_val: *const f32, partials_idx: *const i64, c: *mut i64, num_partials: usize, out_size: usize, stream: musaStream_t);
+    pub fn musapy_argmax_final_f64_v2(partials_val: *const f64, partials_idx: *const i64, c: *mut i64, num_partials: usize, out_size: usize, stream: musaStream_t);
+    pub fn musapy_argmin_final_i64_v2(partials_val: *const i64, partials_idx: *const i64, c: *mut i64, num_partials: usize, out_size: usize, stream: musaStream_t);
+    pub fn musapy_argmin_final_f32_v2(partials_val: *const f32, partials_idx: *const i64, c: *mut i64, num_partials: usize, out_size: usize, stream: musaStream_t);
+    pub fn musapy_argmin_final_f64_v2(partials_val: *const f64, partials_idx: *const i64, c: *mut i64, num_partials: usize, out_size: usize, stream: musaStream_t);
 }
 
 // ── Mock 模式：CPU stub ─────────────────────────────────────
@@ -561,6 +616,267 @@ mod mock {
     mock_cumsum_v2!(musapy_cumsum_i64_v2, i64);
     mock_cumsum_v2!(musapy_cumsum_f32_v2, f32);
     mock_cumsum_v2!(musapy_cumsum_f64_v2, f64);
+
+    // ── Parallel reduction mock（Phase B）──
+
+    // Partial mock 宏（sum/prod/max/min）：将 axis 分成 tiles_per_output 段，每段独立缩减
+    macro_rules! mock_reduce_partial_v2 {
+        ($name:ident, $t:ty, $identity:expr, $accum:expr) => {
+            pub unsafe fn $name(
+                a: *const $t, partials: *mut $t,
+                ndim: i32, in_shape: *const usize, in_strides: *const isize,
+                axis: i32, axis_len: usize, out_size: usize,
+                tiles_per_output: usize, _stream: musaStream_t,
+            ) {
+                if a.is_null() || partials.is_null() || ndim <= 0 || out_size == 0 { return; }
+                let ndim_u = ndim as usize;
+                let shape_s = std::slice::from_raw_parts(in_shape, ndim_u);
+                let strides_s = std::slice::from_raw_parts(in_strides, ndim_u);
+                let axis_u = axis as usize;
+                let accum: fn($t, $t) -> $t = $accum;
+                let chunk = (axis_len + tiles_per_output - 1) / tiles_per_output;
+                for out_idx in 0..out_size {
+                    let base = mock_reduce_offset(out_idx, shape_s, strides_s, axis_u, 0);
+                    let axis_stride = strides_s[axis_u];
+                    for tile in 0..tiles_per_output {
+                        let start = tile * chunk;
+                        let end = (start + chunk).min(axis_len);
+                        let mut acc: $t = $identity;
+                        for k in start..end {
+                            let off = (base as isize + k as isize * axis_stride) as usize;
+                            acc = accum(acc, *a.add(off));
+                        }
+                        *partials.add(out_idx * tiles_per_output + tile) = acc;
+                    }
+                }
+            }
+        };
+    }
+
+    mock_reduce_partial_v2!(musapy_sum_partial_i64_v2, i64, 0, |acc, v| acc + v);
+    mock_reduce_partial_v2!(musapy_sum_partial_f32_v2, f32, 0.0, |acc, v| acc + v);
+    mock_reduce_partial_v2!(musapy_sum_partial_f64_v2, f64, 0.0, |acc, v| acc + v);
+    mock_reduce_partial_v2!(musapy_prod_partial_i64_v2, i64, 1, |acc, v| acc * v);
+    mock_reduce_partial_v2!(musapy_prod_partial_f32_v2, f32, 1.0, |acc, v| acc * v);
+    mock_reduce_partial_v2!(musapy_prod_partial_f64_v2, f64, 1.0, |acc, v| acc * v);
+
+    // max/min partial mock（用第一个元素初始化）
+    macro_rules! mock_minmax_partial_v2 {
+        ($name:ident, $t:ty, $is_better:expr) => {
+            pub unsafe fn $name(
+                a: *const $t, partials: *mut $t,
+                ndim: i32, in_shape: *const usize, in_strides: *const isize,
+                axis: i32, axis_len: usize, out_size: usize,
+                tiles_per_output: usize, _stream: musaStream_t,
+            ) {
+                if a.is_null() || partials.is_null() || ndim <= 0 || out_size == 0 || axis_len == 0 { return; }
+                let ndim_u = ndim as usize;
+                let shape_s = std::slice::from_raw_parts(in_shape, ndim_u);
+                let strides_s = std::slice::from_raw_parts(in_strides, ndim_u);
+                let axis_u = axis as usize;
+                let is_better: fn($t, $t) -> bool = $is_better;
+                let chunk = (axis_len + tiles_per_output - 1) / tiles_per_output;
+                for out_idx in 0..out_size {
+                    let base = mock_reduce_offset(out_idx, shape_s, strides_s, axis_u, 0);
+                    let axis_stride = strides_s[axis_u];
+                    for tile in 0..tiles_per_output {
+                        let start = tile * chunk;
+                        let end = (start + chunk).min(axis_len);
+                        if start >= axis_len {
+                            // 空 tile：写入 identity（不影响 final）
+                            *partials.add(out_idx * tiles_per_output + tile) = *a.add(base);
+                            continue;
+                        }
+                        let first_off = (base as isize + start as isize * axis_stride) as usize;
+                        let mut acc = *a.add(first_off);
+                        for k in (start + 1)..end {
+                            let off = (base as isize + k as isize * axis_stride) as usize;
+                            let val = *a.add(off);
+                            if is_better(val, acc) { acc = val; }
+                        }
+                        *partials.add(out_idx * tiles_per_output + tile) = acc;
+                    }
+                }
+            }
+        };
+    }
+
+    mock_minmax_partial_v2!(musapy_max_partial_i64_v2, i64, |v, acc| v > acc);
+    mock_minmax_partial_v2!(musapy_max_partial_f32_v2, f32, |v, acc| v > acc);
+    mock_minmax_partial_v2!(musapy_max_partial_f64_v2, f64, |v, acc| v > acc);
+    mock_minmax_partial_v2!(musapy_min_partial_i64_v2, i64, |v, acc| v < acc);
+    mock_minmax_partial_v2!(musapy_min_partial_f32_v2, f32, |v, acc| v < acc);
+    mock_minmax_partial_v2!(musapy_min_partial_f64_v2, f64, |v, acc| v < acc);
+
+    // mean partial mock（只做 sum，final 再除）
+    mock_reduce_partial_v2!(musapy_mean_partial_i64_v2, i64, 0, |acc, v| acc + v);
+    mock_reduce_partial_v2!(musapy_mean_partial_f32_v2, f32, 0.0, |acc, v| acc + v);
+    mock_reduce_partial_v2!(musapy_mean_partial_f64_v2, f64, 0.0, |acc, v| acc + v);
+
+    // Final mock 宏（sum/prod/max/min）：缩减 partials → 最终输出
+    macro_rules! mock_reduce_final_v2 {
+        ($name:ident, $t:ty, $identity:expr, $accum:expr) => {
+            pub unsafe fn $name(
+                partials: *const $t, c: *mut $t,
+                num_partials: usize, out_size: usize, _stream: musaStream_t,
+            ) {
+                if partials.is_null() || c.is_null() || out_size == 0 { return; }
+                let accum: fn($t, $t) -> $t = $accum;
+                for out_idx in 0..out_size {
+                    let mut acc: $t = $identity;
+                    for i in 0..num_partials {
+                        acc = accum(acc, *partials.add(out_idx * num_partials + i));
+                    }
+                    *c.add(out_idx) = acc;
+                }
+            }
+        };
+    }
+
+    mock_reduce_final_v2!(musapy_sum_final_i64_v2, i64, 0, |acc, v| acc + v);
+    mock_reduce_final_v2!(musapy_sum_final_f32_v2, f32, 0.0, |acc, v| acc + v);
+    mock_reduce_final_v2!(musapy_sum_final_f64_v2, f64, 0.0, |acc, v| acc + v);
+    mock_reduce_final_v2!(musapy_prod_final_i64_v2, i64, 1, |acc, v| acc * v);
+    mock_reduce_final_v2!(musapy_prod_final_f32_v2, f32, 1.0, |acc, v| acc * v);
+    mock_reduce_final_v2!(musapy_prod_final_f64_v2, f64, 1.0, |acc, v| acc * v);
+
+    // max/min final mock
+    macro_rules! mock_minmax_final_v2 {
+        ($name:ident, $t:ty, $is_better:expr) => {
+            pub unsafe fn $name(
+                partials: *const $t, c: *mut $t,
+                num_partials: usize, out_size: usize, _stream: musaStream_t,
+            ) {
+                if partials.is_null() || c.is_null() || out_size == 0 || num_partials == 0 { return; }
+                let is_better: fn($t, $t) -> bool = $is_better;
+                for out_idx in 0..out_size {
+                    let mut acc = *partials.add(out_idx * num_partials);
+                    for i in 1..num_partials {
+                        let val = *partials.add(out_idx * num_partials + i);
+                        if is_better(val, acc) { acc = val; }
+                    }
+                    *c.add(out_idx) = acc;
+                }
+            }
+        };
+    }
+
+    mock_minmax_final_v2!(musapy_max_final_i64_v2, i64, |v, acc| v > acc);
+    mock_minmax_final_v2!(musapy_max_final_f32_v2, f32, |v, acc| v > acc);
+    mock_minmax_final_v2!(musapy_max_final_f64_v2, f64, |v, acc| v > acc);
+    mock_minmax_final_v2!(musapy_min_final_i64_v2, i64, |v, acc| v < acc);
+    mock_minmax_final_v2!(musapy_min_final_f32_v2, f32, |v, acc| v < acc);
+    mock_minmax_final_v2!(musapy_min_final_f64_v2, f64, |v, acc| v < acc);
+
+    // mean final mock（sum partials 再除 axis_len）
+    macro_rules! mock_mean_final_v2 {
+        ($name:ident, $t:ty) => {
+            pub unsafe fn $name(
+                partials: *const $t, c: *mut $t,
+                num_partials: usize, out_size: usize, axis_len: usize, _stream: musaStream_t,
+            ) {
+                if partials.is_null() || c.is_null() || out_size == 0 || axis_len == 0 { return; }
+                for out_idx in 0..out_size {
+                    let mut acc: $t = 0.0;
+                    for i in 0..num_partials {
+                        acc += *partials.add(out_idx * num_partials + i);
+                    }
+                    *c.add(out_idx) = acc / axis_len as $t;
+                }
+            }
+        };
+    }
+
+    mock_mean_final_v2!(musapy_mean_final_f32_v2, f32);
+    mock_mean_final_v2!(musapy_mean_final_f64_v2, f64);
+
+    // Argmax/Argmin partial mock
+    macro_rules! mock_argreduce_partial_v2 {
+        ($name:ident, $t:ty, $is_better:expr) => {
+            pub unsafe fn $name(
+                a: *const $t, partials_val: *mut $t, partials_idx: *mut i64,
+                ndim: i32, in_shape: *const usize, in_strides: *const isize,
+                axis: i32, axis_len: usize, out_size: usize,
+                tiles_per_output: usize, _stream: musaStream_t,
+            ) {
+                if a.is_null() || partials_val.is_null() || partials_idx.is_null() || ndim <= 0 || out_size == 0 || axis_len == 0 { return; }
+                let ndim_u = ndim as usize;
+                let shape_s = std::slice::from_raw_parts(in_shape, ndim_u);
+                let strides_s = std::slice::from_raw_parts(in_strides, ndim_u);
+                let axis_u = axis as usize;
+                let is_better: fn($t, $t) -> bool = $is_better;
+                let chunk = (axis_len + tiles_per_output - 1) / tiles_per_output;
+                for out_idx in 0..out_size {
+                    let base = mock_reduce_offset(out_idx, shape_s, strides_s, axis_u, 0);
+                    let axis_stride = strides_s[axis_u];
+                    for tile in 0..tiles_per_output {
+                        let start = tile * chunk;
+                        let end = (start + chunk).min(axis_len);
+                        if start >= axis_len {
+                            // 空 tile
+                            let off = (base as isize) as usize;
+                            *partials_val.add(out_idx * tiles_per_output + tile) = *a.add(off);
+                            *partials_idx.add(out_idx * tiles_per_output + tile) = 0;
+                            continue;
+                        }
+                        let first_off = (base as isize + start as isize * axis_stride) as usize;
+                        let mut best_val = *a.add(first_off);
+                        let mut best_idx = start as i64;
+                        for k in (start + 1)..end {
+                            let off = (base as isize + k as isize * axis_stride) as usize;
+                            let val = *a.add(off);
+                            if is_better(val, best_val) {
+                                best_val = val;
+                                best_idx = k as i64;
+                            }
+                        }
+                        *partials_val.add(out_idx * tiles_per_output + tile) = best_val;
+                        *partials_idx.add(out_idx * tiles_per_output + tile) = best_idx;
+                    }
+                }
+            }
+        };
+    }
+
+    mock_argreduce_partial_v2!(musapy_argmax_partial_i64_v2, i64, |v, best| v > best);
+    mock_argreduce_partial_v2!(musapy_argmax_partial_f32_v2, f32, |v, best| v > best);
+    mock_argreduce_partial_v2!(musapy_argmax_partial_f64_v2, f64, |v, best| v > best);
+    mock_argreduce_partial_v2!(musapy_argmin_partial_i64_v2, i64, |v, best| v < best);
+    mock_argreduce_partial_v2!(musapy_argmin_partial_f32_v2, f32, |v, best| v < best);
+    mock_argreduce_partial_v2!(musapy_argmin_partial_f64_v2, f64, |v, best| v < best);
+
+    // Argmax/Argmin final mock
+    macro_rules! mock_argreduce_final_v2 {
+        ($name:ident, $t:ty, $is_better:expr) => {
+            pub unsafe fn $name(
+                partials_val: *const $t, partials_idx: *const i64, c: *mut i64,
+                num_partials: usize, out_size: usize, _stream: musaStream_t,
+            ) {
+                if partials_val.is_null() || partials_idx.is_null() || c.is_null() || out_size == 0 || num_partials == 0 { return; }
+                let is_better: fn($t, $t) -> bool = $is_better;
+                for out_idx in 0..out_size {
+                    let base = out_idx * num_partials;
+                    let mut best_val = *partials_val.add(base);
+                    let mut best_idx = *partials_idx.add(base);
+                    for i in 1..num_partials {
+                        let val = *partials_val.add(base + i);
+                        if is_better(val, best_val) {
+                            best_val = val;
+                            best_idx = *partials_idx.add(base + i);
+                        }
+                    }
+                    *c.add(out_idx) = best_idx;
+                }
+            }
+        };
+    }
+
+    mock_argreduce_final_v2!(musapy_argmax_final_i64_v2, i64, |v, best| v > best);
+    mock_argreduce_final_v2!(musapy_argmax_final_f32_v2, f32, |v, best| v > best);
+    mock_argreduce_final_v2!(musapy_argmax_final_f64_v2, f64, |v, best| v > best);
+    mock_argreduce_final_v2!(musapy_argmin_final_i64_v2, i64, |v, best| v < best);
+    mock_argreduce_final_v2!(musapy_argmin_final_f32_v2, f32, |v, best| v < best);
+    mock_argreduce_final_v2!(musapy_argmin_final_f64_v2, f64, |v, best| v < best);
 }
 
 // Mock 模式 re-export

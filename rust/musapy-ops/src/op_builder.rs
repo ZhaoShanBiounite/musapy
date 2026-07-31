@@ -172,6 +172,75 @@ macro_rules! launch_cumsum {
     };
 }
 
+/// Parallel reduction partial launch（Phase 1）。
+macro_rules! launch_reduce_partial {
+    ($fn:ident, $ap:expr, $pp:expr, $ndim:expr, $in_shape:expr, $in_strides:expr,
+     $axis:expr, $axis_len:expr, $out_size:expr, $tiles:expr, $stream:expr, $label:expr) => {
+        if let (Some(ap), Some(pp)) = ($ap, $pp) {
+            unsafe {
+                kernels::$fn(ap.as_ptr() as _, pp.as_ptr() as _,
+                    $ndim, $in_shape.as_ptr(), $in_strides.as_ptr(),
+                    $axis, $axis_len, $out_size, $tiles, $stream);
+            }
+            musa_ffi::check_last_kernel_launch($label)?;
+        }
+    };
+}
+
+/// Parallel reduction final launch（Phase 2）。
+macro_rules! launch_reduce_final {
+    ($fn:ident, $pp:expr, $op:expr, $num_partials:expr, $out_size:expr, $stream:expr, $label:expr) => {
+        if let (Some(pp), Some(op)) = ($pp, $op) {
+            unsafe {
+                kernels::$fn(pp.as_ptr() as _, op.as_ptr() as _,
+                    $num_partials, $out_size, $stream);
+            }
+            musa_ffi::check_last_kernel_launch($label)?;
+        }
+    };
+}
+
+/// Mean final launch（额外 axis_len 参数）。
+macro_rules! launch_mean_final {
+    ($fn:ident, $pp:expr, $op:expr, $num_partials:expr, $out_size:expr, $axis_len:expr, $stream:expr, $label:expr) => {
+        if let (Some(pp), Some(op)) = ($pp, $op) {
+            unsafe {
+                kernels::$fn(pp.as_ptr() as _, op.as_ptr() as _,
+                    $num_partials, $out_size, $axis_len, $stream);
+            }
+            musa_ffi::check_last_kernel_launch($label)?;
+        }
+    };
+}
+
+/// Argmax/Argmin parallel partial launch（Phase 1）。
+macro_rules! launch_argreduce_partial {
+    ($fn:ident, $ap:expr, $vp:expr, $ip:expr, $ndim:expr, $in_shape:expr, $in_strides:expr,
+     $axis:expr, $axis_len:expr, $out_size:expr, $tiles:expr, $stream:expr, $label:expr) => {
+        if let (Some(ap), Some(vp), Some(ip)) = ($ap, $vp, $ip) {
+            unsafe {
+                kernels::$fn(ap.as_ptr() as _, vp.as_ptr() as _, ip.as_ptr() as _,
+                    $ndim, $in_shape.as_ptr(), $in_strides.as_ptr(),
+                    $axis, $axis_len, $out_size, $tiles, $stream);
+            }
+            musa_ffi::check_last_kernel_launch($label)?;
+        }
+    };
+}
+
+/// Argmax/Argmin parallel final launch（Phase 2）。
+macro_rules! launch_argreduce_final {
+    ($fn:ident, $vp:expr, $ip:expr, $op:expr, $num_partials:expr, $out_size:expr, $stream:expr, $label:expr) => {
+        if let (Some(vp), Some(ip), Some(op)) = ($vp, $ip, $op) {
+            unsafe {
+                kernels::$fn(vp.as_ptr() as _, ip.as_ptr() as _, op.as_ptr() as _,
+                    $num_partials, $out_size, $stream);
+            }
+            musa_ffi::check_last_kernel_launch($label)?;
+        }
+    };
+}
+
 /// CPU cast 单 (src, dst) 类型对的 `as` 转换循环（stride-aware）。
 macro_rules! cpu_cast_pair {
     ($src_t:ty, $dst_t:ty, $a:expr, $c:expr, $shape:expr, $strides:expr) => {{
@@ -1685,7 +1754,7 @@ fn cpu_cast(
 // ── Reduction（Phase 4, ADR-002-D3）──────────────────────────
 
 /// 具体 reduction kernel 标识（用于骨架分派）。
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub(crate) enum ReduceKernel {
     Sum,
     Prod,
@@ -1908,35 +1977,158 @@ pub(crate) fn reduction_axis(
                 );
             }
             Device::Musa(_) => {
-                if kernel.output_is_index() {
-                    // argmax/argmin：输入 compute_dtype，输出 i64
-                    match (&kernel, compute_dtype) {
-                        (ReduceKernel::Argmax, Dtype::Int64) => launch_argreduce!(musapy_argmax_i64_v2, a_ptr, out_ptr, kernel_ndim, kernel_shape, in_strides, kernel_axis, axis_len, out_size, stream_raw, "argmax_i64_v2"),
-                        (ReduceKernel::Argmax, Dtype::Float32) => launch_argreduce!(musapy_argmax_f32_v2, a_ptr, out_ptr, kernel_ndim, kernel_shape, in_strides, kernel_axis, axis_len, out_size, stream_raw, "argmax_f32_v2"),
-                        (ReduceKernel::Argmax, Dtype::Float64) => launch_argreduce!(musapy_argmax_f64_v2, a_ptr, out_ptr, kernel_ndim, kernel_shape, in_strides, kernel_axis, axis_len, out_size, stream_raw, "argmax_f64_v2"),
-                        (ReduceKernel::Argmin, Dtype::Int64) => launch_argreduce!(musapy_argmin_i64_v2, a_ptr, out_ptr, kernel_ndim, kernel_shape, in_strides, kernel_axis, axis_len, out_size, stream_raw, "argmin_i64_v2"),
-                        (ReduceKernel::Argmin, Dtype::Float32) => launch_argreduce!(musapy_argmin_f32_v2, a_ptr, out_ptr, kernel_ndim, kernel_shape, in_strides, kernel_axis, axis_len, out_size, stream_raw, "argmin_f32_v2"),
-                        (ReduceKernel::Argmin, Dtype::Float64) => launch_argreduce!(musapy_argmin_f64_v2, a_ptr, out_ptr, kernel_ndim, kernel_shape, in_strides, kernel_axis, axis_len, out_size, stream_raw, "argmin_f64_v2"),
-                        _ => unreachable!(),
+                // 两阶段并行阈值：axis_len > 此值时使用 block-cooperative reduction
+                const PARALLEL_REDUCE_THRESHOLD: usize = 1024;
+
+                if axis_len > PARALLEL_REDUCE_THRESHOLD {
+                    // ═══ 两阶段并行路径 ═══
+                    let tiles_per_output = (axis_len + 255) / 256;
+                    let num_partials = tiles_per_output; // per output element
+                    let elem_size = compute_dtype.element_size();
+
+                    if kernel.output_is_index() {
+                        // argmax/argmin：需要 partials_val + partials_idx 两个 buffer
+                        let partial_val_nbytes = out_size * tiles_per_output * elem_size;
+                        let partial_idx_nbytes = out_size * tiles_per_output * 8; // i64
+                        let partial_val_buf = Buffer::alloc(partial_val_nbytes, device.clone(), &out_stream)?;
+                        let partial_idx_buf = Buffer::alloc(partial_idx_nbytes, device.clone(), &out_stream)?;
+                        let pv_ptr = partial_val_buf.ptr();
+                        let pi_ptr = partial_idx_buf.ptr();
+
+                        match (&kernel, compute_dtype) {
+                            (ReduceKernel::Argmax, Dtype::Int64) => {
+                                launch_argreduce_partial!(musapy_argmax_partial_i64_v2, a_ptr, pv_ptr, pi_ptr, kernel_ndim, kernel_shape, in_strides, kernel_axis, axis_len, out_size, tiles_per_output, stream_raw, "argmax_partial_i64_v2");
+                                launch_argreduce_final!(musapy_argmax_final_i64_v2, pv_ptr, pi_ptr, out_ptr, num_partials, out_size, stream_raw, "argmax_final_i64_v2");
+                            }
+                            (ReduceKernel::Argmax, Dtype::Float32) => {
+                                launch_argreduce_partial!(musapy_argmax_partial_f32_v2, a_ptr, pv_ptr, pi_ptr, kernel_ndim, kernel_shape, in_strides, kernel_axis, axis_len, out_size, tiles_per_output, stream_raw, "argmax_partial_f32_v2");
+                                launch_argreduce_final!(musapy_argmax_final_f32_v2, pv_ptr, pi_ptr, out_ptr, num_partials, out_size, stream_raw, "argmax_final_f32_v2");
+                            }
+                            (ReduceKernel::Argmax, Dtype::Float64) => {
+                                launch_argreduce_partial!(musapy_argmax_partial_f64_v2, a_ptr, pv_ptr, pi_ptr, kernel_ndim, kernel_shape, in_strides, kernel_axis, axis_len, out_size, tiles_per_output, stream_raw, "argmax_partial_f64_v2");
+                                launch_argreduce_final!(musapy_argmax_final_f64_v2, pv_ptr, pi_ptr, out_ptr, num_partials, out_size, stream_raw, "argmax_final_f64_v2");
+                            }
+                            (ReduceKernel::Argmin, Dtype::Int64) => {
+                                launch_argreduce_partial!(musapy_argmin_partial_i64_v2, a_ptr, pv_ptr, pi_ptr, kernel_ndim, kernel_shape, in_strides, kernel_axis, axis_len, out_size, tiles_per_output, stream_raw, "argmin_partial_i64_v2");
+                                launch_argreduce_final!(musapy_argmin_final_i64_v2, pv_ptr, pi_ptr, out_ptr, num_partials, out_size, stream_raw, "argmin_final_i64_v2");
+                            }
+                            (ReduceKernel::Argmin, Dtype::Float32) => {
+                                launch_argreduce_partial!(musapy_argmin_partial_f32_v2, a_ptr, pv_ptr, pi_ptr, kernel_ndim, kernel_shape, in_strides, kernel_axis, axis_len, out_size, tiles_per_output, stream_raw, "argmin_partial_f32_v2");
+                                launch_argreduce_final!(musapy_argmin_final_f32_v2, pv_ptr, pi_ptr, out_ptr, num_partials, out_size, stream_raw, "argmin_final_f32_v2");
+                            }
+                            (ReduceKernel::Argmin, Dtype::Float64) => {
+                                launch_argreduce_partial!(musapy_argmin_partial_f64_v2, a_ptr, pv_ptr, pi_ptr, kernel_ndim, kernel_shape, in_strides, kernel_axis, axis_len, out_size, tiles_per_output, stream_raw, "argmin_partial_f64_v2");
+                                launch_argreduce_final!(musapy_argmin_final_f64_v2, pv_ptr, pi_ptr, out_ptr, num_partials, out_size, stream_raw, "argmin_final_f64_v2");
+                            }
+                            _ => unreachable!(),
+                        }
+                    } else if kernel == ReduceKernel::Mean {
+                        // mean：partial 做 sum，final 除以 axis_len
+                        let partial_nbytes = out_size * tiles_per_output * elem_size;
+                        let partial_buf = Buffer::alloc(partial_nbytes, device.clone(), &out_stream)?;
+                        let pp_ptr = partial_buf.ptr();
+
+                        match compute_dtype {
+                            Dtype::Float32 => {
+                                launch_reduce_partial!(musapy_mean_partial_f32_v2, a_ptr, pp_ptr, kernel_ndim, kernel_shape, in_strides, kernel_axis, axis_len, out_size, tiles_per_output, stream_raw, "mean_partial_f32_v2");
+                                launch_mean_final!(musapy_mean_final_f32_v2, pp_ptr, out_ptr, num_partials, out_size, axis_len, stream_raw, "mean_final_f32_v2");
+                            }
+                            Dtype::Float64 => {
+                                launch_reduce_partial!(musapy_mean_partial_f64_v2, a_ptr, pp_ptr, kernel_ndim, kernel_shape, in_strides, kernel_axis, axis_len, out_size, tiles_per_output, stream_raw, "mean_partial_f64_v2");
+                                launch_mean_final!(musapy_mean_final_f64_v2, pp_ptr, out_ptr, num_partials, out_size, axis_len, stream_raw, "mean_final_f64_v2");
+                            }
+                            _ => unreachable!("mean only supports float compute dtype"),
+                        }
+                    } else {
+                        // sum/prod/max/min
+                        let partial_nbytes = out_size * tiles_per_output * elem_size;
+                        let partial_buf = Buffer::alloc(partial_nbytes, device.clone(), &out_stream)?;
+                        let pp_ptr = partial_buf.ptr();
+
+                        match (&kernel, compute_dtype) {
+                            (ReduceKernel::Sum, Dtype::Int64) => {
+                                launch_reduce_partial!(musapy_sum_partial_i64_v2, a_ptr, pp_ptr, kernel_ndim, kernel_shape, in_strides, kernel_axis, axis_len, out_size, tiles_per_output, stream_raw, "sum_partial_i64_v2");
+                                launch_reduce_final!(musapy_sum_final_i64_v2, pp_ptr, out_ptr, num_partials, out_size, stream_raw, "sum_final_i64_v2");
+                            }
+                            (ReduceKernel::Sum, Dtype::Float32) => {
+                                launch_reduce_partial!(musapy_sum_partial_f32_v2, a_ptr, pp_ptr, kernel_ndim, kernel_shape, in_strides, kernel_axis, axis_len, out_size, tiles_per_output, stream_raw, "sum_partial_f32_v2");
+                                launch_reduce_final!(musapy_sum_final_f32_v2, pp_ptr, out_ptr, num_partials, out_size, stream_raw, "sum_final_f32_v2");
+                            }
+                            (ReduceKernel::Sum, Dtype::Float64) => {
+                                launch_reduce_partial!(musapy_sum_partial_f64_v2, a_ptr, pp_ptr, kernel_ndim, kernel_shape, in_strides, kernel_axis, axis_len, out_size, tiles_per_output, stream_raw, "sum_partial_f64_v2");
+                                launch_reduce_final!(musapy_sum_final_f64_v2, pp_ptr, out_ptr, num_partials, out_size, stream_raw, "sum_final_f64_v2");
+                            }
+                            (ReduceKernel::Prod, Dtype::Int64) => {
+                                launch_reduce_partial!(musapy_prod_partial_i64_v2, a_ptr, pp_ptr, kernel_ndim, kernel_shape, in_strides, kernel_axis, axis_len, out_size, tiles_per_output, stream_raw, "prod_partial_i64_v2");
+                                launch_reduce_final!(musapy_prod_final_i64_v2, pp_ptr, out_ptr, num_partials, out_size, stream_raw, "prod_final_i64_v2");
+                            }
+                            (ReduceKernel::Prod, Dtype::Float32) => {
+                                launch_reduce_partial!(musapy_prod_partial_f32_v2, a_ptr, pp_ptr, kernel_ndim, kernel_shape, in_strides, kernel_axis, axis_len, out_size, tiles_per_output, stream_raw, "prod_partial_f32_v2");
+                                launch_reduce_final!(musapy_prod_final_f32_v2, pp_ptr, out_ptr, num_partials, out_size, stream_raw, "prod_final_f32_v2");
+                            }
+                            (ReduceKernel::Prod, Dtype::Float64) => {
+                                launch_reduce_partial!(musapy_prod_partial_f64_v2, a_ptr, pp_ptr, kernel_ndim, kernel_shape, in_strides, kernel_axis, axis_len, out_size, tiles_per_output, stream_raw, "prod_partial_f64_v2");
+                                launch_reduce_final!(musapy_prod_final_f64_v2, pp_ptr, out_ptr, num_partials, out_size, stream_raw, "prod_final_f64_v2");
+                            }
+                            (ReduceKernel::Max, Dtype::Int64) => {
+                                launch_reduce_partial!(musapy_max_partial_i64_v2, a_ptr, pp_ptr, kernel_ndim, kernel_shape, in_strides, kernel_axis, axis_len, out_size, tiles_per_output, stream_raw, "max_partial_i64_v2");
+                                launch_reduce_final!(musapy_max_final_i64_v2, pp_ptr, out_ptr, num_partials, out_size, stream_raw, "max_final_i64_v2");
+                            }
+                            (ReduceKernel::Max, Dtype::Float32) => {
+                                launch_reduce_partial!(musapy_max_partial_f32_v2, a_ptr, pp_ptr, kernel_ndim, kernel_shape, in_strides, kernel_axis, axis_len, out_size, tiles_per_output, stream_raw, "max_partial_f32_v2");
+                                launch_reduce_final!(musapy_max_final_f32_v2, pp_ptr, out_ptr, num_partials, out_size, stream_raw, "max_final_f32_v2");
+                            }
+                            (ReduceKernel::Max, Dtype::Float64) => {
+                                launch_reduce_partial!(musapy_max_partial_f64_v2, a_ptr, pp_ptr, kernel_ndim, kernel_shape, in_strides, kernel_axis, axis_len, out_size, tiles_per_output, stream_raw, "max_partial_f64_v2");
+                                launch_reduce_final!(musapy_max_final_f64_v2, pp_ptr, out_ptr, num_partials, out_size, stream_raw, "max_final_f64_v2");
+                            }
+                            (ReduceKernel::Min, Dtype::Int64) => {
+                                launch_reduce_partial!(musapy_min_partial_i64_v2, a_ptr, pp_ptr, kernel_ndim, kernel_shape, in_strides, kernel_axis, axis_len, out_size, tiles_per_output, stream_raw, "min_partial_i64_v2");
+                                launch_reduce_final!(musapy_min_final_i64_v2, pp_ptr, out_ptr, num_partials, out_size, stream_raw, "min_final_i64_v2");
+                            }
+                            (ReduceKernel::Min, Dtype::Float32) => {
+                                launch_reduce_partial!(musapy_min_partial_f32_v2, a_ptr, pp_ptr, kernel_ndim, kernel_shape, in_strides, kernel_axis, axis_len, out_size, tiles_per_output, stream_raw, "min_partial_f32_v2");
+                                launch_reduce_final!(musapy_min_final_f32_v2, pp_ptr, out_ptr, num_partials, out_size, stream_raw, "min_final_f32_v2");
+                            }
+                            (ReduceKernel::Min, Dtype::Float64) => {
+                                launch_reduce_partial!(musapy_min_partial_f64_v2, a_ptr, pp_ptr, kernel_ndim, kernel_shape, in_strides, kernel_axis, axis_len, out_size, tiles_per_output, stream_raw, "min_partial_f64_v2");
+                                launch_reduce_final!(musapy_min_final_f64_v2, pp_ptr, out_ptr, num_partials, out_size, stream_raw, "min_final_f64_v2");
+                            }
+                            _ => unreachable!(),
+                        }
                     }
                 } else {
-                    // sum/prod/max/min/mean：输入输出同 compute_dtype
-                    match (&kernel, compute_dtype) {
-                        (ReduceKernel::Sum, Dtype::Int64) => launch_reduce!(musapy_sum_i64_v2, a_ptr, out_ptr, kernel_ndim, kernel_shape, in_strides, kernel_axis, axis_len, out_size, stream_raw, "sum_i64_v2"),
-                        (ReduceKernel::Sum, Dtype::Float32) => launch_reduce!(musapy_sum_f32_v2, a_ptr, out_ptr, kernel_ndim, kernel_shape, in_strides, kernel_axis, axis_len, out_size, stream_raw, "sum_f32_v2"),
-                        (ReduceKernel::Sum, Dtype::Float64) => launch_reduce!(musapy_sum_f64_v2, a_ptr, out_ptr, kernel_ndim, kernel_shape, in_strides, kernel_axis, axis_len, out_size, stream_raw, "sum_f64_v2"),
-                        (ReduceKernel::Prod, Dtype::Int64) => launch_reduce!(musapy_prod_i64_v2, a_ptr, out_ptr, kernel_ndim, kernel_shape, in_strides, kernel_axis, axis_len, out_size, stream_raw, "prod_i64_v2"),
-                        (ReduceKernel::Prod, Dtype::Float32) => launch_reduce!(musapy_prod_f32_v2, a_ptr, out_ptr, kernel_ndim, kernel_shape, in_strides, kernel_axis, axis_len, out_size, stream_raw, "prod_f32_v2"),
-                        (ReduceKernel::Prod, Dtype::Float64) => launch_reduce!(musapy_prod_f64_v2, a_ptr, out_ptr, kernel_ndim, kernel_shape, in_strides, kernel_axis, axis_len, out_size, stream_raw, "prod_f64_v2"),
-                        (ReduceKernel::Max, Dtype::Int64) => launch_reduce!(musapy_max_i64_v2, a_ptr, out_ptr, kernel_ndim, kernel_shape, in_strides, kernel_axis, axis_len, out_size, stream_raw, "max_i64_v2"),
-                        (ReduceKernel::Max, Dtype::Float32) => launch_reduce!(musapy_max_f32_v2, a_ptr, out_ptr, kernel_ndim, kernel_shape, in_strides, kernel_axis, axis_len, out_size, stream_raw, "max_f32_v2"),
-                        (ReduceKernel::Max, Dtype::Float64) => launch_reduce!(musapy_max_f64_v2, a_ptr, out_ptr, kernel_ndim, kernel_shape, in_strides, kernel_axis, axis_len, out_size, stream_raw, "max_f64_v2"),
-                        (ReduceKernel::Min, Dtype::Int64) => launch_reduce!(musapy_min_i64_v2, a_ptr, out_ptr, kernel_ndim, kernel_shape, in_strides, kernel_axis, axis_len, out_size, stream_raw, "min_i64_v2"),
-                        (ReduceKernel::Min, Dtype::Float32) => launch_reduce!(musapy_min_f32_v2, a_ptr, out_ptr, kernel_ndim, kernel_shape, in_strides, kernel_axis, axis_len, out_size, stream_raw, "min_f32_v2"),
-                        (ReduceKernel::Min, Dtype::Float64) => launch_reduce!(musapy_min_f64_v2, a_ptr, out_ptr, kernel_ndim, kernel_shape, in_strides, kernel_axis, axis_len, out_size, stream_raw, "min_f64_v2"),
-                        (ReduceKernel::Mean, Dtype::Float32) => launch_reduce!(musapy_mean_f32_v2, a_ptr, out_ptr, kernel_ndim, kernel_shape, in_strides, kernel_axis, axis_len, out_size, stream_raw, "mean_f32_v2"),
-                        (ReduceKernel::Mean, Dtype::Float64) => launch_reduce!(musapy_mean_f64_v2, a_ptr, out_ptr, kernel_ndim, kernel_shape, in_strides, kernel_axis, axis_len, out_size, stream_raw, "mean_f64_v2"),
-                        _ => unreachable!("mean only supports float compute dtype"),
+                    // ═══ 原始 naive 路径（axis_len ≤ 阈值）═══
+                    if kernel.output_is_index() {
+                        // argmax/argmin：输入 compute_dtype，输出 i64
+                        match (&kernel, compute_dtype) {
+                            (ReduceKernel::Argmax, Dtype::Int64) => launch_argreduce!(musapy_argmax_i64_v2, a_ptr, out_ptr, kernel_ndim, kernel_shape, in_strides, kernel_axis, axis_len, out_size, stream_raw, "argmax_i64_v2"),
+                            (ReduceKernel::Argmax, Dtype::Float32) => launch_argreduce!(musapy_argmax_f32_v2, a_ptr, out_ptr, kernel_ndim, kernel_shape, in_strides, kernel_axis, axis_len, out_size, stream_raw, "argmax_f32_v2"),
+                            (ReduceKernel::Argmax, Dtype::Float64) => launch_argreduce!(musapy_argmax_f64_v2, a_ptr, out_ptr, kernel_ndim, kernel_shape, in_strides, kernel_axis, axis_len, out_size, stream_raw, "argmax_f64_v2"),
+                            (ReduceKernel::Argmin, Dtype::Int64) => launch_argreduce!(musapy_argmin_i64_v2, a_ptr, out_ptr, kernel_ndim, kernel_shape, in_strides, kernel_axis, axis_len, out_size, stream_raw, "argmin_i64_v2"),
+                            (ReduceKernel::Argmin, Dtype::Float32) => launch_argreduce!(musapy_argmin_f32_v2, a_ptr, out_ptr, kernel_ndim, kernel_shape, in_strides, kernel_axis, axis_len, out_size, stream_raw, "argmin_f32_v2"),
+                            (ReduceKernel::Argmin, Dtype::Float64) => launch_argreduce!(musapy_argmin_f64_v2, a_ptr, out_ptr, kernel_ndim, kernel_shape, in_strides, kernel_axis, axis_len, out_size, stream_raw, "argmin_f64_v2"),
+                            _ => unreachable!(),
+                        }
+                    } else {
+                        // sum/prod/max/min/mean：输入输出同 compute_dtype
+                        match (&kernel, compute_dtype) {
+                            (ReduceKernel::Sum, Dtype::Int64) => launch_reduce!(musapy_sum_i64_v2, a_ptr, out_ptr, kernel_ndim, kernel_shape, in_strides, kernel_axis, axis_len, out_size, stream_raw, "sum_i64_v2"),
+                            (ReduceKernel::Sum, Dtype::Float32) => launch_reduce!(musapy_sum_f32_v2, a_ptr, out_ptr, kernel_ndim, kernel_shape, in_strides, kernel_axis, axis_len, out_size, stream_raw, "sum_f32_v2"),
+                            (ReduceKernel::Sum, Dtype::Float64) => launch_reduce!(musapy_sum_f64_v2, a_ptr, out_ptr, kernel_ndim, kernel_shape, in_strides, kernel_axis, axis_len, out_size, stream_raw, "sum_f64_v2"),
+                            (ReduceKernel::Prod, Dtype::Int64) => launch_reduce!(musapy_prod_i64_v2, a_ptr, out_ptr, kernel_ndim, kernel_shape, in_strides, kernel_axis, axis_len, out_size, stream_raw, "prod_i64_v2"),
+                            (ReduceKernel::Prod, Dtype::Float32) => launch_reduce!(musapy_prod_f32_v2, a_ptr, out_ptr, kernel_ndim, kernel_shape, in_strides, kernel_axis, axis_len, out_size, stream_raw, "prod_f32_v2"),
+                            (ReduceKernel::Prod, Dtype::Float64) => launch_reduce!(musapy_prod_f64_v2, a_ptr, out_ptr, kernel_ndim, kernel_shape, in_strides, kernel_axis, axis_len, out_size, stream_raw, "prod_f64_v2"),
+                            (ReduceKernel::Max, Dtype::Int64) => launch_reduce!(musapy_max_i64_v2, a_ptr, out_ptr, kernel_ndim, kernel_shape, in_strides, kernel_axis, axis_len, out_size, stream_raw, "max_i64_v2"),
+                            (ReduceKernel::Max, Dtype::Float32) => launch_reduce!(musapy_max_f32_v2, a_ptr, out_ptr, kernel_ndim, kernel_shape, in_strides, kernel_axis, axis_len, out_size, stream_raw, "max_f32_v2"),
+                            (ReduceKernel::Max, Dtype::Float64) => launch_reduce!(musapy_max_f64_v2, a_ptr, out_ptr, kernel_ndim, kernel_shape, in_strides, kernel_axis, axis_len, out_size, stream_raw, "max_f64_v2"),
+                            (ReduceKernel::Min, Dtype::Int64) => launch_reduce!(musapy_min_i64_v2, a_ptr, out_ptr, kernel_ndim, kernel_shape, in_strides, kernel_axis, axis_len, out_size, stream_raw, "min_i64_v2"),
+                            (ReduceKernel::Min, Dtype::Float32) => launch_reduce!(musapy_min_f32_v2, a_ptr, out_ptr, kernel_ndim, kernel_shape, in_strides, kernel_axis, axis_len, out_size, stream_raw, "min_f32_v2"),
+                            (ReduceKernel::Min, Dtype::Float64) => launch_reduce!(musapy_min_f64_v2, a_ptr, out_ptr, kernel_ndim, kernel_shape, in_strides, kernel_axis, axis_len, out_size, stream_raw, "min_f64_v2"),
+                            (ReduceKernel::Mean, Dtype::Float32) => launch_reduce!(musapy_mean_f32_v2, a_ptr, out_ptr, kernel_ndim, kernel_shape, in_strides, kernel_axis, axis_len, out_size, stream_raw, "mean_f32_v2"),
+                            (ReduceKernel::Mean, Dtype::Float64) => launch_reduce!(musapy_mean_f64_v2, a_ptr, out_ptr, kernel_ndim, kernel_shape, in_strides, kernel_axis, axis_len, out_size, stream_raw, "mean_f64_v2"),
+                            _ => unreachable!("mean only supports float compute dtype"),
+                        }
                     }
                 }
             }

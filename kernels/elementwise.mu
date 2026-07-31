@@ -303,6 +303,160 @@ __global__ void musapy_ge_kernel_v2(
     }
 }
 
+// ── v2 Flat kernels（contiguous fast-path）─────────────────────
+// 当所有输入 strides 为 C-contiguous 时，跳过 offset_nd 直接索引。
+
+// Flat binary
+template <typename T>
+__global__ void musapy_add_flat_v2(
+    const T* __restrict__ a, const T* __restrict__ b, T* __restrict__ c, size_t n
+) {
+    size_t idx = blockIdx.x * blockDim.x + threadIdx.x;
+    if (idx < n) c[idx] = a[idx] + b[idx];
+}
+
+template <typename T>
+__global__ void musapy_sub_flat_v2(
+    const T* __restrict__ a, const T* __restrict__ b, T* __restrict__ c, size_t n
+) {
+    size_t idx = blockIdx.x * blockDim.x + threadIdx.x;
+    if (idx < n) c[idx] = a[idx] - b[idx];
+}
+
+template <typename T>
+__global__ void musapy_mul_flat_v2(
+    const T* __restrict__ a, const T* __restrict__ b, T* __restrict__ c, size_t n
+) {
+    size_t idx = blockIdx.x * blockDim.x + threadIdx.x;
+    if (idx < n) c[idx] = a[idx] * b[idx];
+}
+
+template <typename T>
+__global__ void musapy_div_flat_v2(
+    const T* __restrict__ a, const T* __restrict__ b, T* __restrict__ c, size_t n
+) {
+    size_t idx = blockIdx.x * blockDim.x + threadIdx.x;
+    if (idx < n) c[idx] = a[idx] / b[idx];
+}
+
+template <typename T>
+__global__ void musapy_pow_flat_v2(
+    const T* __restrict__ a, const T* __restrict__ b, T* __restrict__ c, size_t n
+) {
+    size_t idx = blockIdx.x * blockDim.x + threadIdx.x;
+    if (idx < n) c[idx] = pow(a[idx], b[idx]);
+}
+
+// Flat unary
+template <typename T>
+__global__ void musapy_sin_flat_v2(const T* __restrict__ a, T* __restrict__ c, size_t n) {
+    size_t idx = blockIdx.x * blockDim.x + threadIdx.x;
+    if (idx < n) c[idx] = sin(a[idx]);
+}
+
+template <typename T>
+__global__ void musapy_cos_flat_v2(const T* __restrict__ a, T* __restrict__ c, size_t n) {
+    size_t idx = blockIdx.x * blockDim.x + threadIdx.x;
+    if (idx < n) c[idx] = cos(a[idx]);
+}
+
+template <typename T>
+__global__ void musapy_exp_flat_v2(const T* __restrict__ a, T* __restrict__ c, size_t n) {
+    size_t idx = blockIdx.x * blockDim.x + threadIdx.x;
+    if (idx < n) c[idx] = exp(a[idx]);
+}
+
+template <typename T>
+__global__ void musapy_log_flat_v2(const T* __restrict__ a, T* __restrict__ c, size_t n) {
+    size_t idx = blockIdx.x * blockDim.x + threadIdx.x;
+    if (idx < n) c[idx] = log(a[idx]);
+}
+
+template <typename T>
+__global__ void musapy_abs_flat_v2(const T* __restrict__ a, T* __restrict__ c, size_t n) {
+    size_t idx = blockIdx.x * blockDim.x + threadIdx.x;
+    if (idx < n) c[idx] = fabs(a[idx]);
+}
+
+template <typename T>
+__global__ void musapy_sign_flat_v2(const T* __restrict__ a, T* __restrict__ c, size_t n) {
+    size_t idx = blockIdx.x * blockDim.x + threadIdx.x;
+    if (idx < n) { T v = a[idx]; c[idx] = (v > T(0)) - (v < T(0)); }
+}
+
+template <typename T>
+__global__ void musapy_neg_flat_v2(const T* __restrict__ a, T* __restrict__ c, size_t n) {
+    size_t idx = blockIdx.x * blockDim.x + threadIdx.x;
+    if (idx < n) c[idx] = -a[idx];
+}
+
+// Flat clamp
+template <typename T>
+__global__ void musapy_clamp_flat_v2(
+    const T* __restrict__ a, T* __restrict__ c, T lo, T hi, size_t n
+) {
+    size_t idx = blockIdx.x * blockDim.x + threadIdx.x;
+    if (idx < n) { T v = a[idx]; c[idx] = v < lo ? lo : (v > hi ? hi : v); }
+}
+
+// Flat cast
+template <typename Src, typename Dst>
+__global__ void musapy_cast_flat_v2(
+    const Src* __restrict__ a, Dst* __restrict__ c, size_t n
+) {
+    size_t idx = blockIdx.x * blockDim.x + threadIdx.x;
+    if (idx < n) c[idx] = static_cast<Dst>(a[idx]);
+}
+
+// Flat comparison
+template <typename T>
+__global__ void musapy_eq_flat_v2(
+    const T* __restrict__ a, const T* __restrict__ b, uint8_t* __restrict__ c, size_t n
+) {
+    size_t idx = blockIdx.x * blockDim.x + threadIdx.x;
+    if (idx < n) c[idx] = (uint8_t)(a[idx] == b[idx]);
+}
+
+template <typename T>
+__global__ void musapy_ne_flat_v2(
+    const T* __restrict__ a, const T* __restrict__ b, uint8_t* __restrict__ c, size_t n
+) {
+    size_t idx = blockIdx.x * blockDim.x + threadIdx.x;
+    if (idx < n) c[idx] = (uint8_t)(a[idx] != b[idx]);
+}
+
+template <typename T>
+__global__ void musapy_lt_flat_v2(
+    const T* __restrict__ a, const T* __restrict__ b, uint8_t* __restrict__ c, size_t n
+) {
+    size_t idx = blockIdx.x * blockDim.x + threadIdx.x;
+    if (idx < n) c[idx] = (uint8_t)(a[idx] < b[idx]);
+}
+
+template <typename T>
+__global__ void musapy_gt_flat_v2(
+    const T* __restrict__ a, const T* __restrict__ b, uint8_t* __restrict__ c, size_t n
+) {
+    size_t idx = blockIdx.x * blockDim.x + threadIdx.x;
+    if (idx < n) c[idx] = (uint8_t)(a[idx] > b[idx]);
+}
+
+template <typename T>
+__global__ void musapy_le_flat_v2(
+    const T* __restrict__ a, const T* __restrict__ b, uint8_t* __restrict__ c, size_t n
+) {
+    size_t idx = blockIdx.x * blockDim.x + threadIdx.x;
+    if (idx < n) c[idx] = (uint8_t)(a[idx] <= b[idx]);
+}
+
+template <typename T>
+__global__ void musapy_ge_flat_v2(
+    const T* __restrict__ a, const T* __restrict__ b, uint8_t* __restrict__ c, size_t n
+) {
+    size_t idx = blockIdx.x * blockDim.x + threadIdx.x;
+    if (idx < n) c[idx] = (uint8_t)(a[idx] >= b[idx]);
+}
+
 // ── extern "C" 稳定 ABI ────────────────────────────────────────
 
 extern "C" {
@@ -324,7 +478,7 @@ void musapy_add_f64_v1(
 }
 
 // ── v2 Binary 符号 ──
-// 宏：生成 binary op 的 f32/f64 wrapper
+// 宏：生成 binary op 的 f32/f64 wrapper（含 contiguous fast-path）
 #define BINARY_V2(OP)                                                         \
 void musapy_##OP##_f32_v2(                                                   \
     const float* __restrict__ a, const float* __restrict__ b,                \
@@ -332,16 +486,22 @@ void musapy_##OP##_f32_v2(                                                   \
     const ssize_t* a_strides, const ssize_t* b_strides, musaStream_t stream  \
 ) {                                                                          \
     size_t n = 1;                                                            \
-    NdMeta meta;                                                             \
-    meta.ndim = ndim;                                                        \
-    for (int i = 0; i < ndim; i++) {                                         \
-        meta.shape[i] = shape[i];                                            \
-        meta.a_strides[i] = a_strides[i];                                    \
-        meta.b_strides[i] = b_strides[i];                                    \
-        n *= shape[i];                                                       \
+    for (int i = 0; i < ndim; i++) n *= shape[i];                           \
+    if (is_contiguous_strides(shape, a_strides, ndim) &&                     \
+        is_contiguous_strides(shape, b_strides, ndim)) {                     \
+        musapy_##OP##_flat_v2<float><<<grid_size_1d(n), 256, 0, stream>>>(   \
+            a, b, c, n);                                                     \
+    } else {                                                                 \
+        NdMeta meta;                                                         \
+        meta.ndim = ndim;                                                    \
+        for (int i = 0; i < ndim; i++) {                                    \
+            meta.shape[i] = shape[i];                                        \
+            meta.a_strides[i] = a_strides[i];                                \
+            meta.b_strides[i] = b_strides[i];                                \
+        }                                                                    \
+        musapy_##OP##_kernel_v2<float><<<grid_size_1d(n), 256, 0, stream>>>( \
+            a, b, c, meta, n);                                               \
     }                                                                        \
-    musapy_##OP##_kernel_v2<float><<<grid_size_1d(n), 256, 0, stream>>>(     \
-        a, b, c, meta, n);                                                   \
 }                                                                            \
 void musapy_##OP##_f64_v2(                                                   \
     const double* __restrict__ a, const double* __restrict__ b,              \
@@ -349,16 +509,22 @@ void musapy_##OP##_f64_v2(                                                   \
     const ssize_t* a_strides, const ssize_t* b_strides, musaStream_t stream  \
 ) {                                                                          \
     size_t n = 1;                                                            \
-    NdMeta meta;                                                             \
-    meta.ndim = ndim;                                                        \
-    for (int i = 0; i < ndim; i++) {                                         \
-        meta.shape[i] = shape[i];                                            \
-        meta.a_strides[i] = a_strides[i];                                    \
-        meta.b_strides[i] = b_strides[i];                                    \
-        n *= shape[i];                                                       \
+    for (int i = 0; i < ndim; i++) n *= shape[i];                           \
+    if (is_contiguous_strides(shape, a_strides, ndim) &&                     \
+        is_contiguous_strides(shape, b_strides, ndim)) {                     \
+        musapy_##OP##_flat_v2<double><<<grid_size_1d(n), 256, 0, stream>>>(  \
+            a, b, c, n);                                                     \
+    } else {                                                                 \
+        NdMeta meta;                                                         \
+        meta.ndim = ndim;                                                    \
+        for (int i = 0; i < ndim; i++) {                                    \
+            meta.shape[i] = shape[i];                                        \
+            meta.a_strides[i] = a_strides[i];                                \
+            meta.b_strides[i] = b_strides[i];                                \
+        }                                                                    \
+        musapy_##OP##_kernel_v2<double><<<grid_size_1d(n), 256, 0, stream>>>(\
+            a, b, c, meta, n);                                               \
     }                                                                        \
-    musapy_##OP##_kernel_v2<double><<<grid_size_1d(n), 256, 0, stream>>>(    \
-        a, b, c, meta, n);                                                   \
 }
 
 BINARY_V2(add)
@@ -377,15 +543,20 @@ void musapy_##OP##_f32_v2(                                                   \
     musaStream_t stream                                                      \
 ) {                                                                          \
     size_t n = 1;                                                            \
-    NdMetaUnary meta;                                                        \
-    meta.ndim = ndim;                                                        \
-    for (int i = 0; i < ndim; i++) {                                         \
-        meta.shape[i] = shape[i];                                            \
-        meta.a_strides[i] = a_strides[i];                                    \
-        n *= shape[i];                                                       \
+    for (int i = 0; i < ndim; i++) n *= shape[i];                           \
+    if (is_contiguous_strides(shape, a_strides, ndim)) {                     \
+        musapy_##OP##_flat_v2<float><<<grid_size_1d(n), 256, 0, stream>>>(   \
+            a, c, n);                                                        \
+    } else {                                                                 \
+        NdMetaUnary meta;                                                    \
+        meta.ndim = ndim;                                                    \
+        for (int i = 0; i < ndim; i++) {                                    \
+            meta.shape[i] = shape[i];                                        \
+            meta.a_strides[i] = a_strides[i];                                \
+        }                                                                    \
+        musapy_##OP##_kernel_v2<float><<<grid_size_1d(n), 256, 0, stream>>>( \
+            a, c, meta, n);                                                  \
     }                                                                        \
-    musapy_##OP##_kernel_v2<float><<<grid_size_1d(n), 256, 0, stream>>>(     \
-        a, c, meta, n);                                                      \
 }                                                                            \
 void musapy_##OP##_f64_v2(                                                   \
     const double* __restrict__ a, double* __restrict__ c,                    \
@@ -393,15 +564,20 @@ void musapy_##OP##_f64_v2(                                                   \
     musaStream_t stream                                                      \
 ) {                                                                          \
     size_t n = 1;                                                            \
-    NdMetaUnary meta;                                                        \
-    meta.ndim = ndim;                                                        \
-    for (int i = 0; i < ndim; i++) {                                         \
-        meta.shape[i] = shape[i];                                            \
-        meta.a_strides[i] = a_strides[i];                                    \
-        n *= shape[i];                                                       \
+    for (int i = 0; i < ndim; i++) n *= shape[i];                           \
+    if (is_contiguous_strides(shape, a_strides, ndim)) {                     \
+        musapy_##OP##_flat_v2<double><<<grid_size_1d(n), 256, 0, stream>>>(  \
+            a, c, n);                                                        \
+    } else {                                                                 \
+        NdMetaUnary meta;                                                    \
+        meta.ndim = ndim;                                                    \
+        for (int i = 0; i < ndim; i++) {                                    \
+            meta.shape[i] = shape[i];                                        \
+            meta.a_strides[i] = a_strides[i];                                \
+        }                                                                    \
+        musapy_##OP##_kernel_v2<double><<<grid_size_1d(n), 256, 0, stream>>>(\
+            a, c, meta, n);                                                  \
     }                                                                        \
-    musapy_##OP##_kernel_v2<double><<<grid_size_1d(n), 256, 0, stream>>>(    \
-        a, c, meta, n);                                                      \
 }
 
 UNARY_V2(sin)
@@ -423,15 +599,20 @@ void musapy_clamp_f32_v2(
     musaStream_t stream
 ) {
     size_t n = 1;
-    NdMetaUnary meta;
-    meta.ndim = ndim;
-    for (int i = 0; i < ndim; i++) {
-        meta.shape[i] = shape[i];
-        meta.a_strides[i] = a_strides[i];
-        n *= shape[i];
+    for (int i = 0; i < ndim; i++) n *= shape[i];
+    if (is_contiguous_strides(shape, a_strides, ndim)) {
+        musapy_clamp_flat_v2<float><<<grid_size_1d(n), 256, 0, stream>>>(
+            a, c, lo, hi, n);
+    } else {
+        NdMetaUnary meta;
+        meta.ndim = ndim;
+        for (int i = 0; i < ndim; i++) {
+            meta.shape[i] = shape[i];
+            meta.a_strides[i] = a_strides[i];
+        }
+        musapy_clamp_kernel_v2<float><<<grid_size_1d(n), 256, 0, stream>>>(
+            a, c, lo, hi, meta, n);
     }
-    musapy_clamp_kernel_v2<float><<<grid_size_1d(n), 256, 0, stream>>>(
-        a, c, lo, hi, meta, n);
 }
 
 void musapy_clamp_f64_v2(
@@ -441,19 +622,24 @@ void musapy_clamp_f64_v2(
     musaStream_t stream
 ) {
     size_t n = 1;
-    NdMetaUnary meta;
-    meta.ndim = ndim;
-    for (int i = 0; i < ndim; i++) {
-        meta.shape[i] = shape[i];
-        meta.a_strides[i] = a_strides[i];
-        n *= shape[i];
+    for (int i = 0; i < ndim; i++) n *= shape[i];
+    if (is_contiguous_strides(shape, a_strides, ndim)) {
+        musapy_clamp_flat_v2<double><<<grid_size_1d(n), 256, 0, stream>>>(
+            a, c, lo, hi, n);
+    } else {
+        NdMetaUnary meta;
+        meta.ndim = ndim;
+        for (int i = 0; i < ndim; i++) {
+            meta.shape[i] = shape[i];
+            meta.a_strides[i] = a_strides[i];
+        }
+        musapy_clamp_kernel_v2<double><<<grid_size_1d(n), 256, 0, stream>>>(
+            a, c, lo, hi, meta, n);
     }
-    musapy_clamp_kernel_v2<double><<<grid_size_1d(n), 256, 0, stream>>>(
-        a, c, lo, hi, meta, n);
 }
 
 // ── v2 Cast 符号 ──
-// 宏：生成 cast 的 wrapper（Src → Dst）
+// 宏：生成 cast 的 wrapper（Src → Dst，含 contiguous fast-path）
 #define CAST_V2(SRC_C, SRC_T, DST_C, DST_T)                                  \
 void musapy_cast_##SRC_C##_##DST_C##_v2(                                     \
     const SRC_T* __restrict__ a, DST_T* __restrict__ c,                      \
@@ -461,15 +647,20 @@ void musapy_cast_##SRC_C##_##DST_C##_v2(                                     \
     musaStream_t stream                                                      \
 ) {                                                                          \
     size_t n = 1;                                                            \
-    NdMetaUnary meta;                                                        \
-    meta.ndim = ndim;                                                        \
-    for (int i = 0; i < ndim; i++) {                                         \
-        meta.shape[i] = shape[i];                                            \
-        meta.a_strides[i] = a_strides[i];                                    \
-        n *= shape[i];                                                       \
+    for (int i = 0; i < ndim; i++) n *= shape[i];                           \
+    if (is_contiguous_strides(shape, a_strides, ndim)) {                     \
+        musapy_cast_flat_v2<SRC_T, DST_T><<<grid_size_1d(n), 256, 0, stream>>>(\
+            a, c, n);                                                        \
+    } else {                                                                 \
+        NdMetaUnary meta;                                                    \
+        meta.ndim = ndim;                                                    \
+        for (int i = 0; i < ndim; i++) {                                    \
+            meta.shape[i] = shape[i];                                        \
+            meta.a_strides[i] = a_strides[i];                                \
+        }                                                                    \
+        musapy_cast_kernel_v2<SRC_T, DST_T><<<grid_size_1d(n), 256, 0, stream>>>(\
+            a, c, meta, n);                                                  \
     }                                                                        \
-    musapy_cast_kernel_v2<SRC_T, DST_T><<<grid_size_1d(n), 256, 0, stream>>>(\
-        a, c, meta, n);                                                      \
 }
 
 // → float32
@@ -505,7 +696,7 @@ CAST_V2(u64, uint64_t, i64, int64_t)
 
 #undef CAST_V2
 
-// extern "C" wrapper 宏（输入 T，输出 uint8_t）
+// extern "C" wrapper 宏（输入 T，输出 uint8_t，含 contiguous fast-path）
 #define COMPARE_V2(OP)                                                        \
 void musapy_##OP##_f32_v2(                                                   \
     const float* __restrict__ a, const float* __restrict__ b,                \
@@ -515,16 +706,22 @@ void musapy_##OP##_f32_v2(                                                   \
     musaStream_t stream                                                      \
 ) {                                                                          \
     size_t n = 1;                                                            \
-    NdMeta meta;                                                             \
-    meta.ndim = ndim;                                                        \
-    for (int i = 0; i < ndim; i++) {                                         \
-        meta.shape[i] = shape[i];                                            \
-        meta.a_strides[i] = a_strides[i];                                    \
-        meta.b_strides[i] = b_strides[i];                                    \
-        n *= shape[i];                                                       \
+    for (int i = 0; i < ndim; i++) n *= shape[i];                           \
+    if (is_contiguous_strides(shape, a_strides, ndim) &&                     \
+        is_contiguous_strides(shape, b_strides, ndim)) {                     \
+        musapy_##OP##_flat_v2<float><<<grid_size_1d(n), 256, 0, stream>>>(   \
+            a, b, c, n);                                                     \
+    } else {                                                                 \
+        NdMeta meta;                                                         \
+        meta.ndim = ndim;                                                    \
+        for (int i = 0; i < ndim; i++) {                                    \
+            meta.shape[i] = shape[i];                                        \
+            meta.a_strides[i] = a_strides[i];                                \
+            meta.b_strides[i] = b_strides[i];                                \
+        }                                                                    \
+        musapy_##OP##_kernel_v2<float><<<grid_size_1d(n), 256, 0, stream>>>( \
+            a, b, c, meta, n);                                               \
     }                                                                        \
-    musapy_##OP##_kernel_v2<float><<<grid_size_1d(n), 256, 0, stream>>>(     \
-        a, b, c, meta, n);                                                   \
 }                                                                            \
 void musapy_##OP##_f64_v2(                                                   \
     const double* __restrict__ a, const double* __restrict__ b,              \
@@ -534,16 +731,22 @@ void musapy_##OP##_f64_v2(                                                   \
     musaStream_t stream                                                      \
 ) {                                                                          \
     size_t n = 1;                                                            \
-    NdMeta meta;                                                             \
-    meta.ndim = ndim;                                                        \
-    for (int i = 0; i < ndim; i++) {                                         \
-        meta.shape[i] = shape[i];                                            \
-        meta.a_strides[i] = a_strides[i];                                    \
-        meta.b_strides[i] = b_strides[i];                                    \
-        n *= shape[i];                                                       \
+    for (int i = 0; i < ndim; i++) n *= shape[i];                           \
+    if (is_contiguous_strides(shape, a_strides, ndim) &&                     \
+        is_contiguous_strides(shape, b_strides, ndim)) {                     \
+        musapy_##OP##_flat_v2<double><<<grid_size_1d(n), 256, 0, stream>>>(  \
+            a, b, c, n);                                                     \
+    } else {                                                                 \
+        NdMeta meta;                                                         \
+        meta.ndim = ndim;                                                    \
+        for (int i = 0; i < ndim; i++) {                                    \
+            meta.shape[i] = shape[i];                                        \
+            meta.a_strides[i] = a_strides[i];                                \
+            meta.b_strides[i] = b_strides[i];                                \
+        }                                                                    \
+        musapy_##OP##_kernel_v2<double><<<grid_size_1d(n), 256, 0, stream>>>(\
+            a, b, c, meta, n);                                               \
     }                                                                        \
-    musapy_##OP##_kernel_v2<double><<<grid_size_1d(n), 256, 0, stream>>>(    \
-        a, b, c, meta, n);                                                   \
 }
 
 COMPARE_V2(eq)
