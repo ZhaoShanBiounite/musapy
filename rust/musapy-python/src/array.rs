@@ -153,6 +153,42 @@ impl PyArray {
         Ok(PyArray::from_array(result))
     }
 
+    /// `a == b` — 逐元素等于比较（广播 → bool 数组）。
+    fn __eq__(&self, other: &PyArray) -> PyResult<PyArray> {
+        let result = musapy_ops::eq(&self.inner, &other.inner, None).map_err(error::to_pyerr)?;
+        Ok(PyArray::from_array(result))
+    }
+
+    /// `a != b` — 逐元素不等比较。
+    fn __ne__(&self, other: &PyArray) -> PyResult<PyArray> {
+        let result = musapy_ops::ne(&self.inner, &other.inner, None).map_err(error::to_pyerr)?;
+        Ok(PyArray::from_array(result))
+    }
+
+    /// `a < b` — 逐元素小于比较。
+    fn __lt__(&self, other: &PyArray) -> PyResult<PyArray> {
+        let result = musapy_ops::lt(&self.inner, &other.inner, None).map_err(error::to_pyerr)?;
+        Ok(PyArray::from_array(result))
+    }
+
+    /// `a > b` — 逐元素大于比较。
+    fn __gt__(&self, other: &PyArray) -> PyResult<PyArray> {
+        let result = musapy_ops::gt(&self.inner, &other.inner, None).map_err(error::to_pyerr)?;
+        Ok(PyArray::from_array(result))
+    }
+
+    /// `a <= b` — 逐元素小于等于比较。
+    fn __le__(&self, other: &PyArray) -> PyResult<PyArray> {
+        let result = musapy_ops::le(&self.inner, &other.inner, None).map_err(error::to_pyerr)?;
+        Ok(PyArray::from_array(result))
+    }
+
+    /// `a >= b` — 逐元素大于等于比较。
+    fn __ge__(&self, other: &PyArray) -> PyResult<PyArray> {
+        let result = musapy_ops::ge(&self.inner, &other.inner, None).map_err(error::to_pyerr)?;
+        Ok(PyArray::from_array(result))
+    }
+
     /// `a.astype(dtype)` — 类型转换。
     fn astype(&self, dtype: PyDtype) -> PyResult<PyArray> {
         let result =

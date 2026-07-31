@@ -162,6 +162,33 @@ py_unary_op!(abs, "ms.abs(a, out=None) — 逐元素绝对值");
 py_unary_op!(sign, "ms.sign(a, out=None) — 逐元素符号函数");
 py_unary_op!(neg, "ms.neg(a, out=None) — 逐元素取反");
 
+// ── Phase 3: Comparison ops ─────────────────────────────────
+
+macro_rules! py_compare_op {
+    ($name:ident, $doc:expr) => {
+        #[pyfunction]
+        #[pyo3(signature = (a, b, out=None))]
+        #[doc = $doc]
+        pub fn $name(py: Python<'_>, a: &PyArray, b: &PyArray, out: Option<&PyArray>) -> PyResult<PyArray> {
+            if debug::is_debug() {
+                if let Some(frame) = extract_caller_frame(py) {
+                    debug::set_debug_frame(Some(frame));
+                }
+            }
+            let result =
+                musapy_ops::$name(&a.inner, &b.inner, out.map(|o| &o.inner)).map_err(error::to_pyerr)?;
+            Ok(PyArray::from_array(result))
+        }
+    };
+}
+
+py_compare_op!(eq, "ms.eq(a, b, out=None) — 逐元素等于比较");
+py_compare_op!(ne, "ms.ne(a, b, out=None) — 逐元素不等比较");
+py_compare_op!(lt, "ms.lt(a, b, out=None) — 逐元素小于比较");
+py_compare_op!(gt, "ms.gt(a, b, out=None) — 逐元素大于比较");
+py_compare_op!(le, "ms.le(a, b, out=None) — 逐元素小于等于比较");
+py_compare_op!(ge, "ms.ge(a, b, out=None) — 逐元素大于等于比较");
+
 // ── Phase 2: Clamp + Astype ─────────────────────────────────
 
 /// `ms.clamp(a, lo, hi, out=None)` — 逐元素截断到 [lo, hi]。

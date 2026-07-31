@@ -5,9 +5,11 @@
 //!       elementwise 全家桶 + 类型提升（Phase 2）
 
 pub mod broadcast;
+pub mod comparison;
 pub mod elementwise;
 pub mod kernels;
 pub mod op_builder;
 
 // 公开 API 在 elementwise 模块；根级再导出保持 `musapy_ops::add` 兼容。
 pub use elementwise::*;
+pub use comparison::*;

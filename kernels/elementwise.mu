@@ -222,6 +222,87 @@ __global__ void musapy_cast_kernel_v2(
     }
 }
 
+// ── v2 Comparison kernels（Phase 3）──────────────────────────
+// 输入 T（f32/f64），输出 uint8_t（bool: 0/1）
+
+template <typename T>
+__global__ void musapy_eq_kernel_v2(
+    const T* __restrict__ a, const T* __restrict__ b,
+    uint8_t* __restrict__ c, NdMeta meta, size_t n
+) {
+    size_t idx = blockIdx.x * blockDim.x + threadIdx.x;
+    if (idx < n) {
+        size_t a_off = offset_nd(idx, meta.shape, meta.a_strides, meta.ndim);
+        size_t b_off = offset_nd(idx, meta.shape, meta.b_strides, meta.ndim);
+        c[idx] = (uint8_t)(a[a_off] == b[b_off]);
+    }
+}
+
+template <typename T>
+__global__ void musapy_ne_kernel_v2(
+    const T* __restrict__ a, const T* __restrict__ b,
+    uint8_t* __restrict__ c, NdMeta meta, size_t n
+) {
+    size_t idx = blockIdx.x * blockDim.x + threadIdx.x;
+    if (idx < n) {
+        size_t a_off = offset_nd(idx, meta.shape, meta.a_strides, meta.ndim);
+        size_t b_off = offset_nd(idx, meta.shape, meta.b_strides, meta.ndim);
+        c[idx] = (uint8_t)(a[a_off] != b[b_off]);
+    }
+}
+
+template <typename T>
+__global__ void musapy_lt_kernel_v2(
+    const T* __restrict__ a, const T* __restrict__ b,
+    uint8_t* __restrict__ c, NdMeta meta, size_t n
+) {
+    size_t idx = blockIdx.x * blockDim.x + threadIdx.x;
+    if (idx < n) {
+        size_t a_off = offset_nd(idx, meta.shape, meta.a_strides, meta.ndim);
+        size_t b_off = offset_nd(idx, meta.shape, meta.b_strides, meta.ndim);
+        c[idx] = (uint8_t)(a[a_off] < b[b_off]);
+    }
+}
+
+template <typename T>
+__global__ void musapy_gt_kernel_v2(
+    const T* __restrict__ a, const T* __restrict__ b,
+    uint8_t* __restrict__ c, NdMeta meta, size_t n
+) {
+    size_t idx = blockIdx.x * blockDim.x + threadIdx.x;
+    if (idx < n) {
+        size_t a_off = offset_nd(idx, meta.shape, meta.a_strides, meta.ndim);
+        size_t b_off = offset_nd(idx, meta.shape, meta.b_strides, meta.ndim);
+        c[idx] = (uint8_t)(a[a_off] > b[b_off]);
+    }
+}
+
+template <typename T>
+__global__ void musapy_le_kernel_v2(
+    const T* __restrict__ a, const T* __restrict__ b,
+    uint8_t* __restrict__ c, NdMeta meta, size_t n
+) {
+    size_t idx = blockIdx.x * blockDim.x + threadIdx.x;
+    if (idx < n) {
+        size_t a_off = offset_nd(idx, meta.shape, meta.a_strides, meta.ndim);
+        size_t b_off = offset_nd(idx, meta.shape, meta.b_strides, meta.ndim);
+        c[idx] = (uint8_t)(a[a_off] <= b[b_off]);
+    }
+}
+
+template <typename T>
+__global__ void musapy_ge_kernel_v2(
+    const T* __restrict__ a, const T* __restrict__ b,
+    uint8_t* __restrict__ c, NdMeta meta, size_t n
+) {
+    size_t idx = blockIdx.x * blockDim.x + threadIdx.x;
+    if (idx < n) {
+        size_t a_off = offset_nd(idx, meta.shape, meta.a_strides, meta.ndim);
+        size_t b_off = offset_nd(idx, meta.shape, meta.b_strides, meta.ndim);
+        c[idx] = (uint8_t)(a[a_off] >= b[b_off]);
+    }
+}
+
 // ── extern "C" 稳定 ABI ────────────────────────────────────────
 
 extern "C" {
@@ -414,5 +495,55 @@ CAST_V2(u64, uint64_t, f64, double)
 CAST_V2(f32, float,    f64, double)
 
 #undef CAST_V2
+
+// extern "C" wrapper 宏（输入 T，输出 uint8_t）
+#define COMPARE_V2(OP)                                                        \
+void musapy_##OP##_f32_v2(                                                   \
+    const float* __restrict__ a, const float* __restrict__ b,                \
+    uint8_t* __restrict__ c,                                                 \
+    int ndim, const size_t* shape,                                           \
+    const ssize_t* a_strides, const ssize_t* b_strides,                      \
+    musaStream_t stream                                                      \
+) {                                                                          \
+    size_t n = 1;                                                            \
+    NdMeta meta;                                                             \
+    meta.ndim = ndim;                                                        \
+    for (int i = 0; i < ndim; i++) {                                         \
+        meta.shape[i] = shape[i];                                            \
+        meta.a_strides[i] = a_strides[i];                                    \
+        meta.b_strides[i] = b_strides[i];                                    \
+        n *= shape[i];                                                       \
+    }                                                                        \
+    musapy_##OP##_kernel_v2<float><<<grid_size_1d(n), 256, 0, stream>>>(     \
+        a, b, c, meta, n);                                                   \
+}                                                                            \
+void musapy_##OP##_f64_v2(                                                   \
+    const double* __restrict__ a, const double* __restrict__ b,              \
+    uint8_t* __restrict__ c,                                                 \
+    int ndim, const size_t* shape,                                           \
+    const ssize_t* a_strides, const ssize_t* b_strides,                      \
+    musaStream_t stream                                                      \
+) {                                                                          \
+    size_t n = 1;                                                            \
+    NdMeta meta;                                                             \
+    meta.ndim = ndim;                                                        \
+    for (int i = 0; i < ndim; i++) {                                         \
+        meta.shape[i] = shape[i];                                            \
+        meta.a_strides[i] = a_strides[i];                                    \
+        meta.b_strides[i] = b_strides[i];                                    \
+        n *= shape[i];                                                       \
+    }                                                                        \
+    musapy_##OP##_kernel_v2<double><<<grid_size_1d(n), 256, 0, stream>>>(    \
+        a, b, c, meta, n);                                                   \
+}
+
+COMPARE_V2(eq)
+COMPARE_V2(ne)
+COMPARE_V2(lt)
+COMPARE_V2(gt)
+COMPARE_V2(le)
+COMPARE_V2(ge)
+
+#undef COMPARE_V2
 
 } // extern "C"

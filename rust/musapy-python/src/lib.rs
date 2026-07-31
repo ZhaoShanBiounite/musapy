@@ -314,6 +314,12 @@ fn _core(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(ops::sign, m)?)?;
     m.add_function(wrap_pyfunction!(ops::neg, m)?)?;
     m.add_function(wrap_pyfunction!(ops::clamp, m)?)?;
+    m.add_function(wrap_pyfunction!(ops::eq, m)?)?;
+    m.add_function(wrap_pyfunction!(ops::ne, m)?)?;
+    m.add_function(wrap_pyfunction!(ops::lt, m)?)?;
+    m.add_function(wrap_pyfunction!(ops::gt, m)?)?;
+    m.add_function(wrap_pyfunction!(ops::le, m)?)?;
+    m.add_function(wrap_pyfunction!(ops::ge, m)?)?;
     m.add_function(wrap_pyfunction!(set_default_device, m)?)?;
     m.add_function(wrap_pyfunction!(set_default_dtype, m)?)?;
     m.add_function(wrap_pyfunction!(device_context, m)?)?;
