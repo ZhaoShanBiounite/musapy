@@ -72,6 +72,15 @@ unsafe extern "C" {
     pub fn musapy_cast_u64_f64_v2(a: *const u64, c: *mut f64, ndim: i32, shape: *const usize, a_strides: *const isize, stream: musaStream_t);
     pub fn musapy_cast_f32_f64_v2(a: *const f32, c: *mut f64, ndim: i32, shape: *const usize, a_strides: *const isize, stream: musaStream_t);
 
+    // v2 Cast → i64（Phase 4 reduction 整数累加用）
+    pub fn musapy_cast_i8_i64_v2(a: *const i8, c: *mut i64, ndim: i32, shape: *const usize, a_strides: *const isize, stream: musaStream_t);
+    pub fn musapy_cast_i16_i64_v2(a: *const i16, c: *mut i64, ndim: i32, shape: *const usize, a_strides: *const isize, stream: musaStream_t);
+    pub fn musapy_cast_i32_i64_v2(a: *const i32, c: *mut i64, ndim: i32, shape: *const usize, a_strides: *const isize, stream: musaStream_t);
+    pub fn musapy_cast_u8_i64_v2(a: *const u8, c: *mut i64, ndim: i32, shape: *const usize, a_strides: *const isize, stream: musaStream_t);
+    pub fn musapy_cast_u16_i64_v2(a: *const u16, c: *mut i64, ndim: i32, shape: *const usize, a_strides: *const isize, stream: musaStream_t);
+    pub fn musapy_cast_u32_i64_v2(a: *const u32, c: *mut i64, ndim: i32, shape: *const usize, a_strides: *const isize, stream: musaStream_t);
+    pub fn musapy_cast_u64_i64_v2(a: *const u64, c: *mut i64, ndim: i32, shape: *const usize, a_strides: *const isize, stream: musaStream_t);
+
     // v2 Comparison（Phase 3：输入 T，输出 u8/bool）
     pub fn musapy_eq_f32_v2(a: *const f32, b: *const f32, c: *mut u8, ndim: i32, shape: *const usize, a_strides: *const isize, b_strides: *const isize, stream: musaStream_t);
     pub fn musapy_eq_f64_v2(a: *const f64, b: *const f64, c: *mut u8, ndim: i32, shape: *const usize, a_strides: *const isize, b_strides: *const isize, stream: musaStream_t);
@@ -85,6 +94,31 @@ unsafe extern "C" {
     pub fn musapy_le_f64_v2(a: *const f64, b: *const f64, c: *mut u8, ndim: i32, shape: *const usize, a_strides: *const isize, b_strides: *const isize, stream: musaStream_t);
     pub fn musapy_ge_f32_v2(a: *const f32, b: *const f32, c: *mut u8, ndim: i32, shape: *const usize, a_strides: *const isize, b_strides: *const isize, stream: musaStream_t);
     pub fn musapy_ge_f64_v2(a: *const f64, b: *const f64, c: *mut u8, ndim: i32, shape: *const usize, a_strides: *const isize, b_strides: *const isize, stream: musaStream_t);
+
+    // v2 Reduction（Phase 4：沿轴缩减）
+    pub fn musapy_sum_i64_v2(a: *const i64, c: *mut i64, ndim: i32, in_shape: *const usize, in_strides: *const isize, axis: i32, axis_len: usize, out_size: usize, stream: musaStream_t);
+    pub fn musapy_sum_f32_v2(a: *const f32, c: *mut f32, ndim: i32, in_shape: *const usize, in_strides: *const isize, axis: i32, axis_len: usize, out_size: usize, stream: musaStream_t);
+    pub fn musapy_sum_f64_v2(a: *const f64, c: *mut f64, ndim: i32, in_shape: *const usize, in_strides: *const isize, axis: i32, axis_len: usize, out_size: usize, stream: musaStream_t);
+    pub fn musapy_prod_i64_v2(a: *const i64, c: *mut i64, ndim: i32, in_shape: *const usize, in_strides: *const isize, axis: i32, axis_len: usize, out_size: usize, stream: musaStream_t);
+    pub fn musapy_prod_f32_v2(a: *const f32, c: *mut f32, ndim: i32, in_shape: *const usize, in_strides: *const isize, axis: i32, axis_len: usize, out_size: usize, stream: musaStream_t);
+    pub fn musapy_prod_f64_v2(a: *const f64, c: *mut f64, ndim: i32, in_shape: *const usize, in_strides: *const isize, axis: i32, axis_len: usize, out_size: usize, stream: musaStream_t);
+    pub fn musapy_max_i64_v2(a: *const i64, c: *mut i64, ndim: i32, in_shape: *const usize, in_strides: *const isize, axis: i32, axis_len: usize, out_size: usize, stream: musaStream_t);
+    pub fn musapy_max_f32_v2(a: *const f32, c: *mut f32, ndim: i32, in_shape: *const usize, in_strides: *const isize, axis: i32, axis_len: usize, out_size: usize, stream: musaStream_t);
+    pub fn musapy_max_f64_v2(a: *const f64, c: *mut f64, ndim: i32, in_shape: *const usize, in_strides: *const isize, axis: i32, axis_len: usize, out_size: usize, stream: musaStream_t);
+    pub fn musapy_min_i64_v2(a: *const i64, c: *mut i64, ndim: i32, in_shape: *const usize, in_strides: *const isize, axis: i32, axis_len: usize, out_size: usize, stream: musaStream_t);
+    pub fn musapy_min_f32_v2(a: *const f32, c: *mut f32, ndim: i32, in_shape: *const usize, in_strides: *const isize, axis: i32, axis_len: usize, out_size: usize, stream: musaStream_t);
+    pub fn musapy_min_f64_v2(a: *const f64, c: *mut f64, ndim: i32, in_shape: *const usize, in_strides: *const isize, axis: i32, axis_len: usize, out_size: usize, stream: musaStream_t);
+    pub fn musapy_mean_f32_v2(a: *const f32, c: *mut f32, ndim: i32, in_shape: *const usize, in_strides: *const isize, axis: i32, axis_len: usize, out_size: usize, stream: musaStream_t);
+    pub fn musapy_mean_f64_v2(a: *const f64, c: *mut f64, ndim: i32, in_shape: *const usize, in_strides: *const isize, axis: i32, axis_len: usize, out_size: usize, stream: musaStream_t);
+    pub fn musapy_argmax_i64_v2(a: *const i64, c: *mut i64, ndim: i32, in_shape: *const usize, in_strides: *const isize, axis: i32, axis_len: usize, out_size: usize, stream: musaStream_t);
+    pub fn musapy_argmax_f32_v2(a: *const f32, c: *mut i64, ndim: i32, in_shape: *const usize, in_strides: *const isize, axis: i32, axis_len: usize, out_size: usize, stream: musaStream_t);
+    pub fn musapy_argmax_f64_v2(a: *const f64, c: *mut i64, ndim: i32, in_shape: *const usize, in_strides: *const isize, axis: i32, axis_len: usize, out_size: usize, stream: musaStream_t);
+    pub fn musapy_argmin_i64_v2(a: *const i64, c: *mut i64, ndim: i32, in_shape: *const usize, in_strides: *const isize, axis: i32, axis_len: usize, out_size: usize, stream: musaStream_t);
+    pub fn musapy_argmin_f32_v2(a: *const f32, c: *mut i64, ndim: i32, in_shape: *const usize, in_strides: *const isize, axis: i32, axis_len: usize, out_size: usize, stream: musaStream_t);
+    pub fn musapy_argmin_f64_v2(a: *const f64, c: *mut i64, ndim: i32, in_shape: *const usize, in_strides: *const isize, axis: i32, axis_len: usize, out_size: usize, stream: musaStream_t);
+    pub fn musapy_cumsum_i64_v2(a: *const i64, c: *mut i64, ndim: i32, in_shape: *const usize, in_strides: *const isize, axis: i32, out_size: usize, stream: musaStream_t);
+    pub fn musapy_cumsum_f32_v2(a: *const f32, c: *mut f32, ndim: i32, in_shape: *const usize, in_strides: *const isize, axis: i32, out_size: usize, stream: musaStream_t);
+    pub fn musapy_cumsum_f64_v2(a: *const f64, c: *mut f64, ndim: i32, in_shape: *const usize, in_strides: *const isize, axis: i32, out_size: usize, stream: musaStream_t);
 }
 
 // ── Mock 模式：CPU stub ─────────────────────────────────────
@@ -263,6 +297,15 @@ mod mock {
     mock_cast_v2!(musapy_cast_u64_f64_v2, u64, f64);
     mock_cast_v2!(musapy_cast_f32_f64_v2, f32, f64);
 
+    // v2 Cast → i64（Phase 4）
+    mock_cast_v2!(musapy_cast_i8_i64_v2, i8, i64);
+    mock_cast_v2!(musapy_cast_i16_i64_v2, i16, i64);
+    mock_cast_v2!(musapy_cast_i32_i64_v2, i32, i64);
+    mock_cast_v2!(musapy_cast_u8_i64_v2, u8, i64);
+    mock_cast_v2!(musapy_cast_u16_i64_v2, u16, i64);
+    mock_cast_v2!(musapy_cast_u32_i64_v2, u32, i64);
+    mock_cast_v2!(musapy_cast_u64_i64_v2, u64, i64);
+
     // v2 Comparison mock（Phase 3）
     macro_rules! mock_compare_v2 {
         ($name:ident, $t:ty, $cmp:expr) => {
@@ -300,6 +343,224 @@ mod mock {
     mock_compare_v2!(musapy_le_f64_v2, f64, |a, b| a <= b);
     mock_compare_v2!(musapy_ge_f32_v2, f32, |a, b| a >= b);
     mock_compare_v2!(musapy_ge_f64_v2, f64, |a, b| a >= b);
+
+    // v2 Reduction mock（Phase 4）
+    // 辅助：计算 reduce_input_offset（与 common.h 逻辑一致）
+    fn mock_reduce_offset(out_idx: usize, in_shape: &[usize], in_strides: &[isize], axis: usize, k: usize) -> usize {
+        let ndim = in_shape.len();
+        // 展开 out_idx 到非 axis 维坐标
+        let mut coords = [0usize; 32];
+        let mut ci = 0;
+        let mut tmp = out_idx;
+        for i in (0..ndim).rev() {
+            if i == axis { continue; }
+            coords[ci] = tmp % in_shape[i];
+            tmp /= in_shape[i];
+            ci += 1;
+        }
+        // 计算 offset
+        let mut offset = 0isize;
+        ci = 0;
+        for i in (0..ndim).rev() {
+            let coord = if i == axis { k } else { let c = coords[ci]; ci += 1; c };
+            offset += coord as isize * in_strides[i];
+        }
+        offset as usize
+    }
+
+    // 标准 reduction mock 宏（sum/prod/max/min）
+    macro_rules! mock_reduce_v2 {
+        ($name:ident, $t:ty, $identity:expr, $accum:expr) => {
+            pub unsafe fn $name(
+                a: *const $t, c: *mut $t,
+                ndim: i32, in_shape: *const usize, in_strides: *const isize,
+                axis: i32, axis_len: usize, out_size: usize,
+                _stream: musaStream_t,
+            ) {
+                if a.is_null() || c.is_null() || ndim <= 0 || out_size == 0 { return; }
+                let ndim_u = ndim as usize;
+                let shape_s = std::slice::from_raw_parts(in_shape, ndim_u);
+                let strides_s = std::slice::from_raw_parts(in_strides, ndim_u);
+                let axis_u = axis as usize;
+                let accum: fn($t, $t) -> $t = $accum;
+                for idx in 0..out_size {
+                    let base = mock_reduce_offset(idx, shape_s, strides_s, axis_u, 0);
+                    let axis_stride = strides_s[axis_u];
+                    let mut acc: $t = $identity;
+                    for k in 0..axis_len {
+                        let off = (base as isize + k as isize * axis_stride) as usize;
+                        acc = accum(acc, *a.add(off));
+                    }
+                    *c.add(idx) = acc;
+                }
+            }
+        };
+    }
+
+    mock_reduce_v2!(musapy_sum_i64_v2, i64, 0, |acc, v| acc + v);
+    mock_reduce_v2!(musapy_sum_f32_v2, f32, 0.0, |acc, v| acc + v);
+    mock_reduce_v2!(musapy_sum_f64_v2, f64, 0.0, |acc, v| acc + v);
+    mock_reduce_v2!(musapy_prod_i64_v2, i64, 1, |acc, v| acc * v);
+    mock_reduce_v2!(musapy_prod_f32_v2, f32, 1.0, |acc, v| acc * v);
+    mock_reduce_v2!(musapy_prod_f64_v2, f64, 1.0, |acc, v| acc * v);
+
+    // max/min mock（用第一个元素初始化）
+    macro_rules! mock_minmax_v2 {
+        ($name:ident, $t:ty, $is_better:expr) => {
+            pub unsafe fn $name(
+                a: *const $t, c: *mut $t,
+                ndim: i32, in_shape: *const usize, in_strides: *const isize,
+                axis: i32, axis_len: usize, out_size: usize,
+                _stream: musaStream_t,
+            ) {
+                if a.is_null() || c.is_null() || ndim <= 0 || out_size == 0 || axis_len == 0 { return; }
+                let ndim_u = ndim as usize;
+                let shape_s = std::slice::from_raw_parts(in_shape, ndim_u);
+                let strides_s = std::slice::from_raw_parts(in_strides, ndim_u);
+                let axis_u = axis as usize;
+                let is_better: fn($t, $t) -> bool = $is_better;
+                for idx in 0..out_size {
+                    let base = mock_reduce_offset(idx, shape_s, strides_s, axis_u, 0);
+                    let axis_stride = strides_s[axis_u];
+                    let mut acc = *a.add(base);
+                    for k in 1..axis_len {
+                        let off = (base as isize + k as isize * axis_stride) as usize;
+                        let val = *a.add(off);
+                        if is_better(val, acc) { acc = val; }
+                    }
+                    *c.add(idx) = acc;
+                }
+            }
+        };
+    }
+
+    mock_minmax_v2!(musapy_max_i64_v2, i64, |v, acc| v > acc);
+    mock_minmax_v2!(musapy_max_f32_v2, f32, |v, acc| v > acc);
+    mock_minmax_v2!(musapy_max_f64_v2, f64, |v, acc| v > acc);
+    mock_minmax_v2!(musapy_min_i64_v2, i64, |v, acc| v < acc);
+    mock_minmax_v2!(musapy_min_f32_v2, f32, |v, acc| v < acc);
+    mock_minmax_v2!(musapy_min_f64_v2, f64, |v, acc| v < acc);
+
+    // mean mock（只有 f32/f64）
+    macro_rules! mock_mean_v2 {
+        ($name:ident, $t:ty) => {
+            pub unsafe fn $name(
+                a: *const $t, c: *mut $t,
+                ndim: i32, in_shape: *const usize, in_strides: *const isize,
+                axis: i32, axis_len: usize, out_size: usize,
+                _stream: musaStream_t,
+            ) {
+                if a.is_null() || c.is_null() || ndim <= 0 || out_size == 0 || axis_len == 0 { return; }
+                let ndim_u = ndim as usize;
+                let shape_s = std::slice::from_raw_parts(in_shape, ndim_u);
+                let strides_s = std::slice::from_raw_parts(in_strides, ndim_u);
+                let axis_u = axis as usize;
+                for idx in 0..out_size {
+                    let base = mock_reduce_offset(idx, shape_s, strides_s, axis_u, 0);
+                    let axis_stride = strides_s[axis_u];
+                    let mut acc: $t = 0.0;
+                    for k in 0..axis_len {
+                        let off = (base as isize + k as isize * axis_stride) as usize;
+                        acc += *a.add(off);
+                    }
+                    *c.add(idx) = acc / axis_len as $t;
+                }
+            }
+        };
+    }
+
+    mock_mean_v2!(musapy_mean_f32_v2, f32);
+    mock_mean_v2!(musapy_mean_f64_v2, f64);
+
+    // argmax/argmin mock（输入 T，输出 i64）
+    macro_rules! mock_argreduce_v2 {
+        ($name:ident, $t:ty, $is_better:expr) => {
+            pub unsafe fn $name(
+                a: *const $t, c: *mut i64,
+                ndim: i32, in_shape: *const usize, in_strides: *const isize,
+                axis: i32, axis_len: usize, out_size: usize,
+                _stream: musaStream_t,
+            ) {
+                if a.is_null() || c.is_null() || ndim <= 0 || out_size == 0 || axis_len == 0 { return; }
+                let ndim_u = ndim as usize;
+                let shape_s = std::slice::from_raw_parts(in_shape, ndim_u);
+                let strides_s = std::slice::from_raw_parts(in_strides, ndim_u);
+                let axis_u = axis as usize;
+                let is_better: fn($t, $t) -> bool = $is_better;
+                for idx in 0..out_size {
+                    let base = mock_reduce_offset(idx, shape_s, strides_s, axis_u, 0);
+                    let axis_stride = strides_s[axis_u];
+                    let mut best_val = *a.add(base);
+                    let mut best_idx: i64 = 0;
+                    for k in 1..axis_len {
+                        let off = (base as isize + k as isize * axis_stride) as usize;
+                        let val = *a.add(off);
+                        if is_better(val, best_val) {
+                            best_val = val;
+                            best_idx = k as i64;
+                        }
+                    }
+                    *c.add(idx) = best_idx;
+                }
+            }
+        };
+    }
+
+    mock_argreduce_v2!(musapy_argmax_i64_v2, i64, |v, best| v > best);
+    mock_argreduce_v2!(musapy_argmax_f32_v2, f32, |v, best| v > best);
+    mock_argreduce_v2!(musapy_argmax_f64_v2, f64, |v, best| v > best);
+    mock_argreduce_v2!(musapy_argmin_i64_v2, i64, |v, best| v < best);
+    mock_argreduce_v2!(musapy_argmin_f32_v2, f32, |v, best| v < best);
+    mock_argreduce_v2!(musapy_argmin_f64_v2, f64, |v, best| v < best);
+
+    // cumsum mock（输出同 shape，prefix sum）
+    macro_rules! mock_cumsum_v2 {
+        ($name:ident, $t:ty) => {
+            pub unsafe fn $name(
+                a: *const $t, c: *mut $t,
+                ndim: i32, in_shape: *const usize, in_strides: *const isize,
+                axis: i32, out_size: usize,
+                _stream: musaStream_t,
+            ) {
+                if a.is_null() || c.is_null() || ndim <= 0 || out_size == 0 { return; }
+                let ndim_u = ndim as usize;
+                let shape_s = std::slice::from_raw_parts(in_shape, ndim_u);
+                let strides_s = std::slice::from_raw_parts(in_strides, ndim_u);
+                let axis_u = axis as usize;
+                for idx in 0..out_size {
+                    // 展开 idx 得到 axis 坐标
+                    let mut tmp = idx;
+                    let mut axis_coord = 0usize;
+                    for i in (0..ndim_u).rev() {
+                        let coord = tmp % shape_s[i];
+                        tmp /= shape_s[i];
+                        if i == axis_u { axis_coord = coord; }
+                    }
+                    // 计算 axis=0 时的 base offset
+                    let mut base = 0isize;
+                    tmp = idx;
+                    for i in (0..ndim_u).rev() {
+                        let coord = tmp % shape_s[i];
+                        tmp /= shape_s[i];
+                        if i != axis_u {
+                            base += coord as isize * strides_s[i];
+                        }
+                    }
+                    let axis_stride = strides_s[axis_u];
+                    let mut acc: $t = 0.0 as $t;
+                    for k in 0..=axis_coord {
+                        let off = (base + k as isize * axis_stride) as usize;
+                        acc += *a.add(off);
+                    }
+                    *c.add(idx) = acc;
+                }
+            }
+        };
+    }
+
+    mock_cumsum_v2!(musapy_cumsum_i64_v2, i64);
+    mock_cumsum_v2!(musapy_cumsum_f32_v2, f32);
+    mock_cumsum_v2!(musapy_cumsum_f64_v2, f64);
 }
 
 // Mock 模式 re-export

@@ -320,6 +320,14 @@ fn _core(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(ops::gt, m)?)?;
     m.add_function(wrap_pyfunction!(ops::le, m)?)?;
     m.add_function(wrap_pyfunction!(ops::ge, m)?)?;
+    m.add_function(wrap_pyfunction!(ops::sum, m)?)?;
+    m.add_function(wrap_pyfunction!(ops::prod, m)?)?;
+    m.add_function(wrap_pyfunction!(ops::max, m)?)?;
+    m.add_function(wrap_pyfunction!(ops::min, m)?)?;
+    m.add_function(wrap_pyfunction!(ops::mean, m)?)?;
+    m.add_function(wrap_pyfunction!(ops::argmax, m)?)?;
+    m.add_function(wrap_pyfunction!(ops::argmin, m)?)?;
+    m.add_function(wrap_pyfunction!(ops::cumsum, m)?)?;
     m.add_function(wrap_pyfunction!(set_default_device, m)?)?;
     m.add_function(wrap_pyfunction!(set_default_dtype, m)?)?;
     m.add_function(wrap_pyfunction!(device_context, m)?)?;

@@ -127,6 +127,51 @@ macro_rules! launch_compare {
     };
 }
 
+/// Reduction kernel launch（_v2 stride-aware，沿轴缩减）。
+macro_rules! launch_reduce {
+    ($fn:ident, $ap:expr, $op:expr, $ndim:expr, $in_shape:expr, $in_strides:expr,
+     $axis:expr, $axis_len:expr, $out_size:expr, $stream:expr, $label:expr) => {
+        if let (Some(ap), Some(op)) = ($ap, $op) {
+            unsafe {
+                kernels::$fn(ap.as_ptr() as _, op.as_ptr() as _,
+                    $ndim, $in_shape.as_ptr(), $in_strides.as_ptr(),
+                    $axis, $axis_len, $out_size, $stream);
+            }
+            musa_ffi::check_last_kernel_launch($label)?;
+        }
+    };
+}
+
+/// Argmax/Argmin kernel launch（输入 T，输出 i64 索引）。
+macro_rules! launch_argreduce {
+    ($fn:ident, $ap:expr, $op:expr, $ndim:expr, $in_shape:expr, $in_strides:expr,
+     $axis:expr, $axis_len:expr, $out_size:expr, $stream:expr, $label:expr) => {
+        if let (Some(ap), Some(op)) = ($ap, $op) {
+            unsafe {
+                kernels::$fn(ap.as_ptr() as _, op.as_ptr() as _,
+                    $ndim, $in_shape.as_ptr(), $in_strides.as_ptr(),
+                    $axis, $axis_len, $out_size, $stream);
+            }
+            musa_ffi::check_last_kernel_launch($label)?;
+        }
+    };
+}
+
+/// Cumsum kernel launch（_v2 stride-aware，prefix sum，无 axis_len）。
+macro_rules! launch_cumsum {
+    ($fn:ident, $ap:expr, $op:expr, $ndim:expr, $in_shape:expr, $in_strides:expr,
+     $axis:expr, $out_size:expr, $stream:expr, $label:expr) => {
+        if let (Some(ap), Some(op)) = ($ap, $op) {
+            unsafe {
+                kernels::$fn(ap.as_ptr() as _, op.as_ptr() as _,
+                    $ndim, $in_shape.as_ptr(), $in_strides.as_ptr(),
+                    $axis, $out_size, $stream);
+            }
+            musa_ffi::check_last_kernel_launch($label)?;
+        }
+    };
+}
+
 /// CPU cast 单 (src, dst) 类型对的 `as` 转换循环（stride-aware）。
 macro_rules! cpu_cast_pair {
     ($src_t:ty, $dst_t:ty, $a:expr, $c:expr, $shape:expr, $strides:expr) => {{
@@ -742,10 +787,10 @@ pub(crate) fn clamp_elementwise(
 /// - bool/float16/bfloat16/complex 尚无 cast kernel（后续 Phase）
 fn validate_cast_pair(src: Dtype, dst: Dtype) -> Result<()> {
     match dst {
-        Dtype::Float32 | Dtype::Float64 => {}
+        Dtype::Float32 | Dtype::Float64 | Dtype::Int64 => {}
         _ => {
             return Err(DtypeError::Unsupported(format!(
-                "cast: target dtype {} not supported (only float32/float64)",
+                "cast: target dtype {} not supported (only float32/float64/int64)",
                 dst
             ))
             .into());
@@ -832,7 +877,17 @@ fn launch_cast_kernel(
                     Dtype::Float32 => launch_cast!(musapy_cast_f32_f64_v2, a_ptr, c_ptr, ndim, shape, a_strides, stream_raw, "cast_f32_f64_v2"),
                     _ => unreachable!("cast pair already validated"),
                 },
-                _ => unreachable!("cast target already validated as float32/float64"),
+                Dtype::Int64 => match src {
+                    Dtype::Int8 => launch_cast!(musapy_cast_i8_i64_v2, a_ptr, c_ptr, ndim, shape, a_strides, stream_raw, "cast_i8_i64_v2"),
+                    Dtype::Int16 => launch_cast!(musapy_cast_i16_i64_v2, a_ptr, c_ptr, ndim, shape, a_strides, stream_raw, "cast_i16_i64_v2"),
+                    Dtype::Int32 => launch_cast!(musapy_cast_i32_i64_v2, a_ptr, c_ptr, ndim, shape, a_strides, stream_raw, "cast_i32_i64_v2"),
+                    Dtype::Uint8 => launch_cast!(musapy_cast_u8_i64_v2, a_ptr, c_ptr, ndim, shape, a_strides, stream_raw, "cast_u8_i64_v2"),
+                    Dtype::Uint16 => launch_cast!(musapy_cast_u16_i64_v2, a_ptr, c_ptr, ndim, shape, a_strides, stream_raw, "cast_u16_i64_v2"),
+                    Dtype::Uint32 => launch_cast!(musapy_cast_u32_i64_v2, a_ptr, c_ptr, ndim, shape, a_strides, stream_raw, "cast_u32_i64_v2"),
+                    Dtype::Uint64 => launch_cast!(musapy_cast_u64_i64_v2, a_ptr, c_ptr, ndim, shape, a_strides, stream_raw, "cast_u64_i64_v2"),
+                    _ => unreachable!("cast pair already validated"),
+                },
+                _ => unreachable!("cast target already validated as float32/float64/int64"),
             }
             Ok(())
         }
@@ -1606,7 +1661,8 @@ fn cpu_cast(
             match $dst {
                 Dtype::Float32 => cpu_cast_pair!($src_t, f32, $a, $c, $shape, $strides),
                 Dtype::Float64 => cpu_cast_pair!($src_t, f64, $a, $c, $shape, $strides),
-                _ => unreachable!("cast target already validated as float32/float64"),
+                Dtype::Int64 => cpu_cast_pair!($src_t, i64, $a, $c, $shape, $strides),
+                _ => unreachable!("cast target already validated as float32/float64/int64"),
             }
         };
     }
@@ -1623,5 +1679,727 @@ fn cpu_cast(
         Dtype::Float32 => dispatch_cast_dst!(f32, a, c, shape, a_strides, dst),
         Dtype::Float64 => dispatch_cast_dst!(f64, a, c, shape, a_strides, dst),
         _ => unreachable!("cast source already validated"),
+    }
+}
+
+// ── Reduction（Phase 4, ADR-002-D3）──────────────────────────
+
+/// 具体 reduction kernel 标识（用于骨架分派）。
+#[derive(Clone, Copy, Debug)]
+pub(crate) enum ReduceKernel {
+    Sum,
+    Prod,
+    Max,
+    Min,
+    Mean,
+    Argmax,
+    Argmin,
+}
+
+impl ReduceKernel {
+    fn name(&self) -> &'static str {
+        match self {
+            ReduceKernel::Sum => "sum",
+            ReduceKernel::Prod => "prod",
+            ReduceKernel::Max => "max",
+            ReduceKernel::Min => "min",
+            ReduceKernel::Mean => "mean",
+            ReduceKernel::Argmax => "argmax",
+            ReduceKernel::Argmin => "argmin",
+        }
+    }
+
+    /// 输出 dtype 是否恒为 i64（argmax/argmin）。
+    fn output_is_index(&self) -> bool {
+        matches!(self, ReduceKernel::Argmax | ReduceKernel::Argmin)
+    }
+}
+
+/// 决定 reduction 的 compute dtype（ADR-002-D3 累加规则）。
+///
+/// - sum/prod/max/min/cumsum：int → i64，float 保持
+/// - mean：int → f64，float 保持
+/// - argmax/argmin：int → i64，float 保持（输出恒 i64，但 kernel 输入需要 compute dtype）
+fn reduction_compute_dtype(input_dtype: Dtype, kernel: &ReduceKernel) -> Dtype {
+    match input_dtype {
+        Dtype::Float32 => Dtype::Float32,
+        Dtype::Float64 => Dtype::Float64,
+        // 所有整数类型
+        _ => match kernel {
+            ReduceKernel::Mean => Dtype::Float64,
+            _ => Dtype::Int64,
+        },
+    }
+}
+
+/// 通用 reduction 3-phase 骨架（Phase 4, ADR-002-D3）。
+///
+/// 支持 sum/prod/max/min/mean/argmax/argmin。
+/// axis: 已归一化的轴（None = 全局缩减）。
+/// keepdims: 输出是否保留被缩减维（长度 1）。
+///
+/// Phase A：参数解析 → Phase B：kernel launch → Phase C：后处理
+pub(crate) fn reduction_axis(
+    a: &Array,
+    axis: Option<usize>,
+    keepdims: bool,
+    out: Option<&Array>,
+    kernel: ReduceKernel,
+) -> Result<Array> {
+    let op_name = kernel.name();
+
+    // ═══════════════════════════════════════════════════════════════
+    // Phase A：参数解析（一次性，capture-safe）
+    // ═══════════════════════════════════════════════════════════════
+
+    // 1. Device
+    let device = a.device().clone();
+
+    // 2. 输出 shape 推导
+    let in_shape = a.shape().clone();
+    let ndim = in_shape.len();
+    let out_shape: Vec<usize> = match axis {
+        None => {
+            // 全局缩减 → 0-dim（或 keepdims → [1; ndim]）
+            if keepdims {
+                vec![1; ndim]
+            } else {
+                vec![]
+            }
+        }
+        Some(ax) => {
+            let mut s = Vec::with_capacity(ndim - 1 + if keepdims { 1 } else { 0 });
+            for (i, &dim) in in_shape.iter().enumerate() {
+                if i == ax {
+                    if keepdims {
+                        s.push(1);
+                    }
+                    // else: skip this dim
+                } else {
+                    s.push(dim);
+                }
+            }
+            s
+        }
+    };
+
+    // 3. Compute dtype（ADR-002-D3 累加规则）
+    let compute_dtype = reduction_compute_dtype(a.dtype(), &kernel);
+
+    // 4. 输出 dtype
+    let out_dtype = if kernel.output_is_index() {
+        Dtype::Int64
+    } else {
+        compute_dtype
+    };
+
+    // 5. 计算 kernel 参数
+    // axis=None → 视为 1D 全缩减：kernel_ndim=1, kernel_shape=[total], kernel_axis=0
+    let total_size: usize = in_shape.iter().product();
+    let (kernel_ndim, kernel_shape, kernel_axis, axis_len): (i32, Vec<usize>, i32, usize) =
+        match axis {
+            None => (1, vec![total_size], 0, total_size),
+            Some(ax) => (
+                ndim as i32,
+                in_shape.clone(),
+                ax as i32,
+                in_shape[ax],
+            ),
+        };
+
+    let out_size: usize = out_shape.iter().product::<usize>().max(1); // 0-dim scalar → size 1
+    let nbytes = out_size * out_dtype.element_size();
+
+    // 6. out= 参数校验
+    if let Some(o) = out {
+        if o.shape() != &out_shape {
+            return Err(ShapeError::Mismatch(format!(
+                "{}: out shape {:?} != expected output shape {:?}",
+                op_name,
+                o.shape(),
+                out_shape
+            ))
+            .into());
+        }
+        if o.dtype() != out_dtype {
+            return Err(DtypeError::Unsupported(format!(
+                "{}: out dtype {} != expected {}",
+                op_name,
+                o.dtype(),
+                out_dtype
+            ))
+            .into());
+        }
+        if o.device() != a.device() {
+            return Err(DeviceError::Mismatch(format!(
+                "{}: out device {} != input device {}",
+                op_name,
+                o.device(),
+                a.device()
+            ))
+            .into());
+        }
+    }
+
+    // 7. Stream 选择（ADR L1-8）
+    let out_stream: Arc<Stream> = match out {
+        Some(o) => Arc::clone(o.stream()),
+        None => resolution::get_current_stream().unwrap_or_else(|| Arc::clone(a.stream())),
+    };
+
+    // 8. 内部 cast（输入 dtype != compute dtype 时）
+    let a_cast = (a.dtype() != compute_dtype)
+        .then(|| cast_array(a, compute_dtype, &out_stream))
+        .transpose()?;
+    let a_work: &Array = a_cast.as_ref().unwrap_or(a);
+
+    // 9. out= 处理 + 别名检测（ADR L2-5）
+    let (out_data_ref, out_ptr) = match out {
+        Some(o) => {
+            if o.data() == a_work.data() {
+                return Err(MemoryError::AliasDetected.into());
+            }
+            (o.data().clone(), o.data().buffer().ptr())
+        }
+        None => {
+            let buffer = Buffer::alloc(nbytes, device.clone(), &out_stream)?;
+            let buffer_arc = Arc::new(buffer);
+            let data_ref = BufferRef::new(buffer_arc);
+            let ptr = data_ref.buffer().ptr();
+            (data_ref, ptr)
+        }
+    };
+
+    // 10. 自动 stream wait（ADR L1-8）
+    a_work.data().buffer().wait_last_write_on(&out_stream)?;
+
+    // ═══════════════════════════════════════════════════════════════
+    // Phase B：Kernel launch（可重放，capture-safe）
+    // ═══════════════════════════════════════════════════════════════
+
+    let a_ptr = a_work.data().buffer().ptr();
+
+    if out_size > 0 && axis_len > 0 {
+        // 输入 strides（元素单位）
+        // axis=None → 视为 1D contiguous（stride=[1]）
+        let in_strides: Vec<isize> = match axis {
+            None => vec![1],
+            Some(_) => a_work
+                .layout()
+                .strides
+                .iter()
+                .map(|&s| s as isize)
+                .collect(),
+        };
+        let stream_raw = out_stream.raw();
+
+        match &device {
+            Device::Cpu => {
+                cpu_reduction_axis(
+                    a_ptr,
+                    out_ptr,
+                    &kernel_shape,
+                    &in_strides,
+                    kernel_axis as usize,
+                    axis_len,
+                    out_size,
+                    compute_dtype,
+                    &kernel,
+                );
+            }
+            Device::Musa(_) => {
+                if kernel.output_is_index() {
+                    // argmax/argmin：输入 compute_dtype，输出 i64
+                    match (&kernel, compute_dtype) {
+                        (ReduceKernel::Argmax, Dtype::Int64) => launch_argreduce!(musapy_argmax_i64_v2, a_ptr, out_ptr, kernel_ndim, kernel_shape, in_strides, kernel_axis, axis_len, out_size, stream_raw, "argmax_i64_v2"),
+                        (ReduceKernel::Argmax, Dtype::Float32) => launch_argreduce!(musapy_argmax_f32_v2, a_ptr, out_ptr, kernel_ndim, kernel_shape, in_strides, kernel_axis, axis_len, out_size, stream_raw, "argmax_f32_v2"),
+                        (ReduceKernel::Argmax, Dtype::Float64) => launch_argreduce!(musapy_argmax_f64_v2, a_ptr, out_ptr, kernel_ndim, kernel_shape, in_strides, kernel_axis, axis_len, out_size, stream_raw, "argmax_f64_v2"),
+                        (ReduceKernel::Argmin, Dtype::Int64) => launch_argreduce!(musapy_argmin_i64_v2, a_ptr, out_ptr, kernel_ndim, kernel_shape, in_strides, kernel_axis, axis_len, out_size, stream_raw, "argmin_i64_v2"),
+                        (ReduceKernel::Argmin, Dtype::Float32) => launch_argreduce!(musapy_argmin_f32_v2, a_ptr, out_ptr, kernel_ndim, kernel_shape, in_strides, kernel_axis, axis_len, out_size, stream_raw, "argmin_f32_v2"),
+                        (ReduceKernel::Argmin, Dtype::Float64) => launch_argreduce!(musapy_argmin_f64_v2, a_ptr, out_ptr, kernel_ndim, kernel_shape, in_strides, kernel_axis, axis_len, out_size, stream_raw, "argmin_f64_v2"),
+                        _ => unreachable!(),
+                    }
+                } else {
+                    // sum/prod/max/min/mean：输入输出同 compute_dtype
+                    match (&kernel, compute_dtype) {
+                        (ReduceKernel::Sum, Dtype::Int64) => launch_reduce!(musapy_sum_i64_v2, a_ptr, out_ptr, kernel_ndim, kernel_shape, in_strides, kernel_axis, axis_len, out_size, stream_raw, "sum_i64_v2"),
+                        (ReduceKernel::Sum, Dtype::Float32) => launch_reduce!(musapy_sum_f32_v2, a_ptr, out_ptr, kernel_ndim, kernel_shape, in_strides, kernel_axis, axis_len, out_size, stream_raw, "sum_f32_v2"),
+                        (ReduceKernel::Sum, Dtype::Float64) => launch_reduce!(musapy_sum_f64_v2, a_ptr, out_ptr, kernel_ndim, kernel_shape, in_strides, kernel_axis, axis_len, out_size, stream_raw, "sum_f64_v2"),
+                        (ReduceKernel::Prod, Dtype::Int64) => launch_reduce!(musapy_prod_i64_v2, a_ptr, out_ptr, kernel_ndim, kernel_shape, in_strides, kernel_axis, axis_len, out_size, stream_raw, "prod_i64_v2"),
+                        (ReduceKernel::Prod, Dtype::Float32) => launch_reduce!(musapy_prod_f32_v2, a_ptr, out_ptr, kernel_ndim, kernel_shape, in_strides, kernel_axis, axis_len, out_size, stream_raw, "prod_f32_v2"),
+                        (ReduceKernel::Prod, Dtype::Float64) => launch_reduce!(musapy_prod_f64_v2, a_ptr, out_ptr, kernel_ndim, kernel_shape, in_strides, kernel_axis, axis_len, out_size, stream_raw, "prod_f64_v2"),
+                        (ReduceKernel::Max, Dtype::Int64) => launch_reduce!(musapy_max_i64_v2, a_ptr, out_ptr, kernel_ndim, kernel_shape, in_strides, kernel_axis, axis_len, out_size, stream_raw, "max_i64_v2"),
+                        (ReduceKernel::Max, Dtype::Float32) => launch_reduce!(musapy_max_f32_v2, a_ptr, out_ptr, kernel_ndim, kernel_shape, in_strides, kernel_axis, axis_len, out_size, stream_raw, "max_f32_v2"),
+                        (ReduceKernel::Max, Dtype::Float64) => launch_reduce!(musapy_max_f64_v2, a_ptr, out_ptr, kernel_ndim, kernel_shape, in_strides, kernel_axis, axis_len, out_size, stream_raw, "max_f64_v2"),
+                        (ReduceKernel::Min, Dtype::Int64) => launch_reduce!(musapy_min_i64_v2, a_ptr, out_ptr, kernel_ndim, kernel_shape, in_strides, kernel_axis, axis_len, out_size, stream_raw, "min_i64_v2"),
+                        (ReduceKernel::Min, Dtype::Float32) => launch_reduce!(musapy_min_f32_v2, a_ptr, out_ptr, kernel_ndim, kernel_shape, in_strides, kernel_axis, axis_len, out_size, stream_raw, "min_f32_v2"),
+                        (ReduceKernel::Min, Dtype::Float64) => launch_reduce!(musapy_min_f64_v2, a_ptr, out_ptr, kernel_ndim, kernel_shape, in_strides, kernel_axis, axis_len, out_size, stream_raw, "min_f64_v2"),
+                        (ReduceKernel::Mean, Dtype::Float32) => launch_reduce!(musapy_mean_f32_v2, a_ptr, out_ptr, kernel_ndim, kernel_shape, in_strides, kernel_axis, axis_len, out_size, stream_raw, "mean_f32_v2"),
+                        (ReduceKernel::Mean, Dtype::Float64) => launch_reduce!(musapy_mean_f64_v2, a_ptr, out_ptr, kernel_ndim, kernel_shape, in_strides, kernel_axis, axis_len, out_size, stream_raw, "mean_f64_v2"),
+                        _ => unreachable!("mean only supports float compute dtype"),
+                    }
+                }
+            }
+        }
+    }
+
+    // ═══════════════════════════════════════════════════════════════
+    // Phase C：后处理
+    // ═══════════════════════════════════════════════════════════════
+
+    // 事件记录（ADR L3-10）
+    a_work.data().buffer().record_read(&out_stream);
+    out_data_ref.buffer().record_write(&out_stream);
+
+    // OpContext 记录（ADR L3-2）
+    let mut ctx = OpContext::new(
+        op_name,
+        vec![a.shape().clone()],
+        vec![a.device().clone()],
+        vec![a.dtype()],
+        out_shape.clone(),
+        out_stream.id(),
+    );
+    if musapy_core::debug::is_debug() {
+        if let Some(frame) = musapy_core::debug::take_debug_frame() {
+            ctx = ctx.with_frame(frame);
+        }
+    }
+    out_stream.record_op(ctx);
+
+    // 构造输出 Array
+    Ok(Array::new(
+        out_data_ref,
+        Layout::from_shape(out_shape),
+        out_dtype,
+        out_stream,
+        DeviceResolution::new(device, ResolutionSource::InputArray),
+        DtypeResolution::new(out_dtype, ResolutionSource::InputArray),
+    ))
+}
+
+/// Cumsum 骨架（Phase 4, ADR-002-D3）。
+///
+/// 与 reduction_axis 不同：输出 shape = 输入 shape（无维度缩减），无 keepdims。
+pub(crate) fn cumsum_op(
+    a: &Array,
+    axis: Option<usize>,
+    out: Option<&Array>,
+) -> Result<Array> {
+    let op_name = "cumsum";
+
+    // ═══════════════════════════════════════════════════════════════
+    // Phase A
+    // ═══════════════════════════════════════════════════════════════
+
+    let device = a.device().clone();
+    let in_shape = a.shape().clone();
+    let ndim = in_shape.len();
+    let total_size: usize = in_shape.iter().product();
+
+    // axis=None → flatten 后 cumsum（输出 1D）
+    let (out_shape, kernel_ndim, kernel_shape, kernel_axis): (Vec<usize>, i32, Vec<usize>, i32) =
+        match axis {
+            None => (vec![total_size], 1, vec![total_size], 0),
+            Some(ax) => (in_shape.clone(), ndim as i32, in_shape.clone(), ax as i32),
+        };
+
+    // Compute dtype：int → i64，float 保持
+    let compute_dtype = match a.dtype() {
+        Dtype::Float32 => Dtype::Float32,
+        Dtype::Float64 => Dtype::Float64,
+        _ => Dtype::Int64,
+    };
+
+    let out_size: usize = out_shape.iter().product();
+    let nbytes = out_size * compute_dtype.element_size();
+
+    // out= 校验
+    if let Some(o) = out {
+        if o.shape() != &out_shape {
+            return Err(ShapeError::Mismatch(format!(
+                "{}: out shape {:?} != expected {:?}",
+                op_name,
+                o.shape(),
+                out_shape
+            ))
+            .into());
+        }
+        if o.dtype() != compute_dtype {
+            return Err(DtypeError::Unsupported(format!(
+                "{}: out dtype {} != expected {}",
+                op_name,
+                o.dtype(),
+                compute_dtype
+            ))
+            .into());
+        }
+        if o.device() != a.device() {
+            return Err(DeviceError::Mismatch(format!(
+                "{}: out device {} != input device {}",
+                op_name,
+                o.device(),
+                a.device()
+            ))
+            .into());
+        }
+    }
+
+    // Stream 选择
+    let out_stream: Arc<Stream> = match out {
+        Some(o) => Arc::clone(o.stream()),
+        None => resolution::get_current_stream().unwrap_or_else(|| Arc::clone(a.stream())),
+    };
+
+    // 内部 cast
+    let a_cast = (a.dtype() != compute_dtype)
+        .then(|| cast_array(a, compute_dtype, &out_stream))
+        .transpose()?;
+    let a_work: &Array = a_cast.as_ref().unwrap_or(a);
+
+    // Buffer 分配 + alias 检测
+    let (out_data_ref, out_ptr) = match out {
+        Some(o) => {
+            if o.data() == a_work.data() {
+                return Err(MemoryError::AliasDetected.into());
+            }
+            (o.data().clone(), o.data().buffer().ptr())
+        }
+        None => {
+            let buffer = Buffer::alloc(nbytes, device.clone(), &out_stream)?;
+            let buffer_arc = Arc::new(buffer);
+            let data_ref = BufferRef::new(buffer_arc);
+            let ptr = data_ref.buffer().ptr();
+            (data_ref, ptr)
+        }
+    };
+
+    a_work.data().buffer().wait_last_write_on(&out_stream)?;
+
+    // ═══════════════════════════════════════════════════════════════
+    // Phase B
+    // ═══════════════════════════════════════════════════════════════
+
+    let a_ptr = a_work.data().buffer().ptr();
+
+    if out_size > 0 {
+        // axis=None → 视为 1D contiguous（stride=[1]）
+        let in_strides: Vec<isize> = match axis {
+            None => vec![1],
+            Some(_) => a_work
+                .layout()
+                .strides
+                .iter()
+                .map(|&s| s as isize)
+                .collect(),
+        };
+        let stream_raw = out_stream.raw();
+
+        match &device {
+            Device::Cpu => {
+                cpu_cumsum(
+                    a_ptr,
+                    out_ptr,
+                    &kernel_shape,
+                    &in_strides,
+                    kernel_axis as usize,
+                    out_size,
+                    compute_dtype,
+                );
+            }
+            Device::Musa(_) => match compute_dtype {
+                Dtype::Int64 => launch_cumsum!(musapy_cumsum_i64_v2, a_ptr, out_ptr, kernel_ndim, kernel_shape, in_strides, kernel_axis, out_size, stream_raw, "cumsum_i64_v2"),
+                Dtype::Float32 => launch_cumsum!(musapy_cumsum_f32_v2, a_ptr, out_ptr, kernel_ndim, kernel_shape, in_strides, kernel_axis, out_size, stream_raw, "cumsum_f32_v2"),
+                Dtype::Float64 => launch_cumsum!(musapy_cumsum_f64_v2, a_ptr, out_ptr, kernel_ndim, kernel_shape, in_strides, kernel_axis, out_size, stream_raw, "cumsum_f64_v2"),
+                _ => unreachable!("cumsum compute dtype already validated"),
+            },
+        }
+    }
+
+    // ═══════════════════════════════════════════════════════════════
+    // Phase C
+    // ═══════════════════════════════════════════════════════════════
+
+    a_work.data().buffer().record_read(&out_stream);
+    out_data_ref.buffer().record_write(&out_stream);
+
+    let mut ctx = OpContext::new(
+        op_name,
+        vec![a.shape().clone()],
+        vec![a.device().clone()],
+        vec![a.dtype()],
+        out_shape.clone(),
+        out_stream.id(),
+    );
+    if musapy_core::debug::is_debug() {
+        if let Some(frame) = musapy_core::debug::take_debug_frame() {
+            ctx = ctx.with_frame(frame);
+        }
+    }
+    out_stream.record_op(ctx);
+
+    Ok(Array::new(
+        out_data_ref,
+        Layout::from_shape(out_shape),
+        compute_dtype,
+        out_stream,
+        DeviceResolution::new(device, ResolutionSource::InputArray),
+        DtypeResolution::new(compute_dtype, ResolutionSource::InputArray),
+    ))
+}
+
+// ── CPU reduction fallback ───────────────────────────────────
+
+/// CPU 端 reduce_input_offset（与 common.h 逻辑一致）。
+fn cpu_reduce_offset(out_idx: usize, in_shape: &[usize], in_strides: &[isize], axis: usize, k: usize) -> usize {
+    let ndim = in_shape.len();
+    let mut coords = [0usize; 32];
+    let mut ci = 0;
+    let mut tmp = out_idx;
+    for i in (0..ndim).rev() {
+        if i == axis {
+            continue;
+        }
+        coords[ci] = tmp % in_shape[i];
+        tmp /= in_shape[i];
+        ci += 1;
+    }
+    let mut offset = 0isize;
+    ci = 0;
+    for i in (0..ndim).rev() {
+        let coord = if i == axis {
+            k
+        } else {
+            let c = coords[ci];
+            ci += 1;
+            c
+        };
+        offset += coord as isize * in_strides[i];
+    }
+    offset as usize
+}
+
+/// 按 dtype 分派 CPU reduction。
+fn cpu_reduction_axis(
+    a: Option<NonNull<u8>>,
+    c: Option<NonNull<u8>>,
+    in_shape: &[usize],
+    in_strides: &[isize],
+    axis: usize,
+    axis_len: usize,
+    out_size: usize,
+    dtype: Dtype,
+    kernel: &ReduceKernel,
+) {
+    // mean 单独处理（需要除法，只有 float）
+    if matches!(kernel, ReduceKernel::Mean) {
+        match dtype {
+            Dtype::Float32 => cpu_mean_typed::<f32>(a, c, in_shape, in_strides, axis, axis_len, out_size),
+            Dtype::Float64 => cpu_mean_typed::<f64>(a, c, in_shape, in_strides, axis, axis_len, out_size),
+            _ => unreachable!("mean compute dtype is always float"),
+        }
+        return;
+    }
+    match dtype {
+        Dtype::Int64 => cpu_reduce_typed::<i64>(a, c, in_shape, in_strides, axis, axis_len, out_size, kernel),
+        Dtype::Float32 => cpu_reduce_typed::<f32>(a, c, in_shape, in_strides, axis, axis_len, out_size, kernel),
+        Dtype::Float64 => cpu_reduce_typed::<f64>(a, c, in_shape, in_strides, axis, axis_len, out_size, kernel),
+        _ => unreachable!("reduction compute dtype already validated"),
+    }
+}
+
+/// 泛型 CPU reduction（stride-aware，per-output-element 循环累加）。
+/// 处理 sum/prod/max/min/argmax/argmin（不含 mean）。
+fn cpu_reduce_typed<T>(
+    a: Option<NonNull<u8>>,
+    c: Option<NonNull<u8>>,
+    in_shape: &[usize],
+    in_strides: &[isize],
+    axis: usize,
+    axis_len: usize,
+    out_size: usize,
+    kernel: &ReduceKernel,
+) where
+    T: Copy + PartialOrd + std::ops::Add<Output = T> + std::ops::Mul<Output = T> + From<i8>,
+{
+    let (Some(ap), Some(cp)) = (a, c) else {
+        return;
+    };
+    if out_size == 0 || axis_len == 0 {
+        return;
+    }
+    unsafe {
+        let base_a = ap.as_ptr() as *const T;
+        match kernel {
+            ReduceKernel::Sum => {
+                let base_c = cp.as_ptr() as *mut T;
+                for idx in 0..out_size {
+                    let base = cpu_reduce_offset(idx, in_shape, in_strides, axis, 0);
+                    let axis_stride = in_strides[axis];
+                    let mut acc = T::from(0i8);
+                    for k in 0..axis_len {
+                        let off = (base as isize + k as isize * axis_stride) as usize;
+                        acc = acc + *base_a.add(off);
+                    }
+                    *base_c.add(idx) = acc;
+                }
+            }
+            ReduceKernel::Prod => {
+                let base_c = cp.as_ptr() as *mut T;
+                for idx in 0..out_size {
+                    let base = cpu_reduce_offset(idx, in_shape, in_strides, axis, 0);
+                    let axis_stride = in_strides[axis];
+                    let mut acc = T::from(1i8);
+                    for k in 0..axis_len {
+                        let off = (base as isize + k as isize * axis_stride) as usize;
+                        acc = acc * *base_a.add(off);
+                    }
+                    *base_c.add(idx) = acc;
+                }
+            }
+            ReduceKernel::Max | ReduceKernel::Min => {
+                let base_c = cp.as_ptr() as *mut T;
+                let want_max = matches!(kernel, ReduceKernel::Max);
+                for idx in 0..out_size {
+                    let base = cpu_reduce_offset(idx, in_shape, in_strides, axis, 0);
+                    let axis_stride = in_strides[axis];
+                    let mut acc = *base_a.add(base);
+                    for k in 1..axis_len {
+                        let off = (base as isize + k as isize * axis_stride) as usize;
+                        let val = *base_a.add(off);
+                        if (want_max && val > acc) || (!want_max && val < acc) {
+                            acc = val;
+                        }
+                    }
+                    *base_c.add(idx) = acc;
+                }
+            }
+            ReduceKernel::Argmax | ReduceKernel::Argmin => {
+                let base_c = cp.as_ptr() as *mut i64;
+                let want_max = matches!(kernel, ReduceKernel::Argmax);
+                for idx in 0..out_size {
+                    let base = cpu_reduce_offset(idx, in_shape, in_strides, axis, 0);
+                    let axis_stride = in_strides[axis];
+                    let mut best_val = *base_a.add(base);
+                    let mut best_idx: i64 = 0;
+                    for k in 1..axis_len {
+                        let off = (base as isize + k as isize * axis_stride) as usize;
+                        let val = *base_a.add(off);
+                        if (want_max && val > best_val) || (!want_max && val < best_val) {
+                            best_val = val;
+                            best_idx = k as i64;
+                        }
+                    }
+                    *base_c.add(idx) = best_idx;
+                }
+            }
+            ReduceKernel::Mean => unreachable!("mean handled separately"),
+        }
+    }
+}
+
+/// CPU mean（sum / axis_len，只有 float compute dtype）。
+fn cpu_mean_typed<T: Copy + std::ops::Add<Output = T> + std::ops::Div<Output = T> + From<i8>>(
+    a: Option<NonNull<u8>>,
+    c: Option<NonNull<u8>>,
+    in_shape: &[usize],
+    in_strides: &[isize],
+    axis: usize,
+    axis_len: usize,
+    out_size: usize,
+) {
+    let (Some(ap), Some(cp)) = (a, c) else {
+        return;
+    };
+    if out_size == 0 || axis_len == 0 {
+        return;
+    }
+    unsafe {
+        let base_a = ap.as_ptr() as *const T;
+        let base_c = cp.as_ptr() as *mut T;
+        for idx in 0..out_size {
+            let base = cpu_reduce_offset(idx, in_shape, in_strides, axis, 0);
+            let axis_stride = in_strides[axis];
+            let mut acc = T::from(0i8);
+            for k in 0..axis_len {
+                let off = (base as isize + k as isize * axis_stride) as usize;
+                acc = acc + *base_a.add(off);
+            }
+            // 除以 count：构造 axis_len 的 T 值
+            let mut count = T::from(0i8);
+            for _ in 0..axis_len {
+                count = count + T::from(1i8);
+            }
+            *base_c.add(idx) = acc / count;
+        }
+    }
+}
+
+/// CPU cumsum fallback。
+fn cpu_cumsum(
+    a: Option<NonNull<u8>>,
+    c: Option<NonNull<u8>>,
+    in_shape: &[usize],
+    in_strides: &[isize],
+    axis: usize,
+    out_size: usize,
+    dtype: Dtype,
+) {
+    match dtype {
+        Dtype::Int64 => cpu_cumsum_typed::<i64>(a, c, in_shape, in_strides, axis, out_size),
+        Dtype::Float32 => cpu_cumsum_typed::<f32>(a, c, in_shape, in_strides, axis, out_size),
+        Dtype::Float64 => cpu_cumsum_typed::<f64>(a, c, in_shape, in_strides, axis, out_size),
+        _ => unreachable!("cumsum compute dtype already validated"),
+    }
+}
+
+/// 泛型 CPU cumsum（prefix sum along axis）。
+fn cpu_cumsum_typed<T: Copy + std::ops::Add<Output = T> + From<i8>>(
+    a: Option<NonNull<u8>>,
+    c: Option<NonNull<u8>>,
+    in_shape: &[usize],
+    in_strides: &[isize],
+    axis: usize,
+    out_size: usize,
+) {
+    let (Some(ap), Some(cp)) = (a, c) else {
+        return;
+    };
+    if out_size == 0 {
+        return;
+    }
+    let ndim = in_shape.len();
+    unsafe {
+        let base_a = ap.as_ptr() as *const T;
+        let base_c = cp.as_ptr() as *mut T;
+        for idx in 0..out_size {
+            // 展开 idx 得到 axis 坐标
+            let mut tmp = idx;
+            let mut axis_coord = 0usize;
+            for i in (0..ndim).rev() {
+                let coord = tmp % in_shape[i];
+                tmp /= in_shape[i];
+                if i == axis {
+                    axis_coord = coord;
+                }
+            }
+            // 计算 axis=0 时的 base offset
+            let mut base_off = 0isize;
+            tmp = idx;
+            for i in (0..ndim).rev() {
+                let coord = tmp % in_shape[i];
+                tmp /= in_shape[i];
+                if i != axis {
+                    base_off += coord as isize * in_strides[i];
+                }
+            }
+            let axis_stride = in_strides[axis];
+            let mut acc = T::from(0i8);
+            for k in 0..=axis_coord {
+                let off = (base_off + k as isize * axis_stride) as usize;
+                acc = acc + *base_a.add(off);
+            }
+            *base_c.add(idx) = acc;
+        }
     }
 }
