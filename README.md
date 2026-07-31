@@ -1,53 +1,242 @@
 # musapy
 
-Python + Rust + MUSA 科学计算库 —— 为摩尔线程 GPU 提供 NumPy 风格的数组计算 API。
-
-## 特性
-
-- **NumPy 风格 API**：`ms.array()`、`ms.add()`、`a + b`，零学习成本
-- **显式设备管理**：5 级 Device 解析链，数据去向可追溯
-- **Rust 核心**：内存安全、零开销抽象、RAII 生命周期
-- **Stream 异步**：多 stream 并行执行，自动依赖管理
-- **15 种 dtype**：bool/int/uint/float/bfloat16/complex 全覆盖
-- **Debug 模式**：运行时 flag 启用 OpContext 归因、alias 检测
-
-## 架构
-
-```
-musapy/
-├── python/musapy/          # Python 前端（import musapy as ms）
-├── rust/
-│   ├── musapy-core/        # 核心运行时：Device/Dtype/Stream/Buffer/Array、内存管理
-│   ├── musapy-ops/         # 算子层：OpBuilder、kernel 调度
-│   └── musapy-python/      # PyO3 绑定：Python ↔ Rust FFI
-└── kernels/                # MUSA C kernel（.mu 文件）
-```
-
-## 安装
-
-```bash
-# 前置：Rust toolchain + MUSA SDK（MUSA_HOME 环境变量）
-pip install -e .
-
-# 验证
-python -c "import musapy; print(musapy.__version__)"
-```
-
-详细安装指南见 [docs/getting-started.md](docs/getting-started.md)。
-
-## 最小示例
+**Python + Rust + MUSA 科学计算库** —— 为摩尔线程（Moore Threads）GPU 提供 NumPy 风格的数组计算 API。
 
 ```python
 import musapy as ms
 
 ms.set_default_device("musa:0")
 
-a = ms.array([1.0, 2.0, 3.0], dtype=ms.float32)
-b = ms.array([4.0, 5.0, 6.0], dtype=ms.float32)
-c = a + b
-
-print(c.tolist())  # [5.0, 7.0, 9.0]
+a = ms.array([[1.0], [2.0], [3.0]])       # (3, 1)
+b = ms.array([10.0, 20.0, 30.0, 40.0])    # (4,)
+c = a + b                                   # 广播 → (3, 4)
+print(c.tolist())
+# [[11.0, 21.0, 31.0, 41.0],
+#  [12.0, 22.0, 32.0, 42.0],
+#  [13.0, 23.0, 33.0, 43.0]]
 ```
+
+---
+
+## 特性
+
+| 能力 | 说明 |
+|------|------|
+| NumPy 风格 API | `ms.array()`, `ms.add()`, `a + b`, `a ** b`, `abs(a)` — 零学习成本 |
+| NumPy 广播 | 任意 N 维自动广播，stride-aware kernel 零拷贝 |
+| 类型提升 | `int64 + float64 → float64`，自动 cast，无需手动转换 |
+| 14 个 elementwise 算子 | binary / unary / clamp / astype，全部支持 GPU + CPU |
+| 显式设备管理 | 5 级 Device 解析链，数据去向可追溯 |
+| Stream 异步 | 多 stream 并行，自动依赖管理，capture-safe 3-phase 骨架 |
+| Rust 核心 | 内存安全、零开销抽象、RAII 生命周期 |
+| 15 种 dtype | bool / int8-64 / uint8-64 / float16-64 / bfloat16 / complex64-128 |
+| Debug 模式 | OpContext 归因、alias 检测、Python 帧捕获 |
+| Mock 模式 | `MUSAPY_MOCK_MUSA=1` 无 GPU 开发 / CI |
+
+---
+
+## 架构
+
+```
+musapy/
+├── python/musapy/              # Python 前端（import musapy as ms）
+│   ├── __init__.py             #   公开 API 导出
+│   └── _core.pyi               #   类型 stub（IDE 补全）
+├── rust/
+│   ├── musapy-core/            # 核心运行时
+│   │   ├── device.rs           #   Device 解析链（5 级）
+│   │   ├── dtype.rs            #   Dtype + 类型提升
+│   │   ├── stream.rs           #   Stream + OpContext
+│   │   ├── buffer.rs           #   Buffer（GPU/CPU 内存）
+│   │   ├── array.rs            #   Array（Buffer + Layout + metadata）
+│   │   ├── layout.rs           #   Layout + broadcast_to
+│   │   └── musa_ffi.rs         #   MUSA Runtime FFI 绑定
+│   ├── musapy-ops/             # 算子层
+│   │   ├── broadcast.rs        #   NumPy 广播规则
+│   │   ├── elementwise.rs      #   公开 API（add/sub/.../clamp/astype）
+│   │   ├── op_builder.rs       #   3-phase 骨架（parse → launch → post）
+│   │   └── kernels.rs          #   extern "C" 声明 + mock stub
+│   └── musapy-python/          # PyO3 绑定
+│       ├── ops.rs              #   #[pyfunction] 模块级函数
+│       ├── array.rs            #   Array 方法 + dunders
+│       └── lib.rs              #   模块注册
+├── kernels/                    # MUSA C kernel（mcc 编译）
+│   ├── elementwise.mu          #   所有 _v2 kernel（binary/unary/clamp/cast）
+│   └── include/common.h        #   offset_nd + grid 工具函数
+├── benchmark/                  # GPU 计算占用验证脚本
+├── tests/python/               # pytest 测试套件
+└── docs/                       # ADR + 设计文档
+```
+
+**数据流：**
+
+```
+Python (ms.add)
+  → PyO3 (ops.rs)
+    → musapy-ops (elementwise.rs → op_builder.rs)
+      → broadcast + type promotion
+        → kernels.rs (extern "C")
+          → elementwise.mu (MUSA GPU kernel)
+```
+
+---
+
+## 安装
+
+### 前置要求
+
+- Python ≥ 3.9
+- Rust toolchain（[rustup](https://rustup.rs)）
+- MUSA SDK ≥ 3.1（`MUSA_INSTALL_PATH` 或默认 `/usr/local/musa`）
+- [maturin](https://github.com/PyO3/maturin) ≥ 1.5
+
+### 构建
+
+```bash
+git clone git@github.com:ZhaoShanBiounite/musapy.git
+cd musapy
+
+# 构建并安装（editable）
+maturin develop --release
+
+# 验证
+python -c "import musapy as ms; print(ms.__version__)"
+```
+
+### 无 GPU 开发（Mock 模式）
+
+```bash
+MUSAPY_MOCK_MUSA=1 maturin develop
+MUSAPY_MOCK_MUSA=1 cargo test
+```
+
+详细安装指南见 [docs/getting-started.md](docs/getting-started.md)。
+
+---
+
+## API 参考
+
+### 数组创建
+
+```python
+ms.array(data, dtype=None, device=None) -> Array
+```
+
+### Binary 算子（支持广播 + 类型提升）
+
+```python
+ms.add(a, b, out=None)    # a + b
+ms.sub(a, b, out=None)    # a - b
+ms.mul(a, b, out=None)    # a * b
+ms.div(a, b, out=None)    # a / b
+ms.pow(a, b, out=None)    # a ** b
+```
+
+### Unary 算子（stride-aware）
+
+```python
+ms.sin(a, out=None)       # sin(x)
+ms.cos(a, out=None)       # cos(x)
+ms.exp(a, out=None)       # e^x
+ms.log(a, out=None)       # ln(x)
+ms.abs(a, out=None)       # |x|
+ms.sign(a, out=None)      # sign(x) → {-1, 0, 1}
+ms.neg(a, out=None)       # -x
+```
+
+### 其他算子
+
+```python
+ms.clamp(a, lo, hi, out=None)   # min(max(x, lo), hi)
+a.astype(dtype)                  # 显式 dtype 转换
+```
+
+### Python 运算符
+
+```python
+a + b       # __add__
+a - b       # __sub__
+a * b       # __mul__
+a / b       # __truediv__
+a ** b      # __pow__
+-a          # __neg__
+abs(a)      # __abs__
+```
+
+### 设备与监控
+
+```python
+ms.set_default_device("musa:0")
+ms.set_default_dtype(ms.float64)
+ms.device_summary()                    # 设备名称、arch、VRAM、CU 数
+ms.memory_summary(device="musa:0")     # allocated / cached / peak / VRAM
+```
+
+### 类型提升规则
+
+| 输入 A | 输入 B | 结果 |
+|--------|--------|------|
+| float32 | float32 | float32 |
+| float64 | float64 | float64 |
+| float32 | float64 | float64 |
+| int32 | float32 | float32 |
+| int64 | float32 | float64 |
+| int64 | float64 | float64 |
+| int32 | int64 | float64 |
+
+---
+
+## 示例
+
+### 广播 + 类型提升
+
+```python
+import musapy as ms
+ms.set_default_device("musa:0")
+
+# 广播：(3,1) + (4,) → (3,4)
+a = ms.array([[1.0], [2.0], [3.0]])
+b = ms.array([10.0, 20.0, 30.0, 40.0])
+print((a + b).shape)  # (3, 4)
+
+# 类型提升：int64 + float64 → float64
+i = ms.array([1, 2, 3], dtype=ms.int64)
+f = ms.array([0.1, 0.2, 0.3], dtype=ms.float64)
+c = ms.add(i, f)
+print(c.dtype)    # float64
+print(c.tolist()) # [1.1, 2.2, 3.3]
+```
+
+### Unary + Clamp
+
+```python
+a = ms.array([-2.0, 0.0, 3.0])
+
+print(ms.abs(a).tolist())              # [2.0, 0.0, 3.0]
+print(ms.neg(a).tolist())              # [2.0, 0.0, -3.0]
+print(ms.clamp(a, 0.0, 1.0).tolist()) # [0.0, 0.0, 1.0]
+print(ms.exp(ms.array([0.0, 1.0])).tolist())  # [1.0, 2.718...]
+```
+
+### GPU 监控
+
+```python
+ms.set_default_device("musa:0")
+a = ms.array([1.0, 2.0, 3.0])
+_ = ms.sin(a)
+
+print(ms.device_summary())
+# cpu — host memory
+# musa:0 — MTT S4000, arch=mp_22, 47.9 GB VRAM, 56 CUs
+
+print(ms.memory_summary(device="musa:0"))
+# musapy memory summary
+#   Allocated: 7.6 MB (2 buffers)
+#   Peak allocated: 11.4 MB
+#   Device musa:0 — 15.3 MB used / 49062 MB total VRAM (49046.7 MB free)
+```
+
+---
 
 ## 开发
 
@@ -55,31 +244,67 @@ print(c.tolist())  # [5.0, 7.0, 9.0]
 # 构建
 maturin develop --release
 
-# 测试
+# Rust 测试（mock 模式，无需 GPU）
+MUSAPY_MOCK_MUSA=1 cargo test
+
+# Python 测试（需要 GPU）
 pytest tests/python/ -v
-cargo test
+
+# GPU 计算占用验证
+python benchmark/bench_musa_utilization.py --size 1000000 --iters 100
 
 # Lint
-cargo clippy
-cargo fmt
+cargo clippy -- -D warnings
+cargo fmt --check
 ```
+
+---
+
+## Benchmark（MTT S4000）
+
+```
+设备: MTT S4000, arch=mp_22, 47.9 GB VRAM, 56 CUs
+数组: 1,000,000 elements × f32
+
+算子      延迟(ms)    吞吐(GElem/s)   GFLOPS
+add       0.491       2.036           2.036
+mul       0.439       2.280           2.280
+pow       0.446       2.243           17.946
+sin       0.382       2.618           20.943
+exp       0.377       2.654           21.229
+clamp     0.356       2.809           5.617
+
+聚合吞吐: 119.52 GFLOPS
+持续负载: 10,532 kernel launches/s, 126 GB/s 等效带宽
+```
+
+---
 
 ## 路线图
 
 | 版本 | 范围 | 状态 |
-|---|---|---|
-| v0.1-alpha | 核心运行时（Device/Dtype/Stream/Array/Buffer） | 当前 |
-| v0.2-alpha | 基础 ops（elementwise/reduction/init/indexing） | 规划中 |
-| v0.3-alpha | 数学库（linalg/random/fft/sparse） | 规划中 |
-| v0.4-beta | 互操作（DLPack/NumPy 协议）+ 完整错误模型 | 规划中 |
+|------|------|------|
+| v0.1-alpha | 核心运行时（Device / Dtype / Stream / Array / Buffer） | ✅ 完成 |
+| v0.2-alpha P1 | Stride-aware ABI + NumPy 广播 | ✅ 完成 |
+| v0.2-alpha P2 | Elementwise 全家桶 + 类型提升 + astype | ✅ 完成 |
+| v0.2-alpha P3 | Reduction（sum / mean / max / min） | 规划中 |
+| v0.2-alpha P4 | Init（zeros / ones / arange / linspace） | 规划中 |
+| v0.2-alpha P5 | Indexing（slice / fancy / boolean mask） | 规划中 |
+| v0.3-alpha | 数学库（linalg / random / fft） | 规划中 |
+| v0.4-beta | 互操作（DLPack / NumPy `__array__` 协议） | 规划中 |
 | v1.0 | 正式版 | 规划中 |
+
+---
 
 ## 文档
 
 - [快速上手](docs/getting-started.md)
 - [架构决策记录（ADR）](docs/ADR-zh.md)
-- [v0.1-alpha 实现计划](docs/v0.1-alpha-plan-zh.md)
+- [v0.2 实现计划](docs/v0.2-alpha-plan-zh.md)
+- [v0.1 发布说明](docs/v0.1-alpha-release-note.md)
+
+---
 
 ## License
 
-MIT License — see [LICENSE](LICENSE) for details.
+[MIT](LICENSE)
