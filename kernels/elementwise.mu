@@ -494,6 +494,15 @@ CAST_V2(u32, uint32_t, f64, double)
 CAST_V2(u64, uint64_t, f64, double)
 CAST_V2(f32, float,    f64, double)
 
+// → int64（Phase 4 reduction 整数累加用）
+CAST_V2(i8,  int8_t,   i64, int64_t)
+CAST_V2(i16, int16_t,  i64, int64_t)
+CAST_V2(i32, int32_t,  i64, int64_t)
+CAST_V2(u8,  uint8_t,  i64, int64_t)
+CAST_V2(u16, uint16_t, i64, int64_t)
+CAST_V2(u32, uint32_t, i64, int64_t)
+CAST_V2(u64, uint64_t, i64, int64_t)
+
 #undef CAST_V2
 
 // extern "C" wrapper 宏（输入 T，输出 uint8_t）

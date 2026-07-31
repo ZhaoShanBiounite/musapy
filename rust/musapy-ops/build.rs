@@ -36,6 +36,7 @@ fn main() {
     let kernels_dir = kernels_dir.canonicalize().unwrap_or(kernels_dir);
 
     let elementwise_mu = kernels_dir.join("elementwise.mu");
+    let reduction_mu = kernels_dir.join("reduction.mu");
 
     // -------- 1. 双探针找 MUSA SDK --------
     let musa_home = probe_musa_home();
@@ -43,10 +44,11 @@ fn main() {
     match &musa_home {
         Some(home) => {
             // -------- 2. 编译 kernels --------
-            compile_kernels(&kernels_dir, &elementwise_mu, home);
+            compile_kernels(&kernels_dir, &elementwise_mu, &reduction_mu, home);
 
             // 声明 rerun 触发条件
             println!("cargo:rerun-if-changed={}", elementwise_mu.display());
+            println!("cargo:rerun-if-changed={}", reduction_mu.display());
             let common_h = kernels_dir.join("include").join("common.h");
             println!("cargo:rerun-if-changed={}", common_h.display());
         }
@@ -134,13 +136,14 @@ fn validate(p: &Path) -> bool {
 }
 
 /// 用 mcc 编译 kernel 源文件 → 静态库
-fn compile_kernels(kernels_dir: &Path, elementwise_mu: &Path, home: &Path) {
+fn compile_kernels(kernels_dir: &Path, elementwise_mu: &Path, reduction_mu: &Path, home: &Path) {
     let out_dir = env::var("OUT_DIR").unwrap();
     let out_dir = Path::new(&out_dir);
 
     let mcc = home.join("bin").join("mcc");
     let include_dir = home.join("include");
-    let obj = out_dir.join("elementwise.o");
+    let elementwise_obj = out_dir.join("elementwise.o");
+    let reduction_obj = out_dir.join("reduction.o");
     let lib = out_dir.join("libmusapy_kernels.a");
 
     // -------- 1. mcc 编译 .mu → .o --------
@@ -153,6 +156,7 @@ fn compile_kernels(kernels_dir: &Path, elementwise_mu: &Path, home: &Path) {
         );
     }
 
+    // 编译 elementwise.mu
     println!(
         "cargo:warning=MUSAPY-OPS: compiling {} with mcc",
         elementwise_mu.display()
@@ -167,19 +171,55 @@ fn compile_kernels(kernels_dir: &Path, elementwise_mu: &Path, home: &Path) {
         .arg("-I")
         .arg(&include_dir) // musa_runtime.h 等 SDK 头文件
         .arg("-o")
-        .arg(&obj)
+        .arg(&elementwise_obj)
         .status();
 
     match status {
         Ok(s) if s.success() => {
             println!(
                 "cargo:warning=MUSAPY-OPS: mcc compiled elementwise.mu → {}",
-                obj.display()
+                elementwise_obj.display()
             );
         }
         Ok(s) => {
             panic!(
-                "MUSAPY-OPS: mcc compilation failed with exit code {:?}",
+                "MUSAPY-OPS: mcc compilation of elementwise.mu failed with exit code {:?}",
+                s.code()
+            );
+        }
+        Err(e) => {
+            panic!("MUSAPY-OPS: failed to execute mcc: {}", e);
+        }
+    }
+
+    // 编译 reduction.mu
+    println!(
+        "cargo:warning=MUSAPY-OPS: compiling {} with mcc",
+        reduction_mu.display()
+    );
+
+    let status = Command::new(&mcc)
+        .arg("-c")
+        .arg("-fPIC")
+        .arg(reduction_mu)
+        .arg("-I")
+        .arg(kernels_dir)
+        .arg("-I")
+        .arg(&include_dir)
+        .arg("-o")
+        .arg(&reduction_obj)
+        .status();
+
+    match status {
+        Ok(s) if s.success() => {
+            println!(
+                "cargo:warning=MUSAPY-OPS: mcc compiled reduction.mu → {}",
+                reduction_obj.display()
+            );
+        }
+        Ok(s) => {
+            panic!(
+                "MUSAPY-OPS: mcc compilation of reduction.mu failed with exit code {:?}",
                 s.code()
             );
         }
@@ -189,7 +229,12 @@ fn compile_kernels(kernels_dir: &Path, elementwise_mu: &Path, home: &Path) {
     }
 
     // -------- 2. ar 打包 .o → .a --------
-    let ar_status = Command::new("ar").arg("rcs").arg(&lib).arg(&obj).status();
+    let ar_status = Command::new("ar")
+        .arg("rcs")
+        .arg(&lib)
+        .arg(&elementwise_obj)
+        .arg(&reduction_obj)
+        .status();
 
     match ar_status {
         Ok(s) if s.success() => {

@@ -27,3 +27,36 @@ __device__ static inline size_t offset_nd(size_t linear_idx, const size_t* shape
     }
     return offset;
 }
+
+/// 给定 output linear idx 和 axis 坐标 k，计算 reduction input 元素偏移。
+///
+/// - `out_idx`：输出（连续）的线性索引 [0, out_size)
+/// - `in_shape`：输入 shape，长度 ndim
+/// - `in_strides`：输入 strides（元素单位），长度 ndim
+/// - `ndim`：输入维度数
+/// - `axis`：被缩减的轴 [0, ndim)
+/// - `k`：该轴上的坐标 [0, in_shape[axis])
+///
+/// 算法：将 out_idx 展开为 output 坐标（in_shape 去掉 axis 维），
+/// 在 axis 位置插入 k，与 in_strides 点积得到 input offset。
+__device__ static inline size_t reduce_input_offset(
+    size_t out_idx, const size_t* in_shape, const ssize_t* in_strides,
+    int ndim, int axis, size_t k
+) {
+    // 从最低非 axis 维开始展开 out_idx
+    size_t coords[32];
+    int ci = 0;
+    for (int i = ndim - 1; i >= 0; i--) {
+        if (i == axis) continue;
+        coords[ci++] = out_idx % in_shape[i];
+        out_idx /= in_shape[i];
+    }
+    // 计算 offset：从最高维到最低维，axis 位置用 k
+    size_t offset = 0;
+    ci = 0;
+    for (int i = ndim - 1; i >= 0; i--) {
+        size_t coord = (i == axis) ? k : coords[ci++];
+        offset += coord * (size_t)in_strides[i];
+    }
+    return offset;
+}
