@@ -36,6 +36,7 @@ class MemSample:
     peak_bytes: int = 0
     vram_free: int = 0
     vram_total: int = 0
+    vram_used: int = 0
 
 
 def parse_size(s: str) -> int:
@@ -66,12 +67,17 @@ def sample_memory(device_str: str) -> MemSample:
         elif line.startswith("Peak allocated:"):
             parts = line.replace("Peak allocated:", "").strip()
             snap.peak_bytes = parse_size(parts)
-        elif "free /" in line and "total VRAM" in line:
-            # "Device musa:0 — 1234.00 MB free / 16384.00 MB total VRAM"
+        elif "used /" in line and "total VRAM" in line:
+            # "Device musa:0 — 100.5 MB used / 49059 MB total VRAM (48958.5 MB free)"
             seg = line.split("—", 1)[-1].strip()
-            free_s, total_s = seg.split("free /")
+            used_s = seg.split("used /")[0].strip()
+            rest = seg.split("used /")[1]
+            total_s = rest.split("total VRAM")[0].strip()
+            # parse free from parentheses
+            free_s = rest.split("(")[-1].replace(")", "").replace("free", "").strip()
             snap.vram_free = parse_size(free_s)
-            snap.vram_total = parse_size(total_s.replace("total VRAM", ""))
+            snap.vram_total = parse_size(total_s)
+            snap.vram_used = parse_size(used_s)
 
     return snap
 
@@ -164,9 +170,8 @@ def run_benchmark(size: int, iters: int, device_id: int):
     alloc_delta = after_alloc.allocated_bytes - baseline.allocated_bytes
     print(f"  分配后 musapy allocated: {fmt_bytes(after_alloc.allocated_bytes)} (+{fmt_bytes(alloc_delta)})")
     if after_alloc.vram_total > 0:
-        vram_used = after_alloc.vram_total - after_alloc.vram_free
-        print(f"  VRAM 占用: {fmt_bytes(vram_used)} / {fmt_bytes(after_alloc.vram_total)}"
-              f" ({100.0 * vram_used / after_alloc.vram_total:.1f}%)")
+        print(f"  VRAM 占用: {fmt_bytes(after_alloc.vram_used)} / {fmt_bytes(after_alloc.vram_total)}"
+              f" ({100.0 * after_alloc.vram_used / after_alloc.vram_total:.2f}%)")
     print(f"  单数组 nbytes: {fmt_bytes(a.nbytes)}")
     print("-" * 66)
 
@@ -248,17 +253,15 @@ def run_benchmark(size: int, iters: int, device_id: int):
 
     if samples:
         peak_alloc = max(s.allocated_bytes for s in samples)
-        peak_vram_used = max(
-            (s.vram_total - s.vram_free) for s in samples if s.vram_total > 0
-        ) if any(s.vram_total > 0 for s in samples) else 0
+        peak_vram_used = max(s.vram_used for s in samples)
         vram_total = samples[0].vram_total
 
         print(f"\n  采样点: {len(samples)}")
         print(f"  musapy peak allocated: {fmt_bytes(peak_alloc)}")
         if vram_total > 0:
             print(f"  VRAM 峰值占用: {fmt_bytes(peak_vram_used)} / {fmt_bytes(vram_total)}"
-                  f" ({100.0 * peak_vram_used / vram_total:.1f}%)")
-            print(f"  VRAM 计算增量: {fmt_bytes(peak_vram_used - (baseline.vram_total - baseline.vram_free))}")
+                  f" ({100.0 * peak_vram_used / vram_total:.2f}%)")
+            print(f"  VRAM 计算增量: {fmt_bytes(peak_vram_used - baseline.vram_used)}")
 
     # ═══ Stream 状态 ═══
     print("\n" + "-" * 66)

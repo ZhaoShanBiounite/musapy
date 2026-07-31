@@ -192,11 +192,13 @@ fn memory_summary(device: Option<&Bound<'_, PyAny>>) -> PyResult<String> {
         if let Device::Musa(id) = dev {
             match musapy_core::musa_ffi::get_device_properties(id as i32) {
                 Ok(props) => {
+                    let used = props.total_memory.saturating_sub(props.free_memory);
                     out.push_str(&format!(
-                        "  Device musa:{} — {} free / {} total VRAM\n",
+                        "  Device musa:{} — {:.1} MB used / {:.0} MB total VRAM ({:.1} MB free)\n",
                         id,
-                        format_bytes(props.free_memory),
-                        format_bytes(props.total_memory)
+                        used as f64 / (1024.0 * 1024.0),
+                        props.total_memory as f64 / (1024.0 * 1024.0),
+                        props.free_memory as f64 / (1024.0 * 1024.0),
                     ));
                 }
                 Err(e) => {
