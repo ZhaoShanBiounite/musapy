@@ -172,6 +172,23 @@ macro_rules! launch_cumsum {
     };
 }
 
+/// Cumsum v3 launch（work-efficient 三阶段，含 scratch buffer）。
+macro_rules! launch_cumsum_v3 {
+    ($fn:ident, $ap:expr, $op:expr, $tp:expr, $ndim:expr, $in_shape:expr, $in_strides:expr,
+     $axis:expr, $axis_len:expr, $out_size:expr, $stream:expr, $label:expr) => {
+        if let (Some(ap), Some(op)) = ($ap, $op) {
+            // tmp 可能为 null（blocks_per_row==1 时 kernel 不用），用 dangling 指针表达
+            let tp_ptr = match $tp { Some(t) => t.as_ptr() as _, None => std::ptr::null_mut() };
+            unsafe {
+                kernels::$fn(ap.as_ptr() as _, op.as_ptr() as _, tp_ptr,
+                    $ndim, $in_shape.as_ptr(), $in_strides.as_ptr(),
+                    $axis, $axis_len, $out_size, $stream);
+            }
+            musa_ffi::check_last_kernel_launch($label)?;
+        }
+    };
+}
+
 /// Parallel reduction partial launch（Phase 1）。
 macro_rules! launch_reduce_partial {
     ($fn:ident, $ap:expr, $pp:expr, $ndim:expr, $in_shape:expr, $in_strides:expr,
@@ -2303,6 +2320,9 @@ pub(crate) fn cumsum_op(
         };
         let stream_raw = out_stream.raw();
 
+        // axis_len：被累加的轴长度（kernel_shape 已把 axis=None 视为 1D）
+        let axis_len: usize = kernel_shape[kernel_axis as usize];
+
         match &device {
             Device::Cpu => {
                 cpu_cumsum(
@@ -2315,12 +2335,28 @@ pub(crate) fn cumsum_op(
                     compute_dtype,
                 );
             }
-            Device::Musa(_) => match compute_dtype {
-                Dtype::Int64 => launch_cumsum!(musapy_cumsum_i64_v2, a_ptr, out_ptr, kernel_ndim, kernel_shape, in_strides, kernel_axis, out_size, stream_raw, "cumsum_i64_v2"),
-                Dtype::Float32 => launch_cumsum!(musapy_cumsum_f32_v2, a_ptr, out_ptr, kernel_ndim, kernel_shape, in_strides, kernel_axis, out_size, stream_raw, "cumsum_f32_v2"),
-                Dtype::Float64 => launch_cumsum!(musapy_cumsum_f64_v2, a_ptr, out_ptr, kernel_ndim, kernel_shape, in_strides, kernel_axis, out_size, stream_raw, "cumsum_f64_v2"),
-                _ => unreachable!("cumsum compute dtype already validated"),
-            },
+            Device::Musa(_) => {
+                // 三阶段 work-efficient scan：按需分配 scratch buffer。
+                // num_rows = out_size / axis_len（每行独立 scan）
+                // blocks_per_row = ceil(axis_len / 256)；> 1 时才需要 scratch。
+                let blocks_per_row = (axis_len + 255) / 256;
+                let num_rows = out_size / axis_len.max(1);
+                let tmp_nbytes = num_rows * blocks_per_row * compute_dtype.element_size();
+                let tmp_buf = if blocks_per_row > 1 && tmp_nbytes > 0 {
+                    Some(Buffer::alloc(tmp_nbytes, device.clone(), &out_stream)?)
+                } else {
+                    None
+                };
+                // Buffer::ptr() 返回 Option<NonNull<u8>>，展平为单个 Option
+                let tmp_ptr: Option<NonNull<u8>> = tmp_buf.as_ref().and_then(|b| b.ptr());
+
+                match compute_dtype {
+                    Dtype::Int64 => launch_cumsum_v3!(musapy_cumsum_i64_v3, a_ptr, out_ptr, tmp_ptr, kernel_ndim, kernel_shape, in_strides, kernel_axis, axis_len, out_size, stream_raw, "cumsum_i64_v3"),
+                    Dtype::Float32 => launch_cumsum_v3!(musapy_cumsum_f32_v3, a_ptr, out_ptr, tmp_ptr, kernel_ndim, kernel_shape, in_strides, kernel_axis, axis_len, out_size, stream_raw, "cumsum_f32_v3"),
+                    Dtype::Float64 => launch_cumsum_v3!(musapy_cumsum_f64_v3, a_ptr, out_ptr, tmp_ptr, kernel_ndim, kernel_shape, in_strides, kernel_axis, axis_len, out_size, stream_raw, "cumsum_f64_v3"),
+                    _ => unreachable!("cumsum compute dtype already validated"),
+                }
+            }
         }
     }
 
