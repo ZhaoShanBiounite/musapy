@@ -545,6 +545,15 @@ buffers unused >5min.
 
 **User-configurable**: `ms.set_memory_policy("aggressive" | "lazy" | "manual")`
 
+**Implementation status (Phase C-lite, 2025-07)**: L2 BufferPool implemented
+(`buffer_pool.rs`), compiled only on the default path
+(`#[cfg(not(feature = "stream-ordered"))]`). Design parameters:
+- SizeClass = round_up_pow2(size), minimum 512 bytes
+- Per-device cache cap 512 MB; overflow falls back to deferred-free (L3-11)
+- Cross-stream reuse waits on stored event (safety guarantee)
+- Reuse requires `actual_size >= requested_size` (same size-class may hold smaller entries)
+- GC policy (LRU eviction, `ms.gc()`) not yet implemented; only capacity cap enforced
+
 ### L3-9: Stream-Ordered Dealloc — Conditional Implementation (feature gate)
 
 **Decision**: v1 supports both paths simultaneously, selected via Cargo feature gate
@@ -582,6 +591,14 @@ on cross-stream use.
 **Optimization**: `read_events` only stores events not yet waited-on by `dealloc_stream`. Pop
 after wait. Vec typically 0-1 elements.
 
+**Phase C-lite same-stream optimization (2025-07)**: Buffer gains
+`last_write_stream_id: AtomicU64`. When read/write ops share the same stream
+(the common single-stream case):
+- `wait_last_write_on`: same stream → return Ok immediately (skip musaStreamWaitEvent)
+- `record_write`: consecutive same-stream writes skip Event::new/Record (implicit ordering)
+- `record_read`: same-stream read skips event creation
+Measured reduction: ~6 driver calls/op, ~39% latency improvement on small arrays.
+
 ```rust
 impl Drop for Buffer {
     fn drop(&mut self) {
@@ -618,6 +635,11 @@ buffers in the queue
 current default path. When `stream-ordered` feature is enabled, Buffer takes the L3-9 path,
 and the deferred-free queue is no longer used (code is preserved, auto-restored when
 feature is off).
+
+**Relationship with L3-8 BufferPool (Phase C-lite)**: On the default path, `Buffer::drop`
+first attempts to return the buffer to BufferPool for reuse; only when the pool is full
+(>512 MB/device) does it fall back to the deferred-free queue.
+i.e.: BufferPool is the hot path, deferred-free is the cold-path safety net.
 
 **Capability probe**: Startup probes `musaDeviceGetAttribute(MUSA_DEV_ATTR_MEMORY_POOLS_SUPPORTED)`.
 Even when compiled with `stream-ordered` feature, probe acts as double safety — if the

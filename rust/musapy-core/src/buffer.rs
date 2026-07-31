@@ -18,6 +18,7 @@ use crate::stream::{Event, Stream};
 use parking_lot::Mutex;
 use std::fmt;
 use std::ptr::NonNull;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 
 // ============================================================
@@ -54,6 +55,9 @@ pub struct Buffer {
     /// 所有未完成读操作的事件（Drop 时释放流需等待）。
     /// L3-10 优化：只存尚未被 dealloc_stream 等待过的事件。
     read_events: Mutex<Vec<Event>>,
+    /// 最近一次写操作的 stream id（Phase C-lite：same-stream elision）。
+    /// 用于 wait_last_write_on 快速路径：同 stream 无需 musaStreamWaitEvent。
+    last_write_stream_id: AtomicU64,
 }
 
 // GPU 内存指针可跨线程访问（MUSA 内存模型），可变状态已用 Mutex 保护。
@@ -79,12 +83,31 @@ impl Buffer {
                 dealloc_stream: Mutex::new(Some(stream.clone())),
                 last_write_event: Mutex::new(None),
                 read_events: Mutex::new(Vec::new()),
+                last_write_stream_id: AtomicU64::new(0),
             });
         }
 
         let ptr = match &device {
             Device::Cpu => Self::alloc_cpu(size)?,
-            Device::Musa(id) => Self::alloc_musa(*id, size, stream)?,
+            Device::Musa(id) => {
+                // Phase C-lite：先尝试从 buffer pool 复用
+                #[cfg(not(feature = "stream-ordered"))]
+                {
+                    if let Some((pooled_ptr, _actual_size)) =
+                        crate::buffer_pool::try_reuse(size, &device, stream.id(), stream)
+                    {
+                        // 池命中仍需 set_device（后续 musaMemcpy 依赖设备上下文）
+                        musa_ffi::set_device(*id as i32)?;
+                        pooled_ptr
+                    } else {
+                        Self::alloc_musa(*id, size, stream)?
+                    }
+                }
+                #[cfg(feature = "stream-ordered")]
+                {
+                    Self::alloc_musa(*id, size, stream)?
+                }
+            }
         };
 
         // 内存统计插桩（ADR L3-28）
@@ -97,6 +120,7 @@ impl Buffer {
             dealloc_stream: Mutex::new(Some(stream.clone())),
             last_write_event: Mutex::new(None),
             read_events: Mutex::new(Vec::new()),
+            last_write_stream_id: AtomicU64::new(0),
         })
     }
 
@@ -165,6 +189,7 @@ impl Buffer {
             dealloc_stream: Mutex::new(None),
             last_write_event: Mutex::new(None),
             read_events: Mutex::new(Vec::new()),
+            last_write_stream_id: AtomicU64::new(0),
         }
     }
 
@@ -189,7 +214,18 @@ impl Buffer {
     ///
     /// 在 reader_stream 上记录事件，加入 read_events。
     /// 若 reader_stream != dealloc_stream，更新 dealloc_stream = reader_stream（策略 b）。
+    /// Phase C-lite：同 stream 读时跳过 event 创建（同 stream 天然有序）。
     pub fn record_read(&self, reader_stream: &Arc<Stream>) {
+        let cur_stream_id = reader_stream.id();
+        let write_stream_id = self.last_write_stream_id.load(Ordering::Relaxed);
+
+        // Phase C-lite：读写同 stream，无需 event（同 stream 操作隐式有序）
+        if write_stream_id == cur_stream_id && cur_stream_id != 0 {
+            // 仅更新 dealloc_stream
+            *self.dealloc_stream.lock() = Some(reader_stream.clone());
+            return;
+        }
+
         match Event::new() {
             Ok(event) => {
                 if let Err(e) = event.record(reader_stream) {
@@ -210,7 +246,18 @@ impl Buffer {
     ///
     /// 在 writer_stream 上记录事件，替换 last_write_event。
     /// 更新 dealloc_stream = writer_stream（策略 b）。
+    /// Phase C-lite：同 stream 连续写时跳过 event 创建（同 stream 天然有序）。
     pub fn record_write(&self, writer_stream: &Arc<Stream>) {
+        let prev_stream_id = self.last_write_stream_id.load(Ordering::Relaxed);
+        let cur_stream_id = writer_stream.id();
+
+        // Phase C-lite：同 stream 连续写，无需新 event（同 stream 操作隐式有序）
+        if prev_stream_id == cur_stream_id && prev_stream_id != 0 {
+            // 仅更新 dealloc_stream（Arc clone 用于 drop 时 pool return）
+            *self.dealloc_stream.lock() = Some(writer_stream.clone());
+            return;
+        }
+
         match Event::new() {
             Ok(event) => {
                 if let Err(e) = event.record(writer_stream) {
@@ -218,6 +265,7 @@ impl Buffer {
                     return;
                 }
                 *self.last_write_event.lock() = Some(event);
+                self.last_write_stream_id.store(cur_stream_id, Ordering::Relaxed);
                 // 策略 b：更新释放流为最后使用的流
                 *self.dealloc_stream.lock() = Some(writer_stream.clone());
             }
@@ -242,7 +290,13 @@ impl Buffer {
     /// 用于 op 执行时，当输入 buffer 是在另一个 stream 上写入的，
     /// 让输出 stream 自动等待输入的写操作完成。
     /// CPU stream 的 `wait_event` 是 no-op，不影响 CPU 路径。
+    /// Phase C-lite：同 stream 时直接跳过（同 stream 操作隐式有序）。
     pub fn wait_last_write_on(&self, target_stream: &Arc<Stream>) -> Result<()> {
+        // Phase C-lite：same-stream elision — 写和读在同一 stream 上，无需 wait
+        let write_sid = self.last_write_stream_id.load(Ordering::Relaxed);
+        if write_sid == target_stream.id() && write_sid != 0 {
+            return Ok(());
+        }
         let guard = self.last_write_event.lock();
         if let Some(event) = guard.as_ref() {
             target_stream.wait_event(event)?;
@@ -292,9 +346,10 @@ impl Drop for Buffer {
                             eprintln!("warn: free wait read_event failed: {}", e);
                         }
                     }
-                    // 等待 last_write_event
-                    if let Some(ev) = self.last_write_event.lock().take() {
-                        if let Err(e) = stream.wait_event(&ev) {
+                    // 取出 last_write_event（pool 需要存储它）
+                    let write_event = self.last_write_event.lock().take();
+                    if let Some(ref ev) = write_event {
+                        if let Err(e) = stream.wait_event(ev) {
                             eprintln!("warn: free wait write_event failed: {}", e);
                         }
                     }
@@ -318,11 +373,19 @@ impl Drop for Buffer {
                     }
                     #[cfg(not(feature = "stream-ordered"))]
                     {
-                        // 默认路径（3.x/4.x/5.x）：入 deferred-free 队列，
-                        // 等 Stream::synchronize 成功后批量 musaFree（ADR L3-11）。
-                        // 入队前已 wait events，synchronize 后 buffer 必不再被使用。
+                        // Phase C-lite：先尝试归还 buffer pool 复用
                         crate::mem_stats::record_dealloc(self.size);
-                        crate::deferred_free::enqueue(ptr, self.device.clone(), self.size);
+                        let stream_id = stream.id();
+                        if !crate::buffer_pool::return_to_pool(
+                            ptr,
+                            self.size,
+                            self.device.clone(),
+                            stream_id,
+                            write_event,
+                        ) {
+                            // 池满：fallback 到 deferred-free 队列（ADR L3-11）
+                            crate::deferred_free::enqueue(ptr, self.device.clone(), self.size);
+                        }
                     }
                 } else {
                     // 无 dealloc_stream（placeholder 或未初始化）：跳过 free

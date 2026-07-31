@@ -20,6 +20,9 @@ pub mod stream;
 // 启用 stream-ordered feature 后走 musaFreeAsync，本模块不编译。
 #[cfg(not(feature = "stream-ordered"))]
 pub mod deferred_free;
+// Buffer Pool：GPU 内存复用池（Phase C-lite），同样仅默认路径。
+#[cfg(not(feature = "stream-ordered"))]
+pub mod buffer_pool;
 
 pub use array::{Array, DtypeResolution};
 pub use buffer::{Buffer, BufferRef};

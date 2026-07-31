@@ -534,6 +534,14 @@ MusapyError(Exception)
 
 **用户可配**：`ms.set_memory_policy("aggressive" | "lazy" | "manual")`
 
+**实现状态（Phase C-lite, 2025-07）**：L2 BufferPool 已实现（`buffer_pool.rs`），
+仅默认路径编译（`#[cfg(not(feature = "stream-ordered"))]`）。设计参数：
+- SizeClass = round_up_pow2(size)，最小 512 bytes
+- 每设备缓存上限 512 MB，超出 fallback 到 deferred-free（L3-11）
+- 复用时若 stream 不同，wait on stored event（跨 stream 安全）
+- 复用时 `actual_size >= requested_size` 校验（同 size-class 内可能有更小条目）
+- GC 策略（LRU 淘汰、`ms.gc()`）尚未实现，当前仅容量上限控制
+
 ### L3-9: Stream-Ordered Dealloc — 条件实现（feature gate）
 
 **决策**: v1 同时支持两种路径，用 Cargo feature gate + runtime probe 选择：
@@ -569,6 +577,13 @@ runtime probe 做双重保险。
 **优化**：`read_events` 只存尚未被 `dealloc_stream` wait 过的 event。wait 后 pop。
 Vec 通常 0-1 个元素。
 
+**Phase C-lite 同 stream 优化（2025-07）**：Buffer 新增 `last_write_stream_id: AtomicU64`。
+当读写操作在同一 stream 上时（单 stream 常见场景）：
+- `wait_last_write_on`：同 stream 直接 return Ok（跳过 musaStreamWaitEvent）
+- `record_write`：同 stream 连续写跳过 Event::new/Record（同 stream 隐式有序）
+- `record_read`：读写同 stream 跳过 event 创建
+实测减少 ~6 次 driver 调用/op，小数组延迟降低 ~39%。
+
 ```rust
 impl Drop for Buffer {
     fn drop(&mut self) {
@@ -602,6 +617,10 @@ stream-ordered（L3-9）作为可选 feature，5.x 环境可启用。
 **与 L3-9 的关系**：L3-11 是 L3-9 不可用时的 fallback，也是当前默认路径。
 启用 `stream-ordered` feature 后，Buffer 走 L3-9 路径，deferred-free 队列
 不再被使用（但代码保留，feature 关闭时自动恢复）。
+
+**与 L3-8 BufferPool 的关系（Phase C-lite）**：默认路径下 `Buffer::drop` 先尝试
+归还 BufferPool 复用；池满（超 512 MB/设备）时才 fallback 到 deferred-free 队列。
+即：BufferPool 是热路径，deferred-free 是冷路径兜底。
 
 **Capability probe**：启动期探测 `musaDeviceGetAttribute(MUSA_DEV_ATTR_MEMORY_POOLS_SUPPORTED)`。
 即使编译了 `stream-ordered` feature，probe 也作为双重保险——如果运行时不支持，

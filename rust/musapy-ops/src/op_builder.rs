@@ -455,9 +455,17 @@ pub(crate) fn binary_elementwise(
     let b_ptr = b_work.data().buffer().ptr();
 
     if out_size > 0 {
-        // 计算每个输入的广播 strides（组合输入自身 strides）
-        let a_strides = broadcast::broadcast_strides(a_work.layout(), &out_shape);
-        let b_strides = broadcast::broadcast_strides(b_work.layout(), &out_shape);
+        // Phase C-lite：同 shape 时直接用 layout strides，跳过 broadcast 逻辑
+        let a_strides: Vec<isize> = if a_work.shape() == &out_shape {
+            a_work.layout().strides.iter().map(|&s| s as isize).collect()
+        } else {
+            broadcast::broadcast_strides(a_work.layout(), &out_shape)
+        };
+        let b_strides: Vec<isize> = if b_work.shape() == &out_shape {
+            b_work.layout().strides.iter().map(|&s| s as isize).collect()
+        } else {
+            broadcast::broadcast_strides(b_work.layout(), &out_shape)
+        };
         let ndim = out_shape.len() as i32;
         let stream_raw = out_stream.raw();
 
@@ -493,20 +501,20 @@ pub(crate) fn binary_elementwise(
     out_data_ref.buffer().record_write(&out_stream);
 
     // 11. OpContext 记录（ADR L3-2，记录用户视角的原始 dtype）
-    let mut ctx = OpContext::new(
-        op_name,
-        vec![a.shape().clone(), b.shape().clone()],
-        vec![a.device().clone(), b.device().clone()],
-        vec![a.dtype(), b.dtype()],
-        out_shape.clone(),
-        out_stream.id(),
-    );
     if musapy_core::debug::is_debug() {
+        let mut ctx = OpContext::new(
+            op_name,
+            vec![a.shape().clone(), b.shape().clone()],
+            vec![a.device().clone(), b.device().clone()],
+            vec![a.dtype(), b.dtype()],
+            out_shape.clone(),
+            out_stream.id(),
+        );
         if let Some(frame) = musapy_core::debug::take_debug_frame() {
             ctx = ctx.with_frame(frame);
         }
+        out_stream.record_op(ctx);
     }
-    out_stream.record_op(ctx);
 
     // 12. 构造输出 Array（连续布局，shape = broadcast output，dtype = 提升结果）
     Ok(Array::new(
@@ -666,20 +674,20 @@ pub(crate) fn unary_elementwise(
     out_data_ref.buffer().record_write(&out_stream);
 
     // 7. OpContext 记录（ADR L3-2）
-    let mut ctx = OpContext::new(
-        op_name,
-        vec![a.shape().clone()],
-        vec![a.device().clone()],
-        vec![a.dtype()],
-        out_shape.clone(),
-        out_stream.id(),
-    );
     if musapy_core::debug::is_debug() {
+        let mut ctx = OpContext::new(
+            op_name,
+            vec![a.shape().clone()],
+            vec![a.device().clone()],
+            vec![a.dtype()],
+            out_shape.clone(),
+            out_stream.id(),
+        );
         if let Some(frame) = musapy_core::debug::take_debug_frame() {
             ctx = ctx.with_frame(frame);
         }
+        out_stream.record_op(ctx);
     }
-    out_stream.record_op(ctx);
 
     // 8. 构造输出 Array（连续布局，shape = 输入 shape）
     Ok(Array::new(
@@ -820,20 +828,20 @@ pub(crate) fn clamp_elementwise(
     out_data_ref.buffer().record_write(&out_stream);
 
     // 7. OpContext 记录（ADR L3-2）
-    let mut ctx = OpContext::new(
-        op_name,
-        vec![a.shape().clone()],
-        vec![a.device().clone()],
-        vec![a.dtype()],
-        out_shape.clone(),
-        out_stream.id(),
-    );
     if musapy_core::debug::is_debug() {
+        let mut ctx = OpContext::new(
+            op_name,
+            vec![a.shape().clone()],
+            vec![a.device().clone()],
+            vec![a.dtype()],
+            out_shape.clone(),
+            out_stream.id(),
+        );
         if let Some(frame) = musapy_core::debug::take_debug_frame() {
             ctx = ctx.with_frame(frame);
         }
+        out_stream.record_op(ctx);
     }
-    out_stream.record_op(ctx);
 
     // 8. 构造输出 Array（连续布局，shape = 输入 shape）
     Ok(Array::new(
@@ -1007,20 +1015,20 @@ pub(crate) fn cast_array(a: &Array, target_dtype: Dtype, stream: &Arc<Stream>) -
     out_data_ref.buffer().record_write(stream);
 
     // OpContext 记录（ADR L3-2）
-    let mut ctx = OpContext::new(
-        "cast",
-        vec![shape.clone()],
-        vec![device.clone()],
-        vec![src],
-        shape.clone(),
-        stream.id(),
-    );
     if musapy_core::debug::is_debug() {
+        let mut ctx = OpContext::new(
+            "cast",
+            vec![shape.clone()],
+            vec![device.clone()],
+            vec![src],
+            shape.clone(),
+            stream.id(),
+        );
         if let Some(frame) = musapy_core::debug::take_debug_frame() {
             ctx = ctx.with_frame(frame);
         }
+        stream.record_op(ctx);
     }
-    stream.record_op(ctx);
 
     Ok(Array::new(
         out_data_ref,
@@ -1174,20 +1182,20 @@ pub(crate) fn astype_op(a: &Array, dtype: Dtype, out: Option<&Array>) -> Result<
     out_data_ref.buffer().record_write(&out_stream);
 
     // 7. OpContext 记录（ADR L3-2）
-    let mut ctx = OpContext::new(
-        op_name,
-        vec![a.shape().clone()],
-        vec![a.device().clone()],
-        vec![src],
-        out_shape.clone(),
-        out_stream.id(),
-    );
     if musapy_core::debug::is_debug() {
+        let mut ctx = OpContext::new(
+            op_name,
+            vec![a.shape().clone()],
+            vec![a.device().clone()],
+            vec![src],
+            out_shape.clone(),
+            out_stream.id(),
+        );
         if let Some(frame) = musapy_core::debug::take_debug_frame() {
             ctx = ctx.with_frame(frame);
         }
+        out_stream.record_op(ctx);
     }
-    out_stream.record_op(ctx);
 
     // 8. 构造输出 Array（连续布局，shape = 输入 shape，dtype = 目标 dtype）
     Ok(Array::new(
@@ -1369,9 +1377,17 @@ pub(crate) fn comparison_elementwise(
     let b_ptr = b_work.data().buffer().ptr();
 
     if out_size > 0 {
-        // 计算每个输入的广播 strides（组合输入自身 strides）
-        let a_strides = broadcast::broadcast_strides(a_work.layout(), &out_shape);
-        let b_strides = broadcast::broadcast_strides(b_work.layout(), &out_shape);
+        // Phase C-lite：同 shape 时直接用 layout strides，跳过 broadcast 逻辑
+        let a_strides: Vec<isize> = if a_work.shape() == &out_shape {
+            a_work.layout().strides.iter().map(|&s| s as isize).collect()
+        } else {
+            broadcast::broadcast_strides(a_work.layout(), &out_shape)
+        };
+        let b_strides: Vec<isize> = if b_work.shape() == &out_shape {
+            b_work.layout().strides.iter().map(|&s| s as isize).collect()
+        } else {
+            broadcast::broadcast_strides(b_work.layout(), &out_shape)
+        };
         let ndim = out_shape.len() as i32;
         let stream_raw = out_stream.raw();
 
@@ -1409,20 +1425,20 @@ pub(crate) fn comparison_elementwise(
     out_data_ref.buffer().record_write(&out_stream);
 
     // 11. OpContext 记录（ADR L3-2，记录用户视角的原始 dtype）
-    let mut ctx = OpContext::new(
-        op_name,
-        vec![a.shape().clone(), b.shape().clone()],
-        vec![a.device().clone(), b.device().clone()],
-        vec![a.dtype(), b.dtype()],
-        out_shape.clone(),
-        out_stream.id(),
-    );
     if musapy_core::debug::is_debug() {
+        let mut ctx = OpContext::new(
+            op_name,
+            vec![a.shape().clone(), b.shape().clone()],
+            vec![a.device().clone(), b.device().clone()],
+            vec![a.dtype(), b.dtype()],
+            out_shape.clone(),
+            out_stream.id(),
+        );
         if let Some(frame) = musapy_core::debug::take_debug_frame() {
             ctx = ctx.with_frame(frame);
         }
+        out_stream.record_op(ctx);
     }
-    out_stream.record_op(ctx);
 
     // 12. 构造输出 Array（连续布局，shape = broadcast output，dtype = Bool）
     Ok(Array::new(
@@ -2144,20 +2160,20 @@ pub(crate) fn reduction_axis(
     out_data_ref.buffer().record_write(&out_stream);
 
     // OpContext 记录（ADR L3-2）
-    let mut ctx = OpContext::new(
-        op_name,
-        vec![a.shape().clone()],
-        vec![a.device().clone()],
-        vec![a.dtype()],
-        out_shape.clone(),
-        out_stream.id(),
-    );
     if musapy_core::debug::is_debug() {
+        let mut ctx = OpContext::new(
+            op_name,
+            vec![a.shape().clone()],
+            vec![a.device().clone()],
+            vec![a.dtype()],
+            out_shape.clone(),
+            out_stream.id(),
+        );
         if let Some(frame) = musapy_core::debug::take_debug_frame() {
             ctx = ctx.with_frame(frame);
         }
+        out_stream.record_op(ctx);
     }
-    out_stream.record_op(ctx);
 
     // 构造输出 Array
     Ok(Array::new(
@@ -2315,20 +2331,20 @@ pub(crate) fn cumsum_op(
     a_work.data().buffer().record_read(&out_stream);
     out_data_ref.buffer().record_write(&out_stream);
 
-    let mut ctx = OpContext::new(
-        op_name,
-        vec![a.shape().clone()],
-        vec![a.device().clone()],
-        vec![a.dtype()],
-        out_shape.clone(),
-        out_stream.id(),
-    );
     if musapy_core::debug::is_debug() {
+        let mut ctx = OpContext::new(
+            op_name,
+            vec![a.shape().clone()],
+            vec![a.device().clone()],
+            vec![a.dtype()],
+            out_shape.clone(),
+            out_stream.id(),
+        );
         if let Some(frame) = musapy_core::debug::take_debug_frame() {
             ctx = ctx.with_frame(frame);
         }
+        out_stream.record_op(ctx);
     }
-    out_stream.record_op(ctx);
 
     Ok(Array::new(
         out_data_ref,
