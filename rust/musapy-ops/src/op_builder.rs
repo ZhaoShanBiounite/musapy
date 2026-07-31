@@ -113,6 +113,20 @@ macro_rules! launch_cast {
     };
 }
 
+/// Comparison kernel launch（_v2 stride-aware + broadcast strides，输出 u8/bool）。
+macro_rules! launch_compare {
+    ($fn:ident, $a:expr, $b:expr, $out:expr, $ndim:expr, $shape:expr,
+     $a_strides:expr, $b_strides:expr, $stream:expr, $label:expr) => {
+        if let (Some(ap), Some(bp), Some(op)) = ($a, $b, $out) {
+            unsafe {
+                kernels::$fn(ap.as_ptr() as _, bp.as_ptr() as _, op.as_ptr() as _,
+                    $ndim, $shape.as_ptr(), $a_strides.as_ptr(), $b_strides.as_ptr(), $stream);
+            }
+            musa_ffi::check_last_kernel_launch($label)?;
+        }
+    };
+}
+
 /// CPU cast 单 (src, dst) 类型对的 `as` 转换循环（stride-aware）。
 macro_rules! cpu_cast_pair {
     ($src_t:ty, $dst_t:ty, $a:expr, $c:expr, $shape:expr, $strides:expr) => {{
@@ -1062,6 +1076,241 @@ pub(crate) fn astype_op(a: &Array, dtype: Dtype, out: Option<&Array>) -> Result<
     ))
 }
 
+// ── 通用 comparison elementwise 骨架（Phase 3）──────────────
+
+/// 具体 comparison kernel 标识（用于骨架分派）。
+#[derive(Clone, Copy, Debug)]
+pub(crate) enum CompareKernel {
+    Eq,
+    Ne,
+    Lt,
+    Gt,
+    Le,
+    Ge,
+}
+
+impl CompareKernel {
+    fn name(&self) -> &'static str {
+        match self {
+            CompareKernel::Eq => "eq",
+            CompareKernel::Ne => "ne",
+            CompareKernel::Lt => "lt",
+            CompareKernel::Gt => "gt",
+            CompareKernel::Le => "le",
+            CompareKernel::Ge => "ge",
+        }
+    }
+}
+
+/// 通用 comparison elementwise 3-phase 骨架（Phase 3, ADR-002 Phase 3）。
+///
+/// 与 `binary_elementwise` 同构，关键差异：
+/// - 输出 dtype 恒为 `Dtype::Bool`（提升后的输入 dtype 仅用于 kernel 分派）
+/// - `nbytes = out_size * 1`（bool element_size = 1）
+/// - `out=` 校验要求 `o.dtype() == Dtype::Bool`
+///
+/// Phase A（参数解析，capture-safe）：
+///   1. Device 匹配 → 2. Broadcast shape → 3. 类型提升（promote）→
+///   4. 计算白名单（f32/f64）→ 5. out= 校验（shape + dtype=Bool + device）→
+///   6. Stream 选择 → 7. 内部 cast（输入 dtype != 提升 dtype）→
+///   8. Buffer 分配 + alias 检测 → 9. Stream wait
+///
+/// Phase B（kernel launch，可重放）：
+///   CPU fallback 或 GPU comparison kernel（_v2 stride-aware，输出 u8/bool）
+///
+/// Phase C（后处理）：
+///   事件记录 + OpContext + 构造输出 Array（dtype = Bool）
+pub(crate) fn comparison_elementwise(
+    a: &Array,
+    b: &Array,
+    out: Option<&Array>,
+    kernel: CompareKernel,
+) -> Result<Array> {
+    let op_name = kernel.name();
+
+    // ═══════════════════════════════════════════════════════════════
+    // Phase A：参数解析（一次性，capture-safe）
+    // ═══════════════════════════════════════════════════════════════
+
+    // 1. Device 校验
+    if a.device() != b.device() {
+        return Err(DeviceError::Mismatch(format!(
+            "{}: device mismatch {} vs {}",
+            op_name,
+            a.device(),
+            b.device()
+        ))
+        .into());
+    }
+    let device = a.device().clone();
+
+    // 2. Broadcast shape 计算（ADR-002-D2, NumPy 规则）
+    let out_shape = broadcast::broadcast_shape(&[a.shape(), b.shape()])?;
+
+    // 3. 类型提升（仅用于 kernel 分派；输出恒为 bool）
+    //    all_gpu：输入全在 MUSA 设备时用 GPU narrow 策略（性能优先）
+    let all_gpu = matches!(device, Device::Musa(_));
+    let dtype = promote(a.dtype(), b.dtype(), all_gpu)?;
+
+    // 4. 计算白名单（仅 f32/f64，其他计算 dtype 后续 Phase 添加）
+    match dtype {
+        Dtype::Float32 | Dtype::Float64 => {}
+        _ => {
+            return Err(DtypeError::Unsupported(format!(
+                "{}: promoted dtype {} not supported (compute whitelist: float32/float64)",
+                op_name, dtype
+            ))
+            .into());
+        }
+    }
+
+    let out_size: usize = out_shape.iter().product();
+    // 输出 dtype 恒为 bool（element_size = 1）
+    let nbytes = out_size * Dtype::Bool.element_size();
+
+    // 5. out= 参数校验（若提供）：shape + dtype=Bool + device
+    if let Some(o) = out {
+        if o.shape() != &out_shape {
+            return Err(ShapeError::Mismatch(format!(
+                "{}: out shape {:?} != broadcast output shape {:?}",
+                op_name,
+                o.shape(),
+                out_shape
+            ))
+            .into());
+        }
+        if o.dtype() != Dtype::Bool {
+            return Err(DtypeError::Unsupported(format!(
+                "{}: out dtype {} != bool (comparison output dtype)",
+                op_name,
+                o.dtype()
+            ))
+            .into());
+        }
+        if o.device() != a.device() {
+            return Err(DeviceError::Mismatch(format!(
+                "{}: out device {} != input device {}",
+                op_name,
+                o.device(),
+                a.device()
+            ))
+            .into());
+        }
+    }
+
+    // 6. Stream 选择（ADR L1-8）
+    let out_stream: Arc<Stream> = match out {
+        Some(o) => Arc::clone(o.stream()),
+        None => resolution::get_current_stream().unwrap_or_else(|| Arc::clone(a.stream())),
+    };
+
+    // 7. 内部 cast（输入 dtype != 提升结果 dtype 时）
+    //    cast_array 分配新 Buffer 并在 out_stream 上执行转换 kernel；
+    //    无需转换时借用原输入（零拷贝）。
+    let a_cast = (a.dtype() != dtype)
+        .then(|| cast_array(a, dtype, &out_stream))
+        .transpose()?;
+    let b_cast = (b.dtype() != dtype)
+        .then(|| cast_array(b, dtype, &out_stream))
+        .transpose()?;
+    let a_work: &Array = a_cast.as_ref().unwrap_or(a);
+    let b_work: &Array = b_cast.as_ref().unwrap_or(b);
+
+    // 8. out= 处理 + 别名检测（ADR L2-5，对实际参与 kernel 的 work 数组检测）
+    let (out_data_ref, out_ptr) = match out {
+        Some(o) => {
+            if o.data() == a_work.data() || o.data() == b_work.data() {
+                return Err(MemoryError::AliasDetected.into());
+            }
+            (o.data().clone(), o.data().buffer().ptr())
+        }
+        None => {
+            let buffer = Buffer::alloc(nbytes, device.clone(), &out_stream)?;
+            let buffer_arc = Arc::new(buffer);
+            let data_ref = BufferRef::new(buffer_arc);
+            let ptr = data_ref.buffer().ptr();
+            (data_ref, ptr)
+        }
+    };
+
+    // 9. 自动 stream wait（ADR L1-8）
+    a_work.data().buffer().wait_last_write_on(&out_stream)?;
+    b_work.data().buffer().wait_last_write_on(&out_stream)?;
+
+    // ═══════════════════════════════════════════════════════════════
+    // Phase B：Kernel launch（可重放，capture-safe）
+    // ═══════════════════════════════════════════════════════════════
+
+    let a_ptr = a_work.data().buffer().ptr();
+    let b_ptr = b_work.data().buffer().ptr();
+
+    if out_size > 0 {
+        // 计算每个输入的广播 strides（组合输入自身 strides）
+        let a_strides = broadcast::broadcast_strides(a_work.layout(), &out_shape);
+        let b_strides = broadcast::broadcast_strides(b_work.layout(), &out_shape);
+        let ndim = out_shape.len() as i32;
+        let stream_raw = out_stream.raw();
+
+        match &device {
+            Device::Cpu => {
+                cpu_comparison_elementwise(
+                    a_ptr, b_ptr, out_ptr, &out_shape, &a_strides, &b_strides, dtype, &kernel,
+                );
+            }
+            Device::Musa(_) => match (&kernel, dtype) {
+                (CompareKernel::Eq, Dtype::Float32) => launch_compare!(musapy_eq_f32_v2, a_ptr, b_ptr, out_ptr, ndim, out_shape, a_strides, b_strides, stream_raw, "eq_f32_v2"),
+                (CompareKernel::Eq, Dtype::Float64) => launch_compare!(musapy_eq_f64_v2, a_ptr, b_ptr, out_ptr, ndim, out_shape, a_strides, b_strides, stream_raw, "eq_f64_v2"),
+                (CompareKernel::Ne, Dtype::Float32) => launch_compare!(musapy_ne_f32_v2, a_ptr, b_ptr, out_ptr, ndim, out_shape, a_strides, b_strides, stream_raw, "ne_f32_v2"),
+                (CompareKernel::Ne, Dtype::Float64) => launch_compare!(musapy_ne_f64_v2, a_ptr, b_ptr, out_ptr, ndim, out_shape, a_strides, b_strides, stream_raw, "ne_f64_v2"),
+                (CompareKernel::Lt, Dtype::Float32) => launch_compare!(musapy_lt_f32_v2, a_ptr, b_ptr, out_ptr, ndim, out_shape, a_strides, b_strides, stream_raw, "lt_f32_v2"),
+                (CompareKernel::Lt, Dtype::Float64) => launch_compare!(musapy_lt_f64_v2, a_ptr, b_ptr, out_ptr, ndim, out_shape, a_strides, b_strides, stream_raw, "lt_f64_v2"),
+                (CompareKernel::Gt, Dtype::Float32) => launch_compare!(musapy_gt_f32_v2, a_ptr, b_ptr, out_ptr, ndim, out_shape, a_strides, b_strides, stream_raw, "gt_f32_v2"),
+                (CompareKernel::Gt, Dtype::Float64) => launch_compare!(musapy_gt_f64_v2, a_ptr, b_ptr, out_ptr, ndim, out_shape, a_strides, b_strides, stream_raw, "gt_f64_v2"),
+                (CompareKernel::Le, Dtype::Float32) => launch_compare!(musapy_le_f32_v2, a_ptr, b_ptr, out_ptr, ndim, out_shape, a_strides, b_strides, stream_raw, "le_f32_v2"),
+                (CompareKernel::Le, Dtype::Float64) => launch_compare!(musapy_le_f64_v2, a_ptr, b_ptr, out_ptr, ndim, out_shape, a_strides, b_strides, stream_raw, "le_f64_v2"),
+                (CompareKernel::Ge, Dtype::Float32) => launch_compare!(musapy_ge_f32_v2, a_ptr, b_ptr, out_ptr, ndim, out_shape, a_strides, b_strides, stream_raw, "ge_f32_v2"),
+                (CompareKernel::Ge, Dtype::Float64) => launch_compare!(musapy_ge_f64_v2, a_ptr, b_ptr, out_ptr, ndim, out_shape, a_strides, b_strides, stream_raw, "ge_f64_v2"),
+                _ => unreachable!("dtype already validated as float32/float64"),
+            },
+        }
+    }
+
+    // ═══════════════════════════════════════════════════════════════
+    // Phase C：后处理
+    // ═══════════════════════════════════════════════════════════════
+
+    // 10. 事件记录（ADR L3-10）
+    a_work.data().buffer().record_read(&out_stream);
+    b_work.data().buffer().record_read(&out_stream);
+    out_data_ref.buffer().record_write(&out_stream);
+
+    // 11. OpContext 记录（ADR L3-2，记录用户视角的原始 dtype）
+    let mut ctx = OpContext::new(
+        op_name,
+        vec![a.shape().clone(), b.shape().clone()],
+        vec![a.device().clone(), b.device().clone()],
+        vec![a.dtype(), b.dtype()],
+        out_shape.clone(),
+        out_stream.id(),
+    );
+    if musapy_core::debug::is_debug() {
+        if let Some(frame) = musapy_core::debug::take_debug_frame() {
+            ctx = ctx.with_frame(frame);
+        }
+    }
+    out_stream.record_op(ctx);
+
+    // 12. 构造输出 Array（连续布局，shape = broadcast output，dtype = Bool）
+    Ok(Array::new(
+        out_data_ref,
+        Layout::from_shape(out_shape),
+        Dtype::Bool,
+        out_stream,
+        DeviceResolution::new(device, ResolutionSource::InputArray),
+        DtypeResolution::new(Dtype::Bool, ResolutionSource::InputArray),
+    ))
+}
+
 // ── CPU fallback（stride-aware）──────────────────────────────
 
 /// CPU 端 N 维偏移计算（与 common.h offset_nd 逻辑一致）。
@@ -1155,6 +1404,67 @@ fn cpu_binary_typed<T: BinaryFloat>(
             let a_off = cpu_offset_nd(idx, shape, a_strides);
             let b_off = cpu_offset_nd(idx, shape, b_strides);
             *base_c.add(idx) = cpu_binary_op(*base_a.add(a_off), *base_b.add(b_off), kernel);
+        }
+    }
+}
+
+// ── CPU comparison ──
+
+/// 按 dtype 分派 CPU comparison elementwise（stride-aware，输出 u8/bool）。
+fn cpu_comparison_elementwise(
+    a: Option<NonNull<u8>>,
+    b: Option<NonNull<u8>>,
+    c: Option<NonNull<u8>>,
+    shape: &[usize],
+    a_strides: &[isize],
+    b_strides: &[isize],
+    dtype: Dtype,
+    kernel: &CompareKernel,
+) {
+    match dtype {
+        Dtype::Float32 => cpu_compare_typed::<f32>(a, b, c, shape, a_strides, b_strides, kernel),
+        Dtype::Float64 => cpu_compare_typed::<f64>(a, b, c, shape, a_strides, b_strides, kernel),
+        _ => unreachable!("dtype already validated as float32/float64"),
+    }
+}
+
+/// 泛型 CPU comparison elementwise（stride-aware，输出 0/1 字节）。
+///
+/// `av == bv` 等比较对 f32/f64 使用 PartialEq/PartialOrd（NaN != NaN 语义正确）。
+fn cpu_compare_typed<T: Copy + PartialOrd>(
+    a: Option<NonNull<u8>>,
+    b: Option<NonNull<u8>>,
+    c: Option<NonNull<u8>>,
+    shape: &[usize],
+    a_strides: &[isize],
+    b_strides: &[isize],
+    kernel: &CompareKernel,
+) {
+    let n: usize = shape.iter().product();
+    if n == 0 {
+        return;
+    }
+    let (Some(ap), Some(bp), Some(cp)) = (a, b, c) else {
+        return;
+    };
+    unsafe {
+        let base_a = ap.as_ptr() as *const T;
+        let base_b = bp.as_ptr() as *const T;
+        let base_c = cp.as_ptr() as *mut u8;
+        for idx in 0..n {
+            let a_off = cpu_offset_nd(idx, shape, a_strides);
+            let b_off = cpu_offset_nd(idx, shape, b_strides);
+            let av = *base_a.add(a_off);
+            let bv = *base_b.add(b_off);
+            let result = match kernel {
+                CompareKernel::Eq => av == bv,
+                CompareKernel::Ne => av != bv,
+                CompareKernel::Lt => av < bv,
+                CompareKernel::Gt => av > bv,
+                CompareKernel::Le => av <= bv,
+                CompareKernel::Ge => av >= bv,
+            };
+            *base_c.add(idx) = if result { 1 } else { 0 };
         }
     }
 }

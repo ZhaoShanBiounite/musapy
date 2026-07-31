@@ -71,6 +71,20 @@ unsafe extern "C" {
     pub fn musapy_cast_u32_f64_v2(a: *const u32, c: *mut f64, ndim: i32, shape: *const usize, a_strides: *const isize, stream: musaStream_t);
     pub fn musapy_cast_u64_f64_v2(a: *const u64, c: *mut f64, ndim: i32, shape: *const usize, a_strides: *const isize, stream: musaStream_t);
     pub fn musapy_cast_f32_f64_v2(a: *const f32, c: *mut f64, ndim: i32, shape: *const usize, a_strides: *const isize, stream: musaStream_t);
+
+    // v2 Comparison（Phase 3：输入 T，输出 u8/bool）
+    pub fn musapy_eq_f32_v2(a: *const f32, b: *const f32, c: *mut u8, ndim: i32, shape: *const usize, a_strides: *const isize, b_strides: *const isize, stream: musaStream_t);
+    pub fn musapy_eq_f64_v2(a: *const f64, b: *const f64, c: *mut u8, ndim: i32, shape: *const usize, a_strides: *const isize, b_strides: *const isize, stream: musaStream_t);
+    pub fn musapy_ne_f32_v2(a: *const f32, b: *const f32, c: *mut u8, ndim: i32, shape: *const usize, a_strides: *const isize, b_strides: *const isize, stream: musaStream_t);
+    pub fn musapy_ne_f64_v2(a: *const f64, b: *const f64, c: *mut u8, ndim: i32, shape: *const usize, a_strides: *const isize, b_strides: *const isize, stream: musaStream_t);
+    pub fn musapy_lt_f32_v2(a: *const f32, b: *const f32, c: *mut u8, ndim: i32, shape: *const usize, a_strides: *const isize, b_strides: *const isize, stream: musaStream_t);
+    pub fn musapy_lt_f64_v2(a: *const f64, b: *const f64, c: *mut u8, ndim: i32, shape: *const usize, a_strides: *const isize, b_strides: *const isize, stream: musaStream_t);
+    pub fn musapy_gt_f32_v2(a: *const f32, b: *const f32, c: *mut u8, ndim: i32, shape: *const usize, a_strides: *const isize, b_strides: *const isize, stream: musaStream_t);
+    pub fn musapy_gt_f64_v2(a: *const f64, b: *const f64, c: *mut u8, ndim: i32, shape: *const usize, a_strides: *const isize, b_strides: *const isize, stream: musaStream_t);
+    pub fn musapy_le_f32_v2(a: *const f32, b: *const f32, c: *mut u8, ndim: i32, shape: *const usize, a_strides: *const isize, b_strides: *const isize, stream: musaStream_t);
+    pub fn musapy_le_f64_v2(a: *const f64, b: *const f64, c: *mut u8, ndim: i32, shape: *const usize, a_strides: *const isize, b_strides: *const isize, stream: musaStream_t);
+    pub fn musapy_ge_f32_v2(a: *const f32, b: *const f32, c: *mut u8, ndim: i32, shape: *const usize, a_strides: *const isize, b_strides: *const isize, stream: musaStream_t);
+    pub fn musapy_ge_f64_v2(a: *const f64, b: *const f64, c: *mut u8, ndim: i32, shape: *const usize, a_strides: *const isize, b_strides: *const isize, stream: musaStream_t);
 }
 
 // ── Mock 模式：CPU stub ─────────────────────────────────────
@@ -248,6 +262,44 @@ mod mock {
     mock_cast_v2!(musapy_cast_u32_f64_v2, u32, f64);
     mock_cast_v2!(musapy_cast_u64_f64_v2, u64, f64);
     mock_cast_v2!(musapy_cast_f32_f64_v2, f32, f64);
+
+    // v2 Comparison mock（Phase 3）
+    macro_rules! mock_compare_v2 {
+        ($name:ident, $t:ty, $cmp:expr) => {
+            pub unsafe fn $name(
+                a: *const $t, b: *const $t, c: *mut u8,
+                ndim: i32, shape: *const usize,
+                a_strides: *const isize, b_strides: *const isize,
+                _stream: musaStream_t,
+            ) {
+                if a.is_null() || b.is_null() || c.is_null() || ndim < 0 { return; }
+                let ndim = ndim as usize;
+                let shape_s = std::slice::from_raw_parts(shape, ndim);
+                let a_str = std::slice::from_raw_parts(a_strides, ndim);
+                let b_str = std::slice::from_raw_parts(b_strides, ndim);
+                let n: usize = shape_s.iter().product();
+                let cmp: fn($t, $t) -> bool = $cmp;
+                for idx in 0..n {
+                    let a_off = mock_offset_nd(idx, shape_s, a_str);
+                    let b_off = mock_offset_nd(idx, shape_s, b_str);
+                    *c.add(idx) = if cmp(*a.add(a_off), *b.add(b_off)) { 1 } else { 0 };
+                }
+            }
+        };
+    }
+
+    mock_compare_v2!(musapy_eq_f32_v2, f32, |a, b| a == b);
+    mock_compare_v2!(musapy_eq_f64_v2, f64, |a, b| a == b);
+    mock_compare_v2!(musapy_ne_f32_v2, f32, |a, b| a != b);
+    mock_compare_v2!(musapy_ne_f64_v2, f64, |a, b| a != b);
+    mock_compare_v2!(musapy_lt_f32_v2, f32, |a, b| a < b);
+    mock_compare_v2!(musapy_lt_f64_v2, f64, |a, b| a < b);
+    mock_compare_v2!(musapy_gt_f32_v2, f32, |a, b| a > b);
+    mock_compare_v2!(musapy_gt_f64_v2, f64, |a, b| a > b);
+    mock_compare_v2!(musapy_le_f32_v2, f32, |a, b| a <= b);
+    mock_compare_v2!(musapy_le_f64_v2, f64, |a, b| a <= b);
+    mock_compare_v2!(musapy_ge_f32_v2, f32, |a, b| a >= b);
+    mock_compare_v2!(musapy_ge_f64_v2, f64, |a, b| a >= b);
 }
 
 // Mock 模式 re-export

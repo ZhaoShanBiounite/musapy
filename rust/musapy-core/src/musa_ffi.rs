@@ -319,7 +319,7 @@ mod mock {
         if dst.is_null() || src.is_null() {
             return 1;
         }
-        std::ptr::copy_nonoverlapping(src, dst as *mut u8, count);
+        std::ptr::copy_nonoverlapping(src as *const u8, dst as *mut u8, count);
         MUSA_SUCCESS
     }
 
