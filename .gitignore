@@ -30,3 +30,7 @@ Thumbs.db
 # musapy build artifacts
 *.mu.o
 libmusapy_kernels.a
+
+# ZCode plan files
+.zcode/plans/
+AGENTS.md
