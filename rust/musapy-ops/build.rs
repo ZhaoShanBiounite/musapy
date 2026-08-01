@@ -37,6 +37,7 @@ fn main() {
 
     let elementwise_mu = kernels_dir.join("elementwise.mu");
     let reduction_mu = kernels_dir.join("reduction.mu");
+    let init_mu = kernels_dir.join("init.mu");
 
     // -------- 1. 双探针找 MUSA SDK --------
     let musa_home = probe_musa_home();
@@ -44,11 +45,12 @@ fn main() {
     match &musa_home {
         Some(home) => {
             // -------- 2. 编译 kernels --------
-            compile_kernels(&kernels_dir, &elementwise_mu, &reduction_mu, home);
+            compile_kernels(&kernels_dir, &elementwise_mu, &reduction_mu, &init_mu, home);
 
             // 声明 rerun 触发条件
             println!("cargo:rerun-if-changed={}", elementwise_mu.display());
             println!("cargo:rerun-if-changed={}", reduction_mu.display());
+            println!("cargo:rerun-if-changed={}", init_mu.display());
             let common_h = kernels_dir.join("include").join("common.h");
             println!("cargo:rerun-if-changed={}", common_h.display());
         }
@@ -136,7 +138,7 @@ fn validate(p: &Path) -> bool {
 }
 
 /// 用 mcc 编译 kernel 源文件 → 静态库
-fn compile_kernels(kernels_dir: &Path, elementwise_mu: &Path, reduction_mu: &Path, home: &Path) {
+fn compile_kernels(kernels_dir: &Path, elementwise_mu: &Path, reduction_mu: &Path, init_mu: &Path, home: &Path) {
     let out_dir = env::var("OUT_DIR").unwrap();
     let out_dir = Path::new(&out_dir);
 
@@ -144,6 +146,7 @@ fn compile_kernels(kernels_dir: &Path, elementwise_mu: &Path, reduction_mu: &Pat
     let include_dir = home.join("include");
     let elementwise_obj = out_dir.join("elementwise.o");
     let reduction_obj = out_dir.join("reduction.o");
+    let init_obj = out_dir.join("init.o");
     let lib = out_dir.join("libmusapy_kernels.a");
 
     // -------- 1. mcc 编译 .mu → .o --------
@@ -228,12 +231,49 @@ fn compile_kernels(kernels_dir: &Path, elementwise_mu: &Path, reduction_mu: &Pat
         }
     }
 
+    // 编译 init.mu
+    println!(
+        "cargo:warning=MUSAPY-OPS: compiling {} with mcc",
+        init_mu.display()
+    );
+
+    let status = Command::new(&mcc)
+        .arg("-c")
+        .arg("-fPIC")
+        .arg(init_mu)
+        .arg("-I")
+        .arg(kernels_dir)
+        .arg("-I")
+        .arg(&include_dir)
+        .arg("-o")
+        .arg(&init_obj)
+        .status();
+
+    match status {
+        Ok(s) if s.success() => {
+            println!(
+                "cargo:warning=MUSAPY-OPS: mcc compiled init.mu → {}",
+                init_obj.display()
+            );
+        }
+        Ok(s) => {
+            panic!(
+                "MUSAPY-OPS: mcc compilation of init.mu failed with exit code {:?}",
+                s.code()
+            );
+        }
+        Err(e) => {
+            panic!("MUSAPY-OPS: failed to execute mcc: {}", e);
+        }
+    }
+
     // -------- 2. ar 打包 .o → .a --------
     let ar_status = Command::new("ar")
         .arg("rcs")
         .arg(&lib)
         .arg(&elementwise_obj)
         .arg(&reduction_obj)
+        .arg(&init_obj)
         .status();
 
     match ar_status {

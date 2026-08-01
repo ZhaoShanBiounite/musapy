@@ -126,6 +126,37 @@ unsafe extern "C" {
     pub fn musapy_cumsum_f32_v3(a: *const f32, c: *mut f32, tmp: *mut f32, ndim: i32, in_shape: *const usize, in_strides: *const isize, axis: i32, axis_len: usize, out_size: usize, stream: musaStream_t);
     pub fn musapy_cumsum_f64_v3(a: *const f64, c: *mut f64, tmp: *mut f64, ndim: i32, in_shape: *const usize, in_strides: *const isize, axis: i32, axis_len: usize, out_size: usize, stream: musaStream_t);
 
+    // ── Init/Creation kernels（Phase 5）──
+    // 输出始终 C-contiguous，无 stride 参数。
+
+    // Fill（zeros/ones/full 共用）
+    pub fn musapy_fill_f32(out: *mut f32, value: f32, n: usize, stream: musaStream_t);
+    pub fn musapy_fill_f64(out: *mut f64, value: f64, n: usize, stream: musaStream_t);
+    pub fn musapy_fill_i64(out: *mut i64, value: i64, n: usize, stream: musaStream_t);
+    pub fn musapy_fill_i32(out: *mut i32, value: i32, n: usize, stream: musaStream_t);
+    pub fn musapy_fill_i16(out: *mut i16, value: i16, n: usize, stream: musaStream_t);
+    pub fn musapy_fill_i8(out: *mut i8, value: i8, n: usize, stream: musaStream_t);
+    pub fn musapy_fill_u64(out: *mut u64, value: u64, n: usize, stream: musaStream_t);
+    pub fn musapy_fill_u32(out: *mut u32, value: u32, n: usize, stream: musaStream_t);
+    pub fn musapy_fill_u16(out: *mut u16, value: u16, n: usize, stream: musaStream_t);
+    pub fn musapy_fill_u8(out: *mut u8, value: u8, n: usize, stream: musaStream_t);
+
+    // Arange
+    pub fn musapy_arange_f32(out: *mut f32, start: f32, step: f32, n: usize, stream: musaStream_t);
+    pub fn musapy_arange_f64(out: *mut f64, start: f64, step: f64, n: usize, stream: musaStream_t);
+    pub fn musapy_arange_i64(out: *mut i64, start: i64, step: i64, n: usize, stream: musaStream_t);
+    pub fn musapy_arange_i32(out: *mut i32, start: i32, step: i32, n: usize, stream: musaStream_t);
+
+    // Linspace（仅浮点）
+    pub fn musapy_linspace_f32(out: *mut f32, start: f32, stop: f32, n: usize, stream: musaStream_t);
+    pub fn musapy_linspace_f64(out: *mut f64, start: f64, stop: f64, n: usize, stream: musaStream_t);
+
+    // Eye
+    pub fn musapy_eye_f32(out: *mut f32, n: usize, m: usize, k: i32, stream: musaStream_t);
+    pub fn musapy_eye_f64(out: *mut f64, n: usize, m: usize, k: i32, stream: musaStream_t);
+    pub fn musapy_eye_i64(out: *mut i64, n: usize, m: usize, k: i32, stream: musaStream_t);
+    pub fn musapy_eye_i32(out: *mut i32, n: usize, m: usize, k: i32, stream: musaStream_t);
+
     // ── Parallel reduction: partial（Phase 1）──
     // 签名：(a, partials, ndim, in_shape, in_strides, axis, axis_len, out_size, tiles_per_output, stream)
     pub fn musapy_sum_partial_i64_v2(a: *const i64, partials: *mut i64, ndim: i32, in_shape: *const usize, in_strides: *const isize, axis: i32, axis_len: usize, out_size: usize, tiles_per_output: usize, stream: musaStream_t);
@@ -932,6 +963,78 @@ mod mock {
     mock_argreduce_final_v2!(musapy_argmin_final_i64_v2, i64, |v, best| v < best);
     mock_argreduce_final_v2!(musapy_argmin_final_f32_v2, f32, |v, best| v < best);
     mock_argreduce_final_v2!(musapy_argmin_final_f64_v2, f64, |v, best| v < best);
+
+    // ── Init/Creation kernel mock（Phase 5）──
+
+    macro_rules! mock_fill {
+        ($name:ident, $t:ty) => {
+            pub unsafe fn $name(out: *mut $t, value: $t, n: usize, _stream: musaStream_t) {
+                if out.is_null() || n == 0 { return; }
+                for i in 0..n { *out.add(i) = value; }
+            }
+        };
+    }
+
+    mock_fill!(musapy_fill_f32, f32);
+    mock_fill!(musapy_fill_f64, f64);
+    mock_fill!(musapy_fill_i64, i64);
+    mock_fill!(musapy_fill_i32, i32);
+    mock_fill!(musapy_fill_i16, i16);
+    mock_fill!(musapy_fill_i8, i8);
+    mock_fill!(musapy_fill_u64, u64);
+    mock_fill!(musapy_fill_u32, u32);
+    mock_fill!(musapy_fill_u16, u16);
+    mock_fill!(musapy_fill_u8, u8);
+
+    macro_rules! mock_arange {
+        ($name:ident, $t:ty) => {
+            pub unsafe fn $name(out: *mut $t, start: $t, step: $t, n: usize, _stream: musaStream_t) {
+                if out.is_null() || n == 0 { return; }
+                for i in 0..n { *out.add(i) = start + (i as $t) * step; }
+            }
+        };
+    }
+
+    mock_arange!(musapy_arange_f32, f32);
+    mock_arange!(musapy_arange_f64, f64);
+    mock_arange!(musapy_arange_i64, i64);
+    mock_arange!(musapy_arange_i32, i32);
+
+    macro_rules! mock_linspace {
+        ($name:ident, $t:ty) => {
+            pub unsafe fn $name(out: *mut $t, start: $t, stop: $t, n: usize, _stream: musaStream_t) {
+                if out.is_null() || n == 0 { return; }
+                if n == 1 {
+                    *out.add(0) = start;
+                    return;
+                }
+                let step = (stop - start) / ((n - 1) as $t);
+                for i in 0..n { *out.add(i) = start + (i as $t) * step; }
+            }
+        };
+    }
+
+    mock_linspace!(musapy_linspace_f32, f32);
+    mock_linspace!(musapy_linspace_f64, f64);
+
+    macro_rules! mock_eye {
+        ($name:ident, $t:ty) => {
+            pub unsafe fn $name(out: *mut $t, n: usize, m: usize, k: i32, _stream: musaStream_t) {
+                if out.is_null() || n == 0 || m == 0 { return; }
+                let total = n * m;
+                for idx in 0..total {
+                    let row = idx / m;
+                    let col = idx % m;
+                    *out.add(idx) = if (col as i32 - row as i32) == k { 1 as $t } else { 0 as $t };
+                }
+            }
+        };
+    }
+
+    mock_eye!(musapy_eye_f32, f32);
+    mock_eye!(musapy_eye_f64, f64);
+    mock_eye!(musapy_eye_i64, i64);
+    mock_eye!(musapy_eye_i32, i32);
 }
 
 // Mock 模式 re-export

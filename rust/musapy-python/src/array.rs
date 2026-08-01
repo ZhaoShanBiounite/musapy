@@ -266,45 +266,128 @@ impl PyArray {
 impl PyArray {
     /// 显式同步 stream + D2H 拷贝（ADR L1-11）。
     ///
-    /// 先 `stream.synchronize()`，然后 `musaMemcpy(D2H)`（或 CPU 直接拷贝）。
-    /// 返回原始字节序列。
+    /// 先 `stream.synchronize()`，然后按 layout 拷贝逻辑元素到连续 bytes。
+    /// 支持 offset 和非连续布局（stride-aware gather）。
     fn sync_and_copy_to_host(&self, _py: Python<'_>) -> PyResult<Vec<u8>> {
         // 1. stream 同步
         self.inner.stream().synchronize().map_err(error::to_pyerr)?;
 
-        let nbytes = self.inner.nbytes();
+        let n_elements = self.inner.size();
+        let elem_size = self.inner.dtype().element_size();
+        let nbytes = n_elements * elem_size;
         let mut bytes = vec![0u8; nbytes];
         if nbytes == 0 {
             return Ok(bytes);
         }
 
-        // 2. D2H 拷贝
-        let ptr = self.inner.data().buffer().ptr();
-        match self.inner.device() {
-            Device::Cpu => {
-                if let Some(p) = ptr {
-                    unsafe {
-                        std::ptr::copy_nonoverlapping(p.as_ptr(), bytes.as_mut_ptr(), nbytes);
+        let layout = self.inner.layout();
+
+        // 2. 连续且无 offset：快速路径（直接 memcpy）
+        if layout.is_contiguous() {
+            let ptr = self.inner.data().buffer().ptr();
+            match self.inner.device() {
+                Device::Cpu => {
+                    if let Some(p) = ptr {
+                        unsafe {
+                            std::ptr::copy_nonoverlapping(
+                                p.as_ptr(),
+                                bytes.as_mut_ptr(),
+                                nbytes,
+                            );
+                        }
+                    }
+                }
+                Device::Musa(_) => {
+                    if let Some(p) = ptr {
+                        unsafe {
+                            musa_ffi::check_musa(
+                                musa_ffi::musaMemcpy(
+                                    bytes.as_mut_ptr() as *mut c_void,
+                                    p.as_ptr() as *const c_void,
+                                    nbytes,
+                                    musa_ffi::musaMemcpyKind::DeviceToHost,
+                                ),
+                                "musaMemcpy(D2H)",
+                            )
+                            .map_err(error::to_pyerr)?;
+                        }
                     }
                 }
             }
+            return Ok(bytes);
+        }
+
+        // 3. 非连续或有 offset：需要 gather
+        //    GPU 时先 D2H 整个 buffer，再在 host 端 gather
+        let host_buffer: Vec<u8> = match self.inner.device() {
+            Device::Cpu => {
+                // CPU：直接使用 buffer 内存
+                let buf_size = self.inner.data().buffer().size();
+                let ptr = self.inner.data().buffer().ptr();
+                let mut buf = vec![0u8; buf_size];
+                if let Some(p) = ptr {
+                    unsafe {
+                        std::ptr::copy_nonoverlapping(p.as_ptr(), buf.as_mut_ptr(), buf_size);
+                    }
+                }
+                buf
+            }
             Device::Musa(_) => {
+                let buf_size = self.inner.data().buffer().size();
+                let ptr = self.inner.data().buffer().ptr();
+                let mut buf = vec![0u8; buf_size];
                 if let Some(p) = ptr {
                     unsafe {
                         musa_ffi::check_musa(
                             musa_ffi::musaMemcpy(
-                                bytes.as_mut_ptr() as *mut c_void,
+                                buf.as_mut_ptr() as *mut c_void,
                                 p.as_ptr() as *const c_void,
-                                nbytes,
+                                buf_size,
                                 musa_ffi::musaMemcpyKind::DeviceToHost,
                             ),
-                            "musaMemcpy(D2H)",
+                            "musaMemcpy(D2H full buffer)",
                         )
                         .map_err(error::to_pyerr)?;
                     }
                 }
+                buf
+            }
+        };
+
+        // 4. 按 strides gather 到连续输出
+        let shape = layout.shape.as_slice();
+        let strides = layout.strides.as_slice();
+        let offset = layout.offset;
+        let ndim = shape.len();
+
+        if ndim == 0 {
+            // 0-dim：单元素，offset 即位置
+            let src_start = offset * elem_size;
+            bytes.copy_from_slice(&host_buffer[src_start..src_start + elem_size]);
+        } else {
+            let mut coords = vec![0usize; ndim];
+            for i in 0..n_elements {
+                // 计算当前多维坐标的线性偏移
+                let mut linear = offset as isize;
+                for d in 0..ndim {
+                    linear += coords[d] as isize * strides[d];
+                }
+                let src_start = linear as usize * elem_size;
+                let dst_start = i * elem_size;
+                bytes[dst_start..dst_start + elem_size]
+                    .copy_from_slice(&host_buffer[src_start..src_start + elem_size]);
+
+                // 递增坐标（C order：最右维最快）
+                for d in (0..ndim).rev() {
+                    coords[d] += 1;
+                    if coords[d] < shape[d] {
+                        break;
+                    }
+                    coords[d] = 0;
+                }
             }
         }
+
         Ok(bytes)
     }
 }

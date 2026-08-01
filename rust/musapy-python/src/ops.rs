@@ -477,3 +477,198 @@ fn copy_to_buffer(data_ref: &BufferRef, bytes: &[u8], device: &Device) -> PyResu
         }
     }
 }
+
+// ============================================================
+// Phase 5: Creation ops（zeros/ones/full/eye/arange/linspace/zeros_like/ones_like）
+// ============================================================
+
+/// 从 Python 参数解析 Device（复用 lib.rs 的逻辑）。
+fn parse_device_opt(py: Python<'_>, device: &Option<PyObject>) -> PyResult<Option<Device>> {
+    match device {
+        None => Ok(None),
+        Some(obj) => {
+            let obj = obj.bind(py);
+            if let Ok(s) = obj.extract::<String>() {
+                Ok(Some(Device::parse(&s).map_err(error::to_pyerr)?))
+            } else if let Ok(d) = obj.extract::<Py<PyDevice>>() {
+                let d_ref = d.borrow(py);
+                Ok(Some(d_ref.inner.clone()))
+            } else {
+                Err(pyo3::exceptions::PyTypeError::new_err(
+                    "device must be a string (e.g. \"musa:0\") or Device",
+                ))
+            }
+        }
+    }
+}
+
+/// 从 Python 参数解析 shape（接受 int 或 tuple/list of ints）。
+fn parse_shape(shape: &Bound<'_, PyAny>) -> PyResult<Vec<usize>> {
+    if let Ok(n) = shape.extract::<usize>() {
+        Ok(vec![n])
+    } else if let Ok(v) = shape.extract::<Vec<usize>>() {
+        Ok(v)
+    } else {
+        Err(pyo3::exceptions::PyTypeError::new_err(
+            "shape must be an int or a tuple/list of ints",
+        ))
+    }
+}
+
+/// `ms.zeros(shape, dtype=None, device=None)` — 创建全零数组。
+#[pyfunction]
+#[pyo3(signature = (shape, *, dtype=None, device=None))]
+pub fn zeros(
+    py: Python<'_>,
+    shape: &Bound<'_, PyAny>,
+    dtype: Option<PyDtype>,
+    device: Option<PyObject>,
+) -> PyResult<PyArray> {
+    let shape = parse_shape(shape)?;
+    let dtype_arg = dtype.map(|d| d.0);
+    let device_arg = parse_device_opt(py, &device)?;
+    let result = musapy_ops::zeros(&shape, dtype_arg, device_arg).map_err(error::to_pyerr)?;
+    Ok(PyArray::from_array(result))
+}
+
+/// `ms.ones(shape, dtype=None, device=None)` — 创建全一数组。
+#[pyfunction]
+#[pyo3(signature = (shape, *, dtype=None, device=None))]
+pub fn ones(
+    py: Python<'_>,
+    shape: &Bound<'_, PyAny>,
+    dtype: Option<PyDtype>,
+    device: Option<PyObject>,
+) -> PyResult<PyArray> {
+    let shape = parse_shape(shape)?;
+    let dtype_arg = dtype.map(|d| d.0);
+    let device_arg = parse_device_opt(py, &device)?;
+    let result = musapy_ops::ones(&shape, dtype_arg, device_arg).map_err(error::to_pyerr)?;
+    Ok(PyArray::from_array(result))
+}
+
+/// `ms.full(shape, fill_value, dtype=None, device=None)` — 创建填充指定值的数组。
+#[pyfunction]
+#[pyo3(signature = (shape, fill_value, *, dtype=None, device=None))]
+pub fn full(
+    py: Python<'_>,
+    shape: &Bound<'_, PyAny>,
+    fill_value: f64,
+    dtype: Option<PyDtype>,
+    device: Option<PyObject>,
+) -> PyResult<PyArray> {
+    let shape = parse_shape(shape)?;
+    let dtype_arg = dtype.map(|d| d.0);
+    let device_arg = parse_device_opt(py, &device)?;
+    let result = musapy_ops::full(&shape, fill_value, dtype_arg, device_arg).map_err(error::to_pyerr)?;
+    Ok(PyArray::from_array(result))
+}
+
+/// `ms.eye(n, m=None, k=0, dtype=None, device=None)` — 创建单位矩阵。
+#[pyfunction]
+#[pyo3(signature = (n, m=None, k=0, *, dtype=None, device=None))]
+pub fn eye(
+    py: Python<'_>,
+    n: usize,
+    m: Option<usize>,
+    k: i32,
+    dtype: Option<PyDtype>,
+    device: Option<PyObject>,
+) -> PyResult<PyArray> {
+    let dtype_arg = dtype.map(|d| d.0);
+    let device_arg = parse_device_opt(py, &device)?;
+    let result = musapy_ops::eye(n, m, k, dtype_arg, device_arg).map_err(error::to_pyerr)?;
+    Ok(PyArray::from_array(result))
+}
+
+/// `ms.arange(start, stop=None, step=1, dtype=None, device=None)` — 创建等差序列。
+///
+/// 单参数形式：`ms.arange(5)` → `[0, 1, 2, 3, 4]`（int64）。
+/// 双参数形式：`ms.arange(2, 7)` → `[2, 3, 4, 5, 6]`。
+/// 三参数形式：`ms.arange(0, 1, 0.2)` → `[0.0, 0.2, 0.4, 0.6, 0.8]`（float64）。
+///
+/// dtype 推断遵循 NumPy 行为：Python int 参数 → int64，Python float 参数 → float64。
+#[pyfunction]
+#[pyo3(signature = (start, stop=None, step=None, *, dtype=None, device=None))]
+pub fn arange(
+    py: Python<'_>,
+    start: &Bound<'_, PyAny>,
+    stop: Option<&Bound<'_, PyAny>>,
+    step: Option<&Bound<'_, PyAny>>,
+    dtype: Option<PyDtype>,
+    device: Option<PyObject>,
+) -> PyResult<PyArray> {
+    // 检测 Python 参数类型（int vs float）用于 dtype 推断
+    let start_is_float = start.is_instance_of::<pyo3::types::PyFloat>();
+    let stop_is_float = stop.map_or(false, |s| s.is_instance_of::<pyo3::types::PyFloat>());
+    let step_is_float = step.map_or(false, |s| s.is_instance_of::<pyo3::types::PyFloat>());
+
+    let start_val: f64 = start.extract().map_err(|_| {
+        pyo3::exceptions::PyTypeError::new_err("arange: start must be a number")
+    })?;
+    let stop_val: Option<f64> = match stop {
+        Some(s) => Some(s.extract().map_err(|_| {
+            pyo3::exceptions::PyTypeError::new_err("arange: stop must be a number")
+        })?),
+        None => None,
+    };
+    let step_val: f64 = match step {
+        Some(s) => s.extract().map_err(|_| {
+            pyo3::exceptions::PyTypeError::new_err("arange: step must be a number")
+        })?,
+        None => 1.0,
+    };
+
+    // dtype 推断（NumPy 行为）：
+    // - 显式 dtype= 覆盖
+    // - 任何参数是 Python float → float64
+    // - 全部是 Python int → int64
+    let dtype_arg: Option<musapy_core::Dtype> = match dtype {
+        Some(d) => Some(d.0),
+        None => {
+            let any_float = start_is_float || stop_is_float || step_is_float;
+            Some(if any_float {
+                musapy_core::Dtype::Float64
+            } else {
+                musapy_core::Dtype::Int64
+            })
+        }
+    };
+
+    let device_arg = parse_device_opt(py, &device)?;
+    let result = musapy_ops::arange(start_val, stop_val, step_val, dtype_arg, device_arg).map_err(error::to_pyerr)?;
+    Ok(PyArray::from_array(result))
+}
+
+/// `ms.linspace(start, stop, num=50, dtype=None, device=None)` — 创建等间隔序列。
+#[pyfunction]
+#[pyo3(signature = (start, stop, num=50, *, dtype=None, device=None))]
+pub fn linspace(
+    py: Python<'_>,
+    start: f64,
+    stop: f64,
+    num: usize,
+    dtype: Option<PyDtype>,
+    device: Option<PyObject>,
+) -> PyResult<PyArray> {
+    let dtype_arg = dtype.map(|d| d.0);
+    let device_arg = parse_device_opt(py, &device)?;
+    let result = musapy_ops::linspace(start, stop, num, dtype_arg, device_arg).map_err(error::to_pyerr)?;
+    Ok(PyArray::from_array(result))
+}
+
+/// `ms.zeros_like(a)` — 创建与输入同 shape/dtype/device 的全零数组。
+#[pyfunction]
+#[pyo3(signature = (a))]
+pub fn zeros_like(a: &PyArray) -> PyResult<PyArray> {
+    let result = musapy_ops::zeros_like(&a.inner).map_err(error::to_pyerr)?;
+    Ok(PyArray::from_array(result))
+}
+
+/// `ms.ones_like(a)` — 创建与输入同 shape/dtype/device 的全一数组。
+#[pyfunction]
+#[pyo3(signature = (a))]
+pub fn ones_like(a: &PyArray) -> PyResult<PyArray> {
+    let result = musapy_ops::ones_like(&a.inner).map_err(error::to_pyerr)?;
+    Ok(PyArray::from_array(result))
+}

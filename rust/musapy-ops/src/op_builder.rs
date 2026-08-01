@@ -474,12 +474,12 @@ pub(crate) fn binary_elementwise(
     if out_size > 0 {
         // Phase C-lite：同 shape 时直接用 layout strides，跳过 broadcast 逻辑
         let a_strides: Vec<isize> = if a_work.shape() == &out_shape {
-            a_work.layout().strides.iter().map(|&s| s as isize).collect()
+            a_work.layout().strides.clone()
         } else {
             broadcast::broadcast_strides(a_work.layout(), &out_shape)
         };
         let b_strides: Vec<isize> = if b_work.shape() == &out_shape {
-            b_work.layout().strides.iter().map(|&s| s as isize).collect()
+            b_work.layout().strides.clone()
         } else {
             broadcast::broadcast_strides(b_work.layout(), &out_shape)
         };
@@ -654,7 +654,7 @@ pub(crate) fn unary_elementwise(
 
     if out_size > 0 {
         // 直接使用输入布局的 strides（无广播，stride-aware）
-        let a_strides: Vec<isize> = a.layout().strides.iter().map(|&s| s as isize).collect();
+        let a_strides: Vec<isize> = a.layout().strides.clone();
         let ndim = out_shape.len() as i32;
         let stream_raw = out_stream.raw();
 
@@ -817,7 +817,7 @@ pub(crate) fn clamp_elementwise(
     let a_ptr = a.data().buffer().ptr();
 
     if out_size > 0 {
-        let a_strides: Vec<isize> = a.layout().strides.iter().map(|&s| s as isize).collect();
+        let a_strides: Vec<isize> = a.layout().strides.clone();
         let ndim = out_shape.len() as i32;
         let stream_raw = out_stream.raw();
 
@@ -1015,7 +1015,7 @@ pub(crate) fn cast_array(a: &Array, target_dtype: Dtype, stream: &Arc<Stream>) -
     a.data().buffer().wait_last_write_on(stream)?;
 
     // Kernel launch（stride-aware，输入布局 strides）
-    let a_strides: Vec<isize> = a.layout().strides.iter().map(|&s| s as isize).collect();
+    let a_strides: Vec<isize> = a.layout().strides.clone();
     launch_cast_kernel(
         a.data().buffer().ptr(),
         out_ptr,
@@ -1183,7 +1183,7 @@ pub(crate) fn astype_op(a: &Array, dtype: Dtype, out: Option<&Array>) -> Result<
             }
         } else {
             // 异 dtype：cast kernel（stride-aware）
-            let a_strides: Vec<isize> = a.layout().strides.iter().map(|&s| s as isize).collect();
+            let a_strides: Vec<isize> = a.layout().strides.clone();
             launch_cast_kernel(
                 a_ptr, out_ptr, &out_shape, &a_strides, src, dtype, &device, &out_stream,
             )?;
@@ -1396,12 +1396,12 @@ pub(crate) fn comparison_elementwise(
     if out_size > 0 {
         // Phase C-lite：同 shape 时直接用 layout strides，跳过 broadcast 逻辑
         let a_strides: Vec<isize> = if a_work.shape() == &out_shape {
-            a_work.layout().strides.iter().map(|&s| s as isize).collect()
+            a_work.layout().strides.clone()
         } else {
             broadcast::broadcast_strides(a_work.layout(), &out_shape)
         };
         let b_strides: Vec<isize> = if b_work.shape() == &out_shape {
-            b_work.layout().strides.iter().map(|&s| s as isize).collect()
+            b_work.layout().strides.clone()
         } else {
             broadcast::broadcast_strides(b_work.layout(), &out_shape)
         };
@@ -1989,9 +1989,7 @@ pub(crate) fn reduction_axis(
             Some(_) => a_work
                 .layout()
                 .strides
-                .iter()
-                .map(|&s| s as isize)
-                .collect(),
+                .clone(),
         };
         let stream_raw = out_stream.raw();
 
@@ -2314,9 +2312,7 @@ pub(crate) fn cumsum_op(
             Some(_) => a_work
                 .layout()
                 .strides
-                .iter()
-                .map(|&s| s as isize)
-                .collect(),
+                .clone(),
         };
         let stream_raw = out_stream.raw();
 
