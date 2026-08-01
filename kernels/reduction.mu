@@ -35,20 +35,16 @@ __device__ static inline size_t reduce_offset(
 ) {
     int ndim = meta.ndim;
     int axis = meta.axis;
-    // 展开 out_idx 到非 axis 维坐标
-    size_t coords[MUSAPY_MAX_NDIM];
-    int ci = 0;
+    // 單遍計算：提取非-axis 維坐標並直接累加 offset。
+    // 加法交換律允許在分解 out_idx 的同一循環中累加，無需中間存儲。
+    // 這避免了 stack array（mcc 會 spill 到 local memory），
+    // 也避免了固定數量寄存器變量的 ndim 上限問題。
+    size_t offset = k * (size_t)meta.in_strides[axis];
     size_t tmp = out_idx;
     for (int i = ndim - 1; i >= 0; i--) {
         if (i == axis) continue;
-        coords[ci++] = tmp % meta.in_shape[i];
+        size_t coord = tmp % meta.in_shape[i];
         tmp /= meta.in_shape[i];
-    }
-    // 计算 offset
-    size_t offset = 0;
-    ci = 0;
-    for (int i = ndim - 1; i >= 0; i--) {
-        size_t coord = (i == axis) ? k : coords[ci++];
         offset += coord * (size_t)meta.in_strides[i];
     }
     return offset;
@@ -182,53 +178,175 @@ __global__ void musapy_argmin_kernel_v2(
     c[idx] = best_idx;
 }
 
-// ── Cumsum kernel 模板（输出同 shape，prefix sum）─────────────
+// ── Cumsum（work-efficient parallel prefix sum）──────────────
+//
+// 原 naive 实现是 O(N²) work（每个 thread 从头重算前缀），在长 axis 上
+// 退化灾难性（1M 元素 1D 需 3920ms）。这里改为经典三阶段 inclusive scan：
+//
+//   Phase 1 (block-local):  每 block 用 Blelloch 树形 scan 算出本 block 内
+//                            的 inclusive prefix，写回输出；同时记录 block 总和。
+//   Phase 2 (scan sums):    单 block 对所有 block 总和做 inclusive scan，
+//                            得到「每个 block 之前的累加前缀」。
+//   Phase 3 (add prefix):   每 block 把「自身之前的累加前缀」加到本 block
+//                            所有输出上。
+//
+// 总 work O(N)（含 3 遍线性扫描），steps O(log B)（B = block 数）。
+// 每一「行」（共享同一组非-axis 坐标的 L=axis_len 个元素）独立 scan。
+//
+// 约定：输入/输出共享 NdMetaReduce 结构（axis_len 即每行长度）。
+// 一次 grid 同时处理所有行：grid = num_rows × blocks_per_row。
 
-/// Cumsum 参数结构。
-struct NdMetaCumsum {
-    int ndim;
-    size_t in_shape[MUSAPY_MAX_NDIM];
-    ssize_t in_strides[MUSAPY_MAX_NDIM];
-    int axis;
-};
-
-template <typename T>
-__global__ void musapy_cumsum_kernel_v2(
-    const T* __restrict__ a, T* __restrict__ c,
-    NdMetaCumsum meta, size_t out_size
+/// Cumsum 行 base offset 计算：给定行号 row（非 axis 维的展平索引），
+/// 返回该行 axis_coord=0 处的输入偏移。
+__device__ static inline size_t cumsum_row_base(
+    size_t row, const NdMetaReduce& meta
 ) {
-    size_t idx = blockIdx.x * blockDim.x + threadIdx.x;
-    if (idx >= out_size) return;
-
     int ndim = meta.ndim;
     int axis = meta.axis;
-
-    // 展开 idx 得到 axis 坐标
-    size_t tmp = idx;
-    size_t axis_coord = 0;
-    for (int i = ndim - 1; i >= 0; i--) {
-        size_t coord = tmp % meta.in_shape[i];
-        tmp /= meta.in_shape[i];
-        if (i == axis) axis_coord = coord;
-    }
-
-    // 计算 axis=0 时的 base offset
     size_t base = 0;
-    tmp = idx;
+    // 从最低非-axis 维展开 row
     for (int i = ndim - 1; i >= 0; i--) {
-        size_t coord = tmp % meta.in_shape[i];
-        tmp /= meta.in_shape[i];
-        if (i != axis) {
-            base += coord * (size_t)meta.in_strides[i];
+        if (i == axis) continue;
+        size_t coord = row % meta.in_shape[i];
+        row /= meta.in_shape[i];
+        base += coord * (size_t)meta.in_strides[i];
+    }
+    return base;
+}
+
+// ── Phase 1: block-local inclusive scan ───────────────────────
+// grid: num_rows × blocks_per_row,  block: 256 threads
+// 每 block 处理一行中连续 256 个元素（tile）。
+// smem = 256 * sizeof(T)
+template <typename T>
+__global__ void musapy_cumsum_block_kernel_v2(
+    const T* __restrict__ a, T* __restrict__ c, T* __restrict__ block_sums,
+    NdMetaReduce meta, size_t num_rows, size_t blocks_per_row
+) {
+    extern __shared__ char smem[];
+    T* sdata = (T*)smem;
+    int tid = threadIdx.x;
+
+    size_t row = blockIdx.x / blocks_per_row;
+    size_t block_in_row = blockIdx.x % blocks_per_row;
+    if (row >= num_rows) return;
+
+    size_t base = cumsum_row_base(row, meta);
+    ssize_t axis_stride = meta.in_strides[meta.axis];
+    size_t axis_len = meta.axis_len;
+    size_t k0 = block_in_row * blockDim.x;  // 本 tile 起始 axis 坐标
+
+    // 载入本 tile（边界外补 0，确保 scan 正确）
+    T v = (T)0;
+    size_t k = k0 + tid;
+    if (k < axis_len) {
+        v = a[base + (size_t)((ssize_t)k * axis_stride)];
+    }
+    sdata[tid] = v;
+    __syncthreads();
+
+    // Blelloch work-efficient inclusive scan（uphill + downhill）
+    for (int s = 1; s < blockDim.x; s <<= 1) {
+        int idx = (tid * 2 * s) + (2 * s - 1);
+        if (idx < blockDim.x) {
+            sdata[idx] += sdata[idx - s];
         }
+        __syncthreads();
+    }
+    for (int s = blockDim.x >> 1; s > 0; s >>= 1) {
+        int idx = (tid * 2 * s) + (2 * s - 1);
+        if (idx + s < blockDim.x) {
+            sdata[idx + s] += sdata[idx];
+        }
+        __syncthreads();
     }
 
-    ssize_t axis_stride = meta.in_strides[axis];
-    T acc = (T)0;
-    for (size_t k = 0; k <= axis_coord; k++) {
-        acc += a[base + (size_t)((ssize_t)k * axis_stride)];
+    // 写回（边界外不写）
+    if (k < axis_len) {
+        c[base + (size_t)((ssize_t)k * axis_stride)] = sdata[tid];
     }
-    c[idx] = acc;
+
+    // block 总和：有效区间内的最后一个 inclusive 值
+    // blocks_per_row == 1 时 Phase 1 已输出最终结果，block_sums 可能为 null，跳过写入
+    if (tid == 0 && blocks_per_row > 1) {
+        size_t valid = axis_len - k0;
+        T sum = (valid >= blockDim.x) ? sdata[blockDim.x - 1] : sdata[valid - 1];
+        block_sums[row * blocks_per_row + block_in_row] = sum;
+    }
+}
+
+// ── Phase 2: scan block_sums（单 block，原位 exclusive scan）──
+// grid: 1, block: 256 threads（支撑 blocks_per_row ≤ 256，即 axis_len ≤ 65536）
+// 输出 exclusive prefix：block_sums[row*bpr + i] = sum(block_sums[row*bpr + 0..i))，
+// 即「第 i 个 block 之前所有 block 的累加」。第 0 个恒为 0。
+//
+// 算法：先做 inclusive scan，再各 thread 读取「前一个」位置（T0 补 0）。
+// 因读 sdata[tid-1] 需在所有 thread 同步后做，用一个临时寄存器交换。
+template <typename T>
+__global__ void musapy_cumsum_scan_sums_kernel_v2(
+    T* __restrict__ block_sums, size_t num_rows, size_t blocks_per_row
+) {
+    extern __shared__ char smem[];
+    T* sdata = (T*)smem;
+    int tid = threadIdx.x;
+
+    for (size_t row = 0; row < num_rows; row++) {
+        T* row_sums = block_sums + row * blocks_per_row;
+
+        // 载入（边界外补 0）
+        T v = (tid < (int)blocks_per_row) ? row_sums[tid] : (T)0;
+        sdata[tid] = v;
+        __syncthreads();
+
+        // inclusive scan over [0, blocks_per_row)
+        for (int s = 1; s < (int)blocks_per_row; s <<= 1) {
+            int idx = (tid * 2 * s) + (2 * s - 1);
+            if (idx < (int)blocks_per_row) {
+                sdata[idx] += sdata[idx - s];
+            }
+            __syncthreads();
+        }
+        for (int s = (int)blocks_per_row >> 1; s > 0; s >>= 1) {
+            int idx = (tid * 2 * s) + (2 * s - 1);
+            if (idx + s < (int)blocks_per_row) {
+                sdata[idx + s] += sdata[idx];
+            }
+            __syncthreads();
+        }
+
+        // inclusive → exclusive：保存自身，写入前驱（T0 写 0）
+        if (tid < (int)blocks_per_row) {
+            T my_prev = (tid == 0) ? (T)0 : sdata[tid - 1];
+            row_sums[tid] = my_prev;
+        }
+        __syncthreads();
+    }
+}
+
+// ── Phase 3: add block prefix ────────────────────────────────
+// grid: num_rows × blocks_per_row,  block: 256 threads
+// 每 block 把「自身之前的累加前缀」加到本 tile 的所有输出元素。
+template <typename T>
+__global__ void musapy_cumsum_add_prefix_kernel_v2(
+    T* __restrict__ c, const T* __restrict__ block_prefix,
+    NdMetaReduce meta, size_t num_rows, size_t blocks_per_row
+) {
+    size_t row = blockIdx.x / blocks_per_row;
+    size_t block_in_row = blockIdx.x % blocks_per_row;
+    if (row >= num_rows) return;
+    if (block_in_row == 0) return;  // 第 0 block 无前缀可加
+
+    size_t base = cumsum_row_base(row, meta);
+    ssize_t axis_stride = meta.in_strides[meta.axis];
+    size_t axis_len = meta.axis_len;
+    size_t k0 = block_in_row * blockDim.x;
+    int tid = threadIdx.x;
+    size_t k = k0 + tid;
+    if (k >= axis_len) return;
+
+    T prefix = block_prefix[row * blocks_per_row + block_in_row];
+    T* dst = c + base + (size_t)((ssize_t)k * axis_stride);
+    *dst += prefix;
 }
 
 // ═══════════════════════════════════════════════════════════════
@@ -866,28 +984,54 @@ ARGREDUCE_V2(argmax)
 ARGREDUCE_V2(argmin)
 #undef ARGREDUCE_V2
 
-/// cumsum wrapper
-#define CUMSUM_V2(T, SUFFIX)                                                  \
-void musapy_cumsum_##SUFFIX##_v2(                                             \
-    const T* __restrict__ a, T* __restrict__ c,                               \
-    int ndim, const size_t* in_shape, const ssize_t* in_strides,              \
-    int axis, size_t out_size, musaStream_t stream                            \
+/// cumsum v3 wrapper — work-efficient 三阶段 prefix sum。
+///
+/// 签名（v3）：
+///   (a, c, tmp, ndim, in_shape, in_strides, axis, axis_len,
+///    out_size, stream)
+///
+/// - `tmp`：host 预分配的 scratch buffer，大小 = num_rows × blocks_per_row × sizeof(T)
+///   （num_rows = out_size / axis_len；blocks_per_row = (axis_len+255)/256）。
+///   由 Rust 侧 op_builder 分配（stream-ordered）。
+/// - 单 block 独占模式（blocks_per_row == 1）下，跳过 Phase 2/3 直接返回，
+///   scratch buffer 可为 NULL（Rust 侧传 NULL 即可）。
+#define CUMSUM_V3(T, SUFFIX)                                                   \
+void musapy_cumsum_##SUFFIX##_v3(                                              \
+    const T* __restrict__ a, T* __restrict__ c, T* __restrict__ tmp,           \
+    int ndim, const size_t* in_shape, const ssize_t* in_strides,               \
+    int axis, size_t axis_len, size_t out_size, musaStream_t stream            \
 ) {                                                                           \
-    NdMetaCumsum meta;                                                        \
+    NdMetaReduce meta;                                                        \
     meta.ndim = ndim;                                                         \
     meta.axis = axis;                                                         \
+    meta.axis_len = axis_len;                                                 \
     for (int i = 0; i < ndim; i++) {                                          \
         meta.in_shape[i] = in_shape[i];                                       \
         meta.in_strides[i] = in_strides[i];                                   \
     }                                                                         \
-    musapy_cumsum_kernel_v2<T>                                                \
-        <<<grid_size_1d(out_size), 256, 0, stream>>>(a, c, meta, out_size);   \
+    size_t num_rows = (axis_len == 0) ? 0 : out_size / axis_len;             \
+    size_t blocks_per_row = (axis_len + 255) / 256;                           \
+    /* Phase 1: block-local scan，写出 c + block_sums */                     \
+    size_t grid1 = num_rows * blocks_per_row;                                 \
+    size_t smem = 256 * sizeof(T);                                            \
+    musapy_cumsum_block_kernel_v2<T>                                          \
+        <<<grid1, 256, smem, stream>>>(a, c, tmp, meta, num_rows, blocks_per_row); \
+    /* blocks_per_row == 1 时 Phase 1 已写出最终结果，无需 Phase 2/3 */        \
+    if (blocks_per_row > 1) {                                                 \
+        /* Phase 2: scan block_sums (in-place exclusive) */                   \
+        size_t smem2 = 256 * sizeof(T);                                       \
+        musapy_cumsum_scan_sums_kernel_v2<T>                                  \
+            <<<1, 256, smem2, stream>>>(tmp, num_rows, blocks_per_row);       \
+        /* Phase 3: add block prefix */                                       \
+        musapy_cumsum_add_prefix_kernel_v2<T>                                 \
+            <<<grid1, 256, 0, stream>>>(c, tmp, meta, num_rows, blocks_per_row); \
+    }                                                                         \
 }
 
-CUMSUM_V2(int64_t, i64)
-CUMSUM_V2(float, f32)
-CUMSUM_V2(double, f64)
-#undef CUMSUM_V2
+CUMSUM_V3(int64_t, i64)
+CUMSUM_V3(float, f32)
+CUMSUM_V3(double, f64)
+#undef CUMSUM_V3
 
 // ── Parallel wrappers（Phase 1: partial）──
 // 签名：(a, partials, ndim, in_shape, in_strides, axis, axis_len,

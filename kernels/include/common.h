@@ -54,19 +54,14 @@ __device__ static inline size_t reduce_input_offset(
     size_t out_idx, const size_t* in_shape, const ssize_t* in_strides,
     int ndim, int axis, size_t k
 ) {
-    // 从最低非 axis 维开始展开 out_idx
-    size_t coords[32];
-    int ci = 0;
+    // 單遍計算：提取非-axis 維坐標並直接累加 offset。
+    // 加法交換律允許在分解 out_idx 的同一循環中累加，無需中間存儲。
+    size_t offset = k * (size_t)in_strides[axis];
+    size_t tmp = out_idx;
     for (int i = ndim - 1; i >= 0; i--) {
         if (i == axis) continue;
-        coords[ci++] = out_idx % in_shape[i];
-        out_idx /= in_shape[i];
-    }
-    // 计算 offset：从最高维到最低维，axis 位置用 k
-    size_t offset = 0;
-    ci = 0;
-    for (int i = ndim - 1; i >= 0; i--) {
-        size_t coord = (i == axis) ? k : coords[ci++];
+        size_t coord = tmp % in_shape[i];
+        tmp /= in_shape[i];
         offset += coord * (size_t)in_strides[i];
     }
     return offset;
