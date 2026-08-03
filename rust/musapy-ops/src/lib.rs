@@ -22,4 +22,6 @@ pub use elementwise::*;
 pub use comparison::*;
 pub use reduction::*;
 pub use creation::{zeros, ones, full, eye, arange, linspace, zeros_like, ones_like};
-pub use indexing::{transpose, permute, flip, slice, index_select, SliceSpec};
+pub use indexing::{
+    contiguous, flip, gather, index_select, permute, scatter, slice, transpose, SliceSpec,
+};

@@ -736,3 +736,34 @@ pub fn slice(a: &PyArray, specs: Vec<Vec<usize>>) -> PyResult<PyArray> {
     let result = musapy_ops::slice(&a.inner, &slice_specs).map_err(error::to_pyerr)?;
     Ok(PyArray::from_array(result))
 }
+
+/// `ms.contiguous(a)` — 物化为连续布局。
+///
+/// 已连续时零拷贝返回共享视图；否则分配新 buffer 逐元素拷贝。
+#[pyfunction]
+#[pyo3(signature = (a))]
+pub fn contiguous(a: &PyArray) -> PyResult<PyArray> {
+    let result = musapy_ops::contiguous(&a.inner).map_err(error::to_pyerr)?;
+    Ok(PyArray::from_array(result))
+}
+
+/// `ms.gather(a, indices, axis=0)` — 沿 axis 按 indices 取元素（copy）。
+///
+/// 等价 `np.take(a, indices, axis=axis)`。indices 为 1D int64。
+#[pyfunction]
+#[pyo3(signature = (a, indices, axis=0))]
+pub fn gather(a: &PyArray, indices: &PyArray, axis: usize) -> PyResult<PyArray> {
+    let result = musapy_ops::gather(&a.inner, &indices.inner, axis).map_err(error::to_pyerr)?;
+    Ok(PyArray::from_array(result))
+}
+
+/// `ms.scatter(a, indices, values, axis=0)` — 沿 axis 把 values 写入 indices 位置（copy）。
+///
+/// 返回新数组，不修改原数组。重复 indices 写入顺序未定义。
+#[pyfunction]
+#[pyo3(signature = (a, indices, values, axis=0))]
+pub fn scatter(a: &PyArray, indices: &PyArray, values: &PyArray, axis: usize) -> PyResult<PyArray> {
+    let result =
+        musapy_ops::scatter(&a.inner, &indices.inner, &values.inner, axis).map_err(error::to_pyerr)?;
+    Ok(PyArray::from_array(result))
+}

@@ -343,6 +343,10 @@ fn _core(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(ops::flip, m)?)?;
     m.add_function(wrap_pyfunction!(ops::index_select, m)?)?;
     m.add_function(wrap_pyfunction!(ops::slice, m)?)?;
+    // Phase 6.5-7: gather/scatter/contiguous (copy ops, GPU kernels)
+    m.add_function(wrap_pyfunction!(ops::contiguous, m)?)?;
+    m.add_function(wrap_pyfunction!(ops::gather, m)?)?;
+    m.add_function(wrap_pyfunction!(ops::scatter, m)?)?;
     m.add_function(wrap_pyfunction!(set_default_device, m)?)?;
     m.add_function(wrap_pyfunction!(set_default_dtype, m)?)?;
     m.add_function(wrap_pyfunction!(device_context, m)?)?;

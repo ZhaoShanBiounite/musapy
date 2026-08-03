@@ -78,9 +78,14 @@ impl Layout {
 
     /// 是否为连续布局（C order, row-major, offset=0）。
     pub fn is_contiguous(&self) -> bool {
-        if self.offset != 0 {
-            return false;
-        }
+        self.offset == 0 && self.has_contiguous_strides()
+    }
+
+    /// strides 是否为 C 连续（忽略 offset）。
+    ///
+    /// 用于区分"带 offset 的连续切片"（指针调整即可）与
+    /// "真正非连续视图"（transpose/flip 等，需物化）。
+    pub fn has_contiguous_strides(&self) -> bool {
         let expected = compute_contiguous_strides(&self.shape);
         self.strides == expected
     }

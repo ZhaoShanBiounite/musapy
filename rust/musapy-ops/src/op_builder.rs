@@ -157,21 +157,6 @@ macro_rules! launch_argreduce {
     };
 }
 
-/// Cumsum kernel launch（_v2 stride-aware，prefix sum，无 axis_len）。
-macro_rules! launch_cumsum {
-    ($fn:ident, $ap:expr, $op:expr, $ndim:expr, $in_shape:expr, $in_strides:expr,
-     $axis:expr, $out_size:expr, $stream:expr, $label:expr) => {
-        if let (Some(ap), Some(op)) = ($ap, $op) {
-            unsafe {
-                kernels::$fn(ap.as_ptr() as _, op.as_ptr() as _,
-                    $ndim, $in_shape.as_ptr(), $in_strides.as_ptr(),
-                    $axis, $out_size, $stream);
-            }
-            musa_ffi::check_last_kernel_launch($label)?;
-        }
-    };
-}
-
 /// Cumsum v3 launch（work-efficient 三阶段，含 scratch buffer）。
 macro_rules! launch_cumsum_v3 {
     ($fn:ident, $ap:expr, $op:expr, $tp:expr, $ndim:expr, $in_shape:expr, $in_strides:expr,
@@ -269,7 +254,7 @@ macro_rules! cpu_cast_pair {
                     let base_c = cp.as_ptr() as *mut $dst_t;
                     for idx in 0..n {
                         let off = cpu_offset_nd(idx, $shape, $strides);
-                        *base_c.add(idx) = *base_a.add(off) as $dst_t;
+                        *base_c.add(idx) = *base_a.offset(off) as $dst_t;
                     }
                 }
             }
@@ -486,18 +471,10 @@ pub(crate) fn binary_elementwise(
         let ndim = out_shape.len() as i32;
         let stream_raw = out_stream.raw();
 
-        // 调整指针以包含 layout offset（视图支持）
+        // 调整指针以包含 layout offset（视图支持：flip/slice/index_select）
         let elem_size = dtype.element_size();
-        let a_offset_bytes = a_work.layout().offset * elem_size;
-        let b_offset_bytes = b_work.layout().offset * elem_size;
-
-        // 注意：指针算术需要 unsafe，但这里我们只是计算偏移后的指针
-        let a_ptr_adj = a_ptr.map(|p| {
-            NonNull::new(unsafe { p.as_ptr().add(a_offset_bytes) }).unwrap()
-        });
-        let b_ptr_adj = b_ptr.map(|p| {
-            NonNull::new(unsafe { p.as_ptr().add(b_offset_bytes) }).unwrap()
-        });
+        let a_ptr_adj = adjust_ptr_offset(a_ptr, a_work.layout().offset, elem_size);
+        let b_ptr_adj = adjust_ptr_offset(b_ptr, b_work.layout().offset, elem_size);
 
         match &device {
             Device::Cpu => {
@@ -506,16 +483,16 @@ pub(crate) fn binary_elementwise(
                 );
             }
             Device::Musa(_) => match (&kernel, dtype) {
-                (BinaryKernel::Add, Dtype::Float32) => launch_binary!(musapy_add_f32_v2, a_ptr, b_ptr, out_ptr, ndim, out_shape, a_strides, b_strides, stream_raw, "add_f32_v2"),
-                (BinaryKernel::Add, Dtype::Float64) => launch_binary!(musapy_add_f64_v2, a_ptr, b_ptr, out_ptr, ndim, out_shape, a_strides, b_strides, stream_raw, "add_f64_v2"),
-                (BinaryKernel::Sub, Dtype::Float32) => launch_binary!(musapy_sub_f32_v2, a_ptr, b_ptr, out_ptr, ndim, out_shape, a_strides, b_strides, stream_raw, "sub_f32_v2"),
-                (BinaryKernel::Sub, Dtype::Float64) => launch_binary!(musapy_sub_f64_v2, a_ptr, b_ptr, out_ptr, ndim, out_shape, a_strides, b_strides, stream_raw, "sub_f64_v2"),
-                (BinaryKernel::Mul, Dtype::Float32) => launch_binary!(musapy_mul_f32_v2, a_ptr, b_ptr, out_ptr, ndim, out_shape, a_strides, b_strides, stream_raw, "mul_f32_v2"),
-                (BinaryKernel::Mul, Dtype::Float64) => launch_binary!(musapy_mul_f64_v2, a_ptr, b_ptr, out_ptr, ndim, out_shape, a_strides, b_strides, stream_raw, "mul_f64_v2"),
-                (BinaryKernel::Div, Dtype::Float32) => launch_binary!(musapy_div_f32_v2, a_ptr, b_ptr, out_ptr, ndim, out_shape, a_strides, b_strides, stream_raw, "div_f32_v2"),
-                (BinaryKernel::Div, Dtype::Float64) => launch_binary!(musapy_div_f64_v2, a_ptr, b_ptr, out_ptr, ndim, out_shape, a_strides, b_strides, stream_raw, "div_f64_v2"),
-                (BinaryKernel::Pow, Dtype::Float32) => launch_binary!(musapy_pow_f32_v2, a_ptr, b_ptr, out_ptr, ndim, out_shape, a_strides, b_strides, stream_raw, "pow_f32_v2"),
-                (BinaryKernel::Pow, Dtype::Float64) => launch_binary!(musapy_pow_f64_v2, a_ptr, b_ptr, out_ptr, ndim, out_shape, a_strides, b_strides, stream_raw, "pow_f64_v2"),
+                (BinaryKernel::Add, Dtype::Float32) => launch_binary!(musapy_add_f32_v2, a_ptr_adj, b_ptr_adj, out_ptr, ndim, out_shape, a_strides, b_strides, stream_raw, "add_f32_v2"),
+                (BinaryKernel::Add, Dtype::Float64) => launch_binary!(musapy_add_f64_v2, a_ptr_adj, b_ptr_adj, out_ptr, ndim, out_shape, a_strides, b_strides, stream_raw, "add_f64_v2"),
+                (BinaryKernel::Sub, Dtype::Float32) => launch_binary!(musapy_sub_f32_v2, a_ptr_adj, b_ptr_adj, out_ptr, ndim, out_shape, a_strides, b_strides, stream_raw, "sub_f32_v2"),
+                (BinaryKernel::Sub, Dtype::Float64) => launch_binary!(musapy_sub_f64_v2, a_ptr_adj, b_ptr_adj, out_ptr, ndim, out_shape, a_strides, b_strides, stream_raw, "sub_f64_v2"),
+                (BinaryKernel::Mul, Dtype::Float32) => launch_binary!(musapy_mul_f32_v2, a_ptr_adj, b_ptr_adj, out_ptr, ndim, out_shape, a_strides, b_strides, stream_raw, "mul_f32_v2"),
+                (BinaryKernel::Mul, Dtype::Float64) => launch_binary!(musapy_mul_f64_v2, a_ptr_adj, b_ptr_adj, out_ptr, ndim, out_shape, a_strides, b_strides, stream_raw, "mul_f64_v2"),
+                (BinaryKernel::Div, Dtype::Float32) => launch_binary!(musapy_div_f32_v2, a_ptr_adj, b_ptr_adj, out_ptr, ndim, out_shape, a_strides, b_strides, stream_raw, "div_f32_v2"),
+                (BinaryKernel::Div, Dtype::Float64) => launch_binary!(musapy_div_f64_v2, a_ptr_adj, b_ptr_adj, out_ptr, ndim, out_shape, a_strides, b_strides, stream_raw, "div_f64_v2"),
+                (BinaryKernel::Pow, Dtype::Float32) => launch_binary!(musapy_pow_f32_v2, a_ptr_adj, b_ptr_adj, out_ptr, ndim, out_shape, a_strides, b_strides, stream_raw, "pow_f32_v2"),
+                (BinaryKernel::Pow, Dtype::Float64) => launch_binary!(musapy_pow_f64_v2, a_ptr_adj, b_ptr_adj, out_ptr, ndim, out_shape, a_strides, b_strides, stream_raw, "pow_f64_v2"),
                 _ => unreachable!("dtype already validated as float32/float64"),
             },
         }
@@ -663,7 +640,12 @@ pub(crate) fn unary_elementwise(
     // Phase B：Kernel launch（可重放，capture-safe）
     // ═══════════════════════════════════════════════════════════════
 
-    let a_ptr = a.data().buffer().ptr();
+    // 调整指针以包含 layout offset（视图支持）
+    let a_ptr = adjust_ptr_offset(
+        a.data().buffer().ptr(),
+        a.layout().offset,
+        dtype.element_size(),
+    );
 
     if out_size > 0 {
         // 直接使用输入布局的 strides（无广播，stride-aware）
@@ -827,7 +809,12 @@ pub(crate) fn clamp_elementwise(
     // Phase B：Kernel launch（可重放，capture-safe）
     // ═══════════════════════════════════════════════════════════════
 
-    let a_ptr = a.data().buffer().ptr();
+    // 调整指针以包含 layout offset（视图支持）
+    let a_ptr = adjust_ptr_offset(
+        a.data().buffer().ptr(),
+        a.layout().offset,
+        dtype.element_size(),
+    );
 
     if out_size > 0 {
         let a_strides: Vec<isize> = a.layout().strides.clone();
@@ -1027,10 +1014,15 @@ pub(crate) fn cast_array(a: &Array, target_dtype: Dtype, stream: &Arc<Stream>) -
     // 自动 stream wait（ADR L1-8）
     a.data().buffer().wait_last_write_on(stream)?;
 
-    // Kernel launch（stride-aware，输入布局 strides）
+    // Kernel launch（stride-aware，输入布局 strides + offset 调整）
     let a_strides: Vec<isize> = a.layout().strides.clone();
-    launch_cast_kernel(
+    let a_ptr = adjust_ptr_offset(
         a.data().buffer().ptr(),
+        a.layout().offset,
+        src.element_size(),
+    );
+    launch_cast_kernel(
+        a_ptr,
         out_ptr,
         &shape,
         &a_strides,
@@ -1158,7 +1150,12 @@ pub(crate) fn astype_op(a: &Array, dtype: Dtype, out: Option<&Array>) -> Result<
     // Phase B：Kernel launch（可重放，capture-safe）
     // ═══════════════════════════════════════════════════════════════
 
-    let a_ptr = a.data().buffer().ptr();
+    // 调整指针以包含 layout offset（视图支持）
+    let a_ptr = adjust_ptr_offset(
+        a.data().buffer().ptr(),
+        a.layout().offset,
+        src.element_size(),
+    );
 
     if out_size > 0 {
         if src == dtype {
@@ -1403,8 +1400,17 @@ pub(crate) fn comparison_elementwise(
     // Phase B：Kernel launch（可重放，capture-safe）
     // ═══════════════════════════════════════════════════════════════
 
-    let a_ptr = a_work.data().buffer().ptr();
-    let b_ptr = b_work.data().buffer().ptr();
+    // 调整指针以包含 layout offset（视图支持）
+    let a_ptr = adjust_ptr_offset(
+        a_work.data().buffer().ptr(),
+        a_work.layout().offset,
+        dtype.element_size(),
+    );
+    let b_ptr = adjust_ptr_offset(
+        b_work.data().buffer().ptr(),
+        b_work.layout().offset,
+        dtype.element_size(),
+    );
 
     if out_size > 0 {
         // Phase C-lite：同 shape 时直接用 layout strides，跳过 broadcast 逻辑
@@ -1483,8 +1489,27 @@ pub(crate) fn comparison_elementwise(
 
 // ── CPU fallback（stride-aware）──────────────────────────────
 
+/// 按 layout offset 调整基指针（视图支持：flip/slice/index_select）。
+///
+/// 视图的逻辑首元素不一定在 buffer 起始处；所有 kernel（CPU/GPU）
+/// 均以"调整后的基指针 + strides 相对偏移"访问数据。
+/// 负 stride 依赖无符号回绕（mod 2^64），与 common.h offset_nd 语义一致。
+pub(crate) fn adjust_ptr_offset(
+    ptr: Option<NonNull<u8>>,
+    offset: usize,
+    elem_size: usize,
+) -> Option<NonNull<u8>> {
+    if offset == 0 {
+        return ptr;
+    }
+    ptr.map(|p| NonNull::new(unsafe { p.as_ptr().add(offset * elem_size) }).unwrap())
+}
+
 /// CPU 端 N 维偏移计算（与 common.h offset_nd 逻辑一致）。
-fn cpu_offset_nd(linear_idx: usize, shape: &[usize], strides: &[isize]) -> usize {
+///
+/// 返回 isize：负 stride（flip 视图）时 Σ coord*stride 可为负，
+/// 由调用方与预调整的基址（`adjust_ptr_offset`）合成最终地址。
+pub(crate) fn cpu_offset_nd(linear_idx: usize, shape: &[usize], strides: &[isize]) -> isize {
     let mut offset = 0isize;
     let mut idx = linear_idx;
     for i in (0..shape.len()).rev() {
@@ -1492,7 +1517,7 @@ fn cpu_offset_nd(linear_idx: usize, shape: &[usize], strides: &[isize]) -> usize
         idx /= shape[i];
         offset += coord as isize * strides[i];
     }
-    offset as usize
+    offset
 }
 
 // ── CPU binary ──
@@ -1573,7 +1598,7 @@ fn cpu_binary_typed<T: BinaryFloat>(
         for idx in 0..n {
             let a_off = cpu_offset_nd(idx, shape, a_strides);
             let b_off = cpu_offset_nd(idx, shape, b_strides);
-            *base_c.add(idx) = cpu_binary_op(*base_a.add(a_off), *base_b.add(b_off), kernel);
+            *base_c.add(idx) = cpu_binary_op(*base_a.offset(a_off), *base_b.offset(b_off), kernel);
         }
     }
 }
@@ -1624,8 +1649,8 @@ fn cpu_compare_typed<T: Copy + PartialOrd>(
         for idx in 0..n {
             let a_off = cpu_offset_nd(idx, shape, a_strides);
             let b_off = cpu_offset_nd(idx, shape, b_strides);
-            let av = *base_a.add(a_off);
-            let bv = *base_b.add(b_off);
+            let av = *base_a.offset(a_off);
+            let bv = *base_b.offset(b_off);
             let result = match kernel {
                 CompareKernel::Eq => av == bv,
                 CompareKernel::Ne => av != bv,
@@ -1700,7 +1725,7 @@ fn cpu_unary_typed<T: Copy>(
         let base_c = cp.as_ptr() as *mut T;
         for idx in 0..n {
             let a_off = cpu_offset_nd(idx, shape, a_strides);
-            *base_c.add(idx) = f(*base_a.add(a_off));
+            *base_c.add(idx) = f(*base_a.offset(a_off));
         }
     }
 }
@@ -1747,7 +1772,7 @@ fn cpu_clamp_typed<T: Copy + PartialOrd>(
         let base_c = cp.as_ptr() as *mut T;
         for idx in 0..n {
             let a_off = cpu_offset_nd(idx, shape, a_strides);
-            let v = *base_a.add(a_off);
+            let v = *base_a.offset(a_off);
             *base_c.add(idx) = if v < lo {
                 lo
             } else if v > hi {
@@ -1992,7 +2017,23 @@ pub(crate) fn reduction_axis(
     // Phase B：Kernel launch（可重放，capture-safe）
     // ═══════════════════════════════════════════════════════════════
 
-    let a_ptr = a_work.data().buffer().ptr();
+    // axis=None → flatten 缩减；非连续 strides 视图需先物化
+    // （连续 strides + offset 的视图由下方指针调整处理）
+    let a_flat_holder;
+    let a_work: &Array = if axis.is_none() && !a_work.layout().has_contiguous_strides() {
+        a_flat_holder = crate::indexing::contiguous(a_work)?;
+        a_flat_holder.data().buffer().wait_last_write_on(&out_stream)?;
+        &a_flat_holder
+    } else {
+        a_work
+    };
+
+    // 调整指针以包含 layout offset（视图支持）
+    let a_ptr = adjust_ptr_offset(
+        a_work.data().buffer().ptr(),
+        a_work.layout().offset,
+        compute_dtype.element_size(),
+    );
 
     if out_size > 0 && axis_len > 0 {
         // 输入 strides（元素单位）
@@ -2316,7 +2357,23 @@ pub(crate) fn cumsum_op(
     // Phase B
     // ═══════════════════════════════════════════════════════════════
 
-    let a_ptr = a_work.data().buffer().ptr();
+    // axis=None → flatten scan；非连续 strides 视图需先物化
+    // （连续 strides + offset 的视图由下方指针调整处理）
+    let a_flat_holder;
+    let a_work: &Array = if axis.is_none() && !a_work.layout().has_contiguous_strides() {
+        a_flat_holder = crate::indexing::contiguous(a_work)?;
+        a_flat_holder.data().buffer().wait_last_write_on(&out_stream)?;
+        &a_flat_holder
+    } else {
+        a_work
+    };
+
+    // 调整指针以包含 layout offset（视图支持）
+    let a_ptr = adjust_ptr_offset(
+        a_work.data().buffer().ptr(),
+        a_work.layout().offset,
+        compute_dtype.element_size(),
+    );
 
     if out_size > 0 {
         // axis=None → 视为 1D contiguous（stride=[1]）

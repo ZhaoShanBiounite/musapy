@@ -53,6 +53,10 @@ from ._core import (
     flip,
     index_select,
     slice,
+    # indexing copy ops (Phase 6.5-7)
+    contiguous,
+    gather,
+    scatter,
     set_default_device,
     set_default_dtype,
     device,
@@ -144,6 +148,10 @@ __all__ = [
     "flip",
     "index_select",
     "slice",
+    # indexing copy ops (Phase 6.5-7)
+    "contiguous",
+    "gather",
+    "scatter",
     "set_default_device",
     "set_default_dtype",
     "device",

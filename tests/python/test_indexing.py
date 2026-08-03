@@ -261,6 +261,162 @@ class TestViewArithmetic:
         result = s + b
         assert result.tolist() == [[1.0, 2.0], [4.0, 5.0]]
 
+    def test_flip_reduce_axis_none(self):
+        """flip 视图参与 axis=None reduce（触发 materialize 路径）。"""
+        a = ms.array([[1.0, 2.0], [3.0, 4.0]])
+        f = ms.flip(a, axis=1)
+        assert ms.sum(f).tolist() == 10.0
+
+    def test_transpose_cumsum_axis_none(self):
+        """transpose 视图参与 axis=None cumsum（触发 materialize 路径）。"""
+        a = ms.array([[1.0, 2.0], [3.0, 4.0]])
+        t = ms.transpose(a)
+        # 逻辑展平顺序 [1,3,2,4] → cumsum [1,4,6,10]
+        assert ms.cumsum(t).tolist() == [1.0, 4.0, 6.0, 10.0]
+
+
+# ═══════════════════════════════════════════════════════════════
+# TestContiguous
+# ═══════════════════════════════════════════════════════════════
+
+class TestContiguous:
+    """contiguous 物化（P6.8 辅助 + gather/scatter 前置）。"""
+
+    def test_contiguous_noop(self):
+        """已连续数组：零拷贝视图。"""
+        a = ms.array([[1.0, 2.0], [3.0, 4.0]])
+        c = ms.contiguous(a)
+        assert c.tolist() == [[1.0, 2.0], [3.0, 4.0]]
+
+    def test_contiguous_transposed(self):
+        """transpose 视图物化。"""
+        c = ms.array([[1.0, 2.0, 3.0], [4.0, 5.0, 6.0]])
+        t = ms.transpose(c)
+        m = ms.contiguous(t)
+        assert m.shape == (3, 2)
+        assert m.tolist() == [[1.0, 4.0], [2.0, 5.0], [3.0, 6.0]]
+
+    def test_contiguous_flipped(self):
+        """flip 视图物化（负 stride）。"""
+        c = ms.array([[1.0, 2.0, 3.0], [4.0, 5.0, 6.0]])
+        f = ms.flip(c, axis=1)
+        m = ms.contiguous(f)
+        assert m.tolist() == [[3.0, 2.0, 1.0], [6.0, 5.0, 4.0]]
+
+    def test_contiguous_slice_offset(self):
+        """slice 视图物化（offset）。"""
+        a = ms.arange(10)
+        s = a[3:7]
+        m = ms.contiguous(s)
+        assert m.tolist() == [3.0, 4.0, 5.0, 6.0]
+
+
+# ═══════════════════════════════════════════════════════════════
+# TestGather
+# ═══════════════════════════════════════════════════════════════
+
+class TestGather:
+    """gather：沿 axis 按 indices 取元素（copy）。"""
+
+    def test_gather_axis0(self):
+        """axis=0 行选择。"""
+        c = ms.array([[1.0, 2.0, 3.0], [4.0, 5.0, 6.0]])
+        idx = ms.array([1, 0], dtype=ms.int64)
+        g = ms.gather(c, idx, axis=0)
+        assert g.shape == (2, 3)
+        assert g.tolist() == [[4.0, 5.0, 6.0], [1.0, 2.0, 3.0]]
+
+    def test_gather_axis1(self):
+        """axis=1 列选择（v0.2 plan 验收用例）。"""
+        c = ms.array([[1.0, 2.0, 3.0], [4.0, 5.0, 6.0]])
+        idx = ms.array([0, 2], dtype=ms.int64)
+        g = ms.gather(c, idx, axis=1)
+        assert g.shape == (2, 2)
+        assert g.tolist() == [[1.0, 3.0], [4.0, 6.0]]
+
+    def test_gather_1d(self):
+        """1D gather。"""
+        a = ms.array([10.0, 20.0, 30.0, 40.0])
+        idx = ms.array([3, 1, 3], dtype=ms.int64)
+        g = ms.gather(a, idx, axis=0)
+        assert g.tolist() == [40.0, 20.0, 40.0]
+
+    def test_gather_3d_middle_axis(self):
+        """3D 中间轴 gather。"""
+        a = ms.array([[[0.0, 1.0], [2.0, 3.0], [4.0, 5.0]],
+                      [[6.0, 7.0], [8.0, 9.0], [10.0, 11.0]]])
+        idx = ms.array([2, 0], dtype=ms.int64)
+        g = ms.gather(a, idx, axis=1)
+        assert g.shape == (2, 2, 2)
+        assert g.tolist() == [[[4.0, 5.0], [0.0, 1.0]], [[10.0, 11.0], [6.0, 7.0]]]
+
+    def test_gather_on_flipped_view(self):
+        """对 flip 视图 gather（负 stride 输入）。"""
+        a = ms.array([[1.0, 2.0], [3.0, 4.0]])
+        f = ms.flip(a, axis=1)  # [[2,1],[4,3]]
+        idx = ms.array([1], dtype=ms.int64)
+        g = ms.gather(f, idx, axis=0)
+        assert g.tolist() == [[4.0, 3.0]]
+
+    def test_gather_errors(self):
+        """错误输入。"""
+        c = ms.array([[1.0, 2.0], [3.0, 4.0]])
+        idx = ms.array([0], dtype=ms.int64)
+        with pytest.raises(Exception):  # axis 越界
+            ms.gather(c, idx, axis=2)
+        with pytest.raises(Exception):  # 索引越界
+            ms.gather(c, ms.array([2], dtype=ms.int64), axis=0)
+        with pytest.raises(Exception):  # indices 非 int64
+            ms.gather(c, ms.array([0.0]), axis=0)
+
+
+# ═══════════════════════════════════════════════════════════════
+# TestScatter
+# ═══════════════════════════════════════════════════════════════
+
+class TestScatter:
+    """scatter：沿 axis 把 values 写入 indices 位置（copy）。"""
+
+    def test_scatter_axis0(self):
+        """axis=0 行写入。"""
+        a = ms.array([[1.0, 2.0], [3.0, 4.0]])
+        idx = ms.array([1], dtype=ms.int64)
+        vals = ms.array([[10.0, 11.0]])
+        s = ms.scatter(a, idx, vals, axis=0)
+        assert s.tolist() == [[1.0, 2.0], [10.0, 11.0]]
+        # 原数组不被修改
+        assert a.tolist() == [[1.0, 2.0], [3.0, 4.0]]
+
+    def test_scatter_axis1(self):
+        """axis=1 列写入。"""
+        a = ms.array([[1.0, 2.0, 3.0], [4.0, 5.0, 6.0]])
+        idx = ms.array([0, 2], dtype=ms.int64)
+        vals = ms.array([[7.0, 8.0], [9.0, 10.0]])
+        s = ms.scatter(a, idx, vals, axis=1)
+        assert s.tolist() == [[7.0, 2.0, 8.0], [9.0, 5.0, 10.0]]
+
+    def test_scatter_on_slice_view(self):
+        """对 slice 视图 scatter（offset 输入）。"""
+        a = ms.arange(5)  # int64 [0,1,2,3,4]
+        s = a[1:4]  # [1,2,3]
+        idx = ms.array([1], dtype=ms.int64)
+        vals = ms.array([99], dtype=ms.int64)
+        r = ms.scatter(s, idx, vals, axis=0)
+        assert r.tolist() == [1, 99, 3]
+        assert a.tolist() == [0, 1, 2, 3, 4]
+
+    def test_scatter_errors(self):
+        """错误输入。"""
+        a = ms.array([[1.0, 2.0], [3.0, 4.0]])
+        idx = ms.array([0], dtype=ms.int64)
+        vals = ms.array([[10.0, 11.0]])
+        with pytest.raises(Exception):  # axis 越界
+            ms.scatter(a, idx, vals, axis=2)
+        with pytest.raises(Exception):  # values shape 不匹配
+            ms.scatter(a, idx, ms.array([[10.0], [11.0]]), axis=0)
+        with pytest.raises(Exception):  # 索引越界
+            ms.scatter(a, ms.array([2], dtype=ms.int64), vals, axis=0)
+
 
 # ═══════════════════════════════════════════════════════════════
 # TestIndexingGPU
@@ -298,6 +454,60 @@ class TestIndexingGPU:
         assert c[0].tolist() == [1.0, 2.0, 3.0]
         assert c[0:2, 0:2].tolist() == [[1.0, 2.0], [4.0, 5.0]]
 
+    @musa_required
+    def test_contiguous_gpu(self):
+        """GPU contiguous 物化。"""
+        c = ms.array([[1.0, 2.0, 3.0], [4.0, 5.0, 6.0]], device="musa:0")
+        m = ms.contiguous(ms.transpose(c))
+        assert m.tolist() == [[1.0, 4.0], [2.0, 5.0], [3.0, 6.0]]
+
+    @musa_required
+    def test_gather_gpu(self):
+        """GPU gather（kernel 路径）。"""
+        c = ms.array([[1.0, 2.0, 3.0], [4.0, 5.0, 6.0]], device="musa:0")
+        idx = ms.array([0, 2], dtype=ms.int64)
+        g = ms.gather(c, idx, axis=1)
+        assert g.tolist() == [[1.0, 3.0], [4.0, 6.0]]
+
+    @musa_required
+    def test_gather_gpu_indices_upload(self):
+        """GPU gather：indices 在 CPU 时自动上传。"""
+        c = ms.array([[1.0, 2.0, 3.0], [4.0, 5.0, 6.0]], device="musa:0")
+        idx = ms.array([1, 0], dtype=ms.int64)  # CPU indices
+        g = ms.gather(c, idx, axis=0)
+        assert g.tolist() == [[4.0, 5.0, 6.0], [1.0, 2.0, 3.0]]
+
+    @musa_required
+    def test_scatter_gpu(self):
+        """GPU scatter（kernel 路径）。"""
+        c = ms.array([[1.0, 2.0, 3.0], [4.0, 5.0, 6.0]], device="musa:0")
+        idx = ms.array([0, 2], dtype=ms.int64)
+        vals = ms.array([[7.0, 8.0], [9.0, 10.0]], device="musa:0")
+        s = ms.scatter(c, idx, vals, axis=1)
+        assert s.tolist() == [[7.0, 2.0, 8.0], [9.0, 5.0, 10.0]]
+
+    @musa_required
+    def test_offset_view_arithmetic_gpu(self):
+        """GPU offset 视图参与算术（slice/flip 视图 + 指针调整路径）。"""
+        a = ms.array([[0.0, 1.0, 2.0], [3.0, 4.0, 5.0]], device="musa:0")
+        b = ms.ones((2, 2), device="musa:0")
+        # slice 视图（offset=0，stride 截断）
+        s = ms.slice(a, [[0, 2, 1], [1, 3, 1]])
+        assert (s + b).tolist() == [[2.0, 3.0], [5.0, 6.0]]
+        # flip 视图（负 stride + offset）
+        f = ms.flip(a, axis=1)
+        b3 = ms.ones((2, 3), device="musa:0")
+        assert (f + b3).tolist() == [[3.0, 2.0, 1.0], [6.0, 5.0, 4.0]]
+
+    @musa_required
+    def test_reduce_on_view_gpu(self):
+        """GPU axis=None reduce 作用于非连续视图（materialize 路径）。"""
+        a = ms.array([[1.0, 2.0], [3.0, 4.0]], device="musa:0")
+        t = ms.transpose(a)
+        assert ms.sum(t).tolist() == 10.0
+        f = ms.flip(a, axis=0)
+        assert ms.sum(f).tolist() == 10.0
+
 
 # ═══════════════════════════════════════════════════════════════
 # 验收测试（v0.2 plan 1.3 节）
@@ -324,3 +534,9 @@ class TestAcceptance:
         c = ms.array([[1.0, 2.0, 3.0], [4.0, 5.0, 6.0]])
         sl = c[0:2, ::2]
         assert sl.tolist() == [[1.0, 3.0], [4.0, 6.0]]
+
+    def test_acceptance_gather(self):
+        """验收：gather（v0.2 plan）。"""
+        c = ms.array([[1.0, 2.0, 3.0], [4.0, 5.0, 6.0]])
+        g = ms.gather(c, ms.array([0, 2], dtype=ms.int64), axis=1)
+        assert g.tolist() == [[1.0, 3.0], [4.0, 6.0]]
