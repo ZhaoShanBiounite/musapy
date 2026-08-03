@@ -82,7 +82,7 @@ pub fn broadcast_strides(layout: &Layout, target: &[usize]) -> Vec<isize> {
         }
         if dim == target[out_i] {
             // 非广播维：保留原始 stride
-            strides[out_i] = stride as isize;
+            strides[out_i] = stride;
         }
         // dim == 1 且 target[out_i] > 1 → 广播维，stride 保持 0
         // dim == target[out_i] == 1 → stride 也设为 0（无实际影响）

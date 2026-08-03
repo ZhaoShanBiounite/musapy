@@ -4,11 +4,15 @@
 //! v0.2: broadcast + stride-aware ABI（Phase 1）;
 //!       elementwise 全家桶 + 类型提升（Phase 2）;
 //!       comparison 套件（Phase 3）;
-//!       reduction 套件（Phase 4）
+//!       reduction 套件（Phase 4）;
+//!       creation 套件（Phase 5）;
+//!       indexing 套件（Phase 6）
 
 pub mod broadcast;
 pub mod comparison;
+pub mod creation;
 pub mod elementwise;
+pub mod indexing;
 pub mod kernels;
 pub mod op_builder;
 pub mod reduction;
@@ -17,3 +21,7 @@ pub mod reduction;
 pub use elementwise::*;
 pub use comparison::*;
 pub use reduction::*;
+pub use creation::{zeros, ones, full, eye, arange, linspace, zeros_like, ones_like};
+pub use indexing::{
+    contiguous, flip, gather, index_select, permute, scatter, slice, transpose, SliceSpec,
+};

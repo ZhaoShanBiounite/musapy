@@ -328,6 +328,25 @@ fn _core(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(ops::argmax, m)?)?;
     m.add_function(wrap_pyfunction!(ops::argmin, m)?)?;
     m.add_function(wrap_pyfunction!(ops::cumsum, m)?)?;
+    // Phase 5: creation ops
+    m.add_function(wrap_pyfunction!(ops::zeros, m)?)?;
+    m.add_function(wrap_pyfunction!(ops::ones, m)?)?;
+    m.add_function(wrap_pyfunction!(ops::full, m)?)?;
+    m.add_function(wrap_pyfunction!(ops::eye, m)?)?;
+    m.add_function(wrap_pyfunction!(ops::arange, m)?)?;
+    m.add_function(wrap_pyfunction!(ops::linspace, m)?)?;
+    m.add_function(wrap_pyfunction!(ops::zeros_like, m)?)?;
+    m.add_function(wrap_pyfunction!(ops::ones_like, m)?)?;
+    // Phase 6: indexing ops (view, zero-copy)
+    m.add_function(wrap_pyfunction!(ops::transpose, m)?)?;
+    m.add_function(wrap_pyfunction!(ops::permute, m)?)?;
+    m.add_function(wrap_pyfunction!(ops::flip, m)?)?;
+    m.add_function(wrap_pyfunction!(ops::index_select, m)?)?;
+    m.add_function(wrap_pyfunction!(ops::slice, m)?)?;
+    // Phase 6.5-7: gather/scatter/contiguous (copy ops, GPU kernels)
+    m.add_function(wrap_pyfunction!(ops::contiguous, m)?)?;
+    m.add_function(wrap_pyfunction!(ops::gather, m)?)?;
+    m.add_function(wrap_pyfunction!(ops::scatter, m)?)?;
     m.add_function(wrap_pyfunction!(set_default_device, m)?)?;
     m.add_function(wrap_pyfunction!(set_default_dtype, m)?)?;
     m.add_function(wrap_pyfunction!(device_context, m)?)?;

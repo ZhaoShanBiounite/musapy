@@ -120,6 +120,23 @@ impl Array {
         }
     }
 
+    /// 创建共享 buffer 的视图（零拷贝）。
+    ///
+    /// 用于 transpose/permute/flip/slice 等 view 操作：
+    /// 仅修改 layout，通过 Arc clone 共享底层 BufferRef。
+    pub fn new_view(source: &Array, layout: Layout) -> Self {
+        Self {
+            data: source.data.clone(),
+            layout,
+            dtype: source.dtype,
+            device: source.device.clone(),
+            stream: source.stream.clone(),
+            device_resolution: source.device_resolution.clone(),
+            dtype_resolution: source.dtype_resolution.clone(),
+            name: None,
+        }
+    }
+
     /// 形状。
     pub fn shape(&self) -> &Shape {
         &self.layout.shape

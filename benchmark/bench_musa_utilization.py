@@ -284,6 +284,53 @@ def run_benchmark(size: int, iters: int, device_id: int):
         r = bench_op(fn, iters, total_2d, flops, r_bytes, w_bytes)
         print(f"  {name:<18} {r.latency_ms:<11.3f} {r.gelem_per_sec:<13.3f} {r.effective_bw_gb_s:<11.3f}")
 
+    # ═══ Indexing 专项（Phase 6.5-7）═══
+    print("\n" + "-" * 72)
+    print("  [Indexing 专项 — gather/scatter/contiguous]")
+    print("-" * 72)
+    print(f"  主數組: {size:,} elements；view ops 零拷贝（延遲 ≈ Python+Rust 開銷）")
+    print("  注: gather/scatter 每次调用会做 indices 的 D2H + sync 越界校验，")
+    print("      大 indices 数组下该串行化开销主导延迟（非 kernel 瓶颈）。")
+
+    # gather/scatter：全量索引（indices = 全排列），等效于整数组读写
+    idx_all = ms.arange(size, dtype=ms.int64, device=device_str)
+    vals = ms.array(data_b, dtype=ms.float32, device=device_str)
+
+    # contiguous：transpose/flip 视图物化（读 + 写全量）；flat 走零拷贝快路径
+    cols_2d = 1024
+    rows_2d = size // cols_2d
+    n_2d = rows_2d * cols_2d
+    a_2d = ms.array(
+        [data_a[i * cols_2d:(i + 1) * cols_2d] for i in range(rows_2d)],
+        dtype=ms.float32, device=device_str,
+    )
+    t_view = ms.transpose(a_2d)
+    f_view = ms.flip(a_2d, axis=1)
+
+    indexing_ops = [
+        # (name, fn, flops_per_elem, read_bytes, write_bytes, n_elems)
+        # view（零拷贝）：bytes=0，带宽无意义，仅看 dispatch 延迟
+        ("transpose(view)", lambda: ms.transpose(a_2d), 0.0, 0, 0, n_2d),
+        ("flip(view)",      lambda: ms.flip(a_2d, axis=1), 0.0, 0, 0, n_2d),
+        ("slice(view)",     lambda: ms.slice(a_2d, [[0, rows_2d // 2, 1], [0, cols_2d // 2, 1]]), 0.0, 0, 0, n_2d // 4),
+        # copy ops。scatter(full) 内部两阶段：copy_into(读4+写4) + scatter 覆写(读4+写4) = 8+8
+        ("gather(full)",    lambda: ms.gather(a, idx_all, axis=0), 0.0, 4, 4, size),
+        ("scatter(full)",   lambda: ms.scatter(a, idx_all, vals, axis=0), 0.0, 8, 8, size),
+        # contig(flat) 已连续 → 零拷贝快路径，无实际数据搬运（bytes=0）
+        ("contig(flat)",    lambda: ms.contiguous(a), 0.0, 0, 0, size),
+        ("contig(transp)",  lambda: ms.contiguous(t_view), 0.0, 4, 4, n_2d),
+        ("contig(flip)",    lambda: ms.contiguous(f_view), 0.0, 4, 4, n_2d),
+    ]
+
+    print(f"\n  {'算子':<16} {'延遲(ms)':<11} {'吞吐(GE/s)':<13} {'帶寬(GB/s)':<11}")
+    print(f"  {'─'*16} {'─'*11} {'─'*13} {'─'*11}")
+    for name, fn, flops, r_bytes, w_bytes, n in indexing_ops:
+        r = bench_op(fn, iters, n, flops, r_bytes, w_bytes)
+        r.name = name
+        r.category = "indexing"
+        results.append(r)
+        print(f"  {name:<16} {r.latency_ms:<11.3f} {r.gelem_per_sec:<13.3f} {r.effective_bw_gb_s:<11.3f}")
+
     # ═══ Stream 狀態 ═══
     print("\n" + "-" * 72)
     print("  [Stream 狀態]")
@@ -305,17 +352,19 @@ def run_benchmark(size: int, iters: int, device_id: int):
     print("\n" + "=" * 72)
     print("  ✓ 測試結論")
     print("=" * 72)
+    n_indexing = sum(1 for r in results if r.category == "indexing")
     print(f"  ✓ musa:{device_id} 全部 {len(results)} 個算子執行正常")
     print(f"  ✓ 覆蓋: elementwise({len(categories.get('elementwise', []))})"
           f" + comparison({len(categories.get('comparison', []))})"
-          f" + reduction({len(categories.get('reduction', []))})")
+          f" + reduction({len(categories.get('reduction', []))})"
+          f" + indexing({n_indexing})")
     if results:
         best = min(results, key=lambda r: r.latency_ms)
         worst = max(results, key=lambda r: r.latency_ms)
-        peak_gflops = max(r.gflops for r in results)
+        peak = max(results, key=lambda r: r.gflops)
         print(f"  ✓ 最低延遲: {best.name} {best.latency_ms:.3f} ms"
               f" | 最高延遲: {worst.name} {worst.latency_ms:.3f} ms")
-        print(f"  ✓ 峰值 GFLOPS: {peak_gflops:.2f}（{best.name} 類算子）")
+        print(f"  ✓ 峰值 GFLOPS: {peak.gflops:.2f}（{peak.name}）")
     print(f"  ✓ Stream 健康: pending={s.pending_count}, poisoned={s.is_poisoned}")
     print("=" * 72)
 
