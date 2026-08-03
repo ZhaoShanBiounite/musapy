@@ -672,3 +672,67 @@ pub fn ones_like(a: &PyArray) -> PyResult<PyArray> {
     let result = musapy_ops::ones_like(&a.inner).map_err(error::to_pyerr)?;
     Ok(PyArray::from_array(result))
 }
+
+// ============================================================
+// Phase 6: Indexing 算子（view 零拷贝）
+// ============================================================
+
+/// `ms.transpose(a, axes=None)` — 转置（零拷贝视图）。
+///
+/// `axes=None` 时完全反转维度顺序。
+#[pyfunction]
+#[pyo3(signature = (a, axes=None))]
+pub fn transpose(a: &PyArray, axes: Option<Vec<usize>>) -> PyResult<PyArray> {
+    let result = musapy_ops::transpose(&a.inner, axes.as_deref()).map_err(error::to_pyerr)?;
+    Ok(PyArray::from_array(result))
+}
+
+/// `ms.permute(a, dims)` — 按指定维度排列（零拷贝视图）。
+#[pyfunction]
+#[pyo3(signature = (a, dims))]
+pub fn permute(a: &PyArray, dims: Vec<usize>) -> PyResult<PyArray> {
+    let result = musapy_ops::permute(&a.inner, &dims).map_err(error::to_pyerr)?;
+    Ok(PyArray::from_array(result))
+}
+
+/// `ms.flip(a, axis)` — 翻转指定轴（零拷贝视图）。
+#[pyfunction]
+#[pyo3(signature = (a, axis))]
+pub fn flip(a: &PyArray, axis: usize) -> PyResult<PyArray> {
+    let result = musapy_ops::flip(&a.inner, axis).map_err(error::to_pyerr)?;
+    Ok(PyArray::from_array(result))
+}
+
+/// `ms.index_select(a, axis, index)` — 整数索引选择（降维，零拷贝视图）。
+#[pyfunction]
+#[pyo3(signature = (a, axis, index))]
+pub fn index_select(a: &PyArray, axis: usize, index: usize) -> PyResult<PyArray> {
+    let result = musapy_ops::index_select(&a.inner, axis, index).map_err(error::to_pyerr)?;
+    Ok(PyArray::from_array(result))
+}
+
+/// `ms.slice(a, specs)` — 多维切片（零拷贝视图）。
+///
+/// specs 是列表的列表：[[start, stop, step], ...]
+#[pyfunction]
+#[pyo3(signature = (a, specs))]
+pub fn slice(a: &PyArray, specs: Vec<Vec<usize>>) -> PyResult<PyArray> {
+    let slice_specs: Vec<musapy_ops::SliceSpec> = specs
+        .into_iter()
+        .map(|s| {
+            if s.len() != 3 {
+                return Err(pyo3::exceptions::PyValueError::new_err(
+                    "each slice spec must be [start, stop, step]",
+                ));
+            }
+            Ok(musapy_ops::SliceSpec {
+                start: s[0],
+                stop: s[1],
+                step: s[2],
+            })
+        })
+        .collect::<PyResult<Vec<_>>>()?;
+
+    let result = musapy_ops::slice(&a.inner, &slice_specs).map_err(error::to_pyerr)?;
+    Ok(PyArray::from_array(result))
+}

@@ -486,10 +486,23 @@ pub(crate) fn binary_elementwise(
         let ndim = out_shape.len() as i32;
         let stream_raw = out_stream.raw();
 
+        // 调整指针以包含 layout offset（视图支持）
+        let elem_size = dtype.element_size();
+        let a_offset_bytes = a_work.layout().offset * elem_size;
+        let b_offset_bytes = b_work.layout().offset * elem_size;
+
+        // 注意：指针算术需要 unsafe，但这里我们只是计算偏移后的指针
+        let a_ptr_adj = a_ptr.map(|p| {
+            NonNull::new(unsafe { p.as_ptr().add(a_offset_bytes) }).unwrap()
+        });
+        let b_ptr_adj = b_ptr.map(|p| {
+            NonNull::new(unsafe { p.as_ptr().add(b_offset_bytes) }).unwrap()
+        });
+
         match &device {
             Device::Cpu => {
                 cpu_binary_elementwise(
-                    a_ptr, b_ptr, out_ptr, &out_shape, &a_strides, &b_strides, dtype, &kernel,
+                    a_ptr_adj, b_ptr_adj, out_ptr, &out_shape, &a_strides, &b_strides, dtype, &kernel,
                 );
             }
             Device::Musa(_) => match (&kernel, dtype) {
@@ -1472,14 +1485,14 @@ pub(crate) fn comparison_elementwise(
 
 /// CPU 端 N 维偏移计算（与 common.h offset_nd 逻辑一致）。
 fn cpu_offset_nd(linear_idx: usize, shape: &[usize], strides: &[isize]) -> usize {
-    let mut offset = 0usize;
+    let mut offset = 0isize;
     let mut idx = linear_idx;
     for i in (0..shape.len()).rev() {
         let coord = idx % shape[i];
         idx /= shape[i];
-        offset = (offset as isize + coord as isize * strides[i]) as usize;
+        offset += coord as isize * strides[i];
     }
-    offset
+    offset as usize
 }
 
 // ── CPU binary ──

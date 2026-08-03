@@ -196,6 +196,129 @@ impl PyArray {
         Ok(PyArray::from_array(result))
     }
 
+    /// `a[key]` — 索引/切片（零拷贝视图）。
+    ///
+    /// 支持：
+    /// - `a[0]` — 整数索引（降维）
+    /// - `a[1:3]` — 切片
+    /// - `a[0, 1]` — 多维索引（tuple）
+    fn __getitem__(&self, key: &Bound<'_, pyo3::PyAny>) -> PyResult<PyArray> {
+        use pyo3::types::{PySlice, PyTuple};
+
+        let ndim = self.inner.ndim();
+        let shape = self.inner.shape();
+
+        // 辅助：解析单个索引项
+        fn parse_index_item(
+            item: &Bound<'_, pyo3::PyAny>,
+            dim_size: usize,
+        ) -> PyResult<IndexItem> {
+            if let Ok(idx) = item.extract::<isize>() {
+                // 整数索引（支持负数）
+                let idx = if idx < 0 {
+                    (dim_size as isize + idx) as usize
+                } else {
+                    idx as usize
+                };
+                if idx >= dim_size {
+                    return Err(pyo3::exceptions::PyIndexError::new_err(format!(
+                        "index {} out of bounds for dimension (size {})",
+                        idx, dim_size
+                    )));
+                }
+                Ok(IndexItem::Index(idx))
+            } else if item.downcast::<PySlice>().is_ok() {
+                let slice = item.downcast::<PySlice>().unwrap();
+                let indices = slice.indices(dim_size as isize)?;
+                let start = indices.start.max(0) as usize;
+                let stop = indices.stop.max(0) as usize;
+                let step = indices.step as usize;
+                if step == 0 {
+                    return Err(pyo3::exceptions::PyValueError::new_err("slice step cannot be zero"));
+                }
+                Ok(IndexItem::Slice { start, stop, step })
+            } else {
+                Err(pyo3::exceptions::PyTypeError::new_err(
+                    "index must be an integer or slice",
+                ))
+            }
+        }
+
+        enum IndexItem {
+            Index(usize),
+            Slice { start: usize, stop: usize, step: usize },
+        }
+
+        // 解析 key：可能是单个项或 tuple
+        let items: Vec<IndexItem> = if let Ok(tuple) = key.downcast::<PyTuple>() {
+            let mut items = Vec::new();
+            for i in 0..tuple.len() {
+                let item = tuple.get_item(i)?;
+                if i >= ndim {
+                    return Err(pyo3::exceptions::PyIndexError::new_err(
+                        "too many indices for array",
+                    ));
+                }
+                items.push(parse_index_item(&item, shape[i])?);
+            }
+            items
+        } else {
+            // 单个项：作用于第 0 维
+            if ndim == 0 {
+                return Err(pyo3::exceptions::PyIndexError::new_err(
+                    "too many indices for 0-dim array",
+                ));
+            }
+            vec![parse_index_item(key, shape[0])?]
+        };
+
+        // 执行索引操作（链式处理，每步产生新视图）
+        // 注意：整数索引会降维，所以后续索引的轴需要调整
+        let mut current: Option<musapy_core::Array> = None;
+        let mut current_dim = 0usize; // 当前处理的维度
+
+        for item in &items {
+            let base = match &current {
+                Some(arr) => arr,
+                None => &self.inner,
+            };
+
+            match item {
+                IndexItem::Index(idx) => {
+                    // 整数索引：降维，轴号不变（因为前面的维度已被处理）
+                    current = Some(
+                        musapy_ops::index_select(base, current_dim, *idx)
+                            .map_err(error::to_pyerr)?,
+                    );
+                    // 不增加 current_dim，因为该维度已被移除
+                }
+                IndexItem::Slice { start, stop, step } => {
+                    // 切片：不降维，轴号递增
+                    let mut specs: Vec<musapy_ops::SliceSpec> = Vec::new();
+                    for (d, &dim_size) in base.shape().iter().enumerate() {
+                        if d == current_dim {
+                            specs.push(musapy_ops::SliceSpec {
+                                start: *start,
+                                stop: *stop,
+                                step: *step,
+                            });
+                        } else {
+                            specs.push(musapy_ops::SliceSpec {
+                                start: 0,
+                                stop: dim_size,
+                                step: 1,
+                            });
+                        }
+                    }
+                    current = Some(musapy_ops::slice(base, &specs).map_err(error::to_pyerr)?);
+                    current_dim += 1;
+                }
+            }
+        }
+
+        Ok(PyArray::from_array(current.unwrap()))
+    }
+
     /// 将数组数据取回 host 并转为 Python list（ADR L1-11: 显式 sync + D2H）。
     ///
     /// 多维数组返回嵌套 list（NumPy 行为）：
@@ -210,8 +333,14 @@ impl PyArray {
         // 先获取 flat list
         let flat = bytes_to_pylist(py, &bytes, n, dtype)?;
 
-        // 0-dim 或 1D：直接返回 flat list
-        if shape.len() <= 1 {
+        // 0-dim：返回标量（NumPy 兼容）
+        if shape.len() == 0 {
+            let flat_list = flat.downcast_bound::<pyo3::types::PyList>(py)?;
+            return Ok(flat_list.get_item(0)?.into());
+        }
+
+        // 1D：直接返回 flat list
+        if shape.len() == 1 {
             return Ok(flat);
         }
 
