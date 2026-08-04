@@ -180,9 +180,11 @@ ms.memory_summary(device="musa:0")     # allocated / cached / peak / VRAM
 | float64 | float64 | float64 |
 | float32 | float64 | float64 |
 | int32 | float32 | float32 |
-| int64 | float32 | float64 |
+| int64 | float32 | float32（整数不因位宽升级浮点，JAX 语义） |
 | int64 | float64 | float64 |
-| int32 | int64 | float64 |
+| int32 | int64 | int64（CPU JAX 表）/ int32（GPU 窄优先） |
+
+> 完整规则见 [operators-reference.md](./docs/operators-reference.md) 类型提升一节与 ADR L1-14。
 
 ---
 

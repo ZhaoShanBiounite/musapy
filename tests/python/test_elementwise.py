@@ -433,11 +433,14 @@ class TestTypePromotion:
         assert abs(result[0] - 1.5) < 1e-6
 
     def test_i64_plus_f32(self):
-        """int64 + float32 → float64（GPU narrow 规则：有 int64 参与 → f64）"""
+        """int64 + float32 → float32（JAX 语义：整数不因位宽升级浮点，
+        对齐 v0.2 计划 §1.3 与 ADR L1-14 扩展表；2026-08 修正自 f64）"""
         a = ms.array([1, 2, 3], dtype=ms.int64, device="cpu")
         b = ms.array([0.5, 0.5, 0.5], dtype=ms.float32, device="cpu")
         c = ms.add(a, b)
-        assert c.dtype == ms.float64
+        assert c.dtype == ms.float32
+        result = c.tolist()
+        assert abs(result[0] - 1.5) < 1e-6
 
     def test_f32_plus_f64(self):
         """float32 + float64 → float64"""

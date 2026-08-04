@@ -1,7 +1,7 @@
 # musapy 快速上手
 
 > 版本：v0.2-alpha（`phase6-indexing` 开发主干）
-> 完整算子参考见 [operators-reference.md](./operators-reference.md)
+> 完整算子参考（kernel 符号 / ABI / 性能）见 [operators-reference.md](./operators-reference.md)
 
 ## 前置条件
 
@@ -52,7 +52,7 @@ python -c "import musapy; print(musapy.__version__)"
 
 ## 快速上手
 
-以下代码在 MUSA GPU（或 CPU 模式）上端到端跑通（v0.2 功能面）：
+以下代码在 MUSA GPU（或 CPU 模式）上端到端跑通（v0.2 全功能面）：
 
 ```python
 import musapy as ms
@@ -70,8 +70,9 @@ lin = ms.linspace(0.0, 1.0, 5)                         # float64
 eye = ms.eye(3)
 
 # ── 广播 + 类型提升 ──
-c = a + b                # 广播 (3,1)+(4,) → (3,4)；int64+float32 提升为 float64
-assert c.shape == (3, 4) # 提升规则见 L1-14（int64/uint64 + float → f64）
+c = a + b                # 广播 (3,1)+(4,) → (3,4)
+assert c.shape == (3, 4)
+assert c.dtype == ms.float32   # i64 + f32 → f32（整数不因位宽升级浮点）
 
 # ── elementwise ──
 # 二元/一元操作数必须是 Array（标量请用 ms.array([x]) 包一层）；
@@ -105,20 +106,127 @@ c.stream.synchronize()               # 等所有异步 op 完成
 print(row.tolist())                  # [104.0, 108.0, 112.0]
 ```
 
-## 算子速览
+## 完整 API 参考（v0.2 全部 Python 接口）
 
-| 分类 | 算子 |
+### 1. 创建与转换
+
+| 函数 | 签名 | 说明 |
+|---|---|---|
+| `array` | `array(data, dtype=None, device=None)` | 从 Python 嵌套列表创建 |
+| `astype`（方法） | `a.astype(dtype)` | 显式 dtype 转换（返回新 Array） |
+
+### 2. Elementwise
+
+| 函数 | 签名 | 说明 |
+|---|---|---|
+| `add / sub / mul / div / pow` | `(a, b, out=None)` | 二元，自动广播 + 提升 |
+| `sin / cos / exp / log / abs / sign / neg` | `(a, out=None)` | 一元 |
+| `clamp` | `(a, lo, hi, out=None)` | lo/hi 为 Python 标量 |
+
+运算符重载：`a + b` `a - b` `a * b` `a / b` `a ** b` `-a` `abs(a)`。
+
+### 3. Comparison（输出 bool 数组）
+
+| 函数 | 签名 |
 |---|---|
-| Binary elementwise | `add` `sub` `mul` `div` `pow`（+ 运算符重载 `a + b` 等） |
-| Unary elementwise | `sin` `cos` `exp` `log` `abs` `sign` `neg`（+ `-a` / `abs(a)`） |
-| 边界 | `clamp(a, lo, hi)` |
-| Comparison | `gt` `lt` `ge` `le` `eq` `ne`（输出 bool） |
-| Reduction | `sum` `prod` `max` `min` `mean`（`axis=`/`keepdims=`） |
-| Arg-reduction | `argmax` `argmin`（输出 int64 索引） |
-| Scan | `cumsum`（单轴容量上限 256³ ≈ 16.7M 元素） |
-| Cast | `a.astype(dtype)` |
-| Init | `zeros` `ones` `full` `arange` `linspace` `eye` `zeros_like` `ones_like` |
-| Indexing | view：`transpose` `permute` `flip` `slice`（`a[i:j:k]`）；copy：`gather` `scatter` `contiguous` |
+| `eq / ne / lt / gt / le / ge` | `(a, b, out=None)` |
+
+运算符重载：`a == b` `a != b` `a < b` `a > b` `a <= b` `a >= b`。
+
+### 4. Reduction
+
+| 函数 | 签名 | 说明 |
+|---|---|---|
+| `sum / prod / max / min / mean` | `(a, axis=None, keepdims=False, out=None)` | `axis=None` 全缩减 |
+| `argmax / argmin` | `(a, axis=None, out=None)` | 输出恒 int64 索引 |
+| `cumsum` | `(a, axis=None, out=None)` | 单轴容量上限 256³ ≈ 16.7M 元素 |
+
+### 5. Init / Creation
+
+| 函数 | 签名 | 说明 |
+|---|---|---|
+| `zeros / ones` | `(shape, *, dtype=None, device=None)` | 默认 float32 |
+| `full` | `(shape, fill_value, *, dtype=None, device=None)` | 填充值 |
+| `eye` | `(n, m=None, k=0, *, dtype=None, device=None)` | 单位阵 |
+| `arange` | `(start, stop=None, step=None, *, dtype=None, device=None)` | 整数→int64，浮点→float64 |
+| `linspace` | `(start, stop, num=50, *, dtype=None, device=None)` | 默认 float64 |
+| `zeros_like / ones_like` | `(a)` | 继承输入 dtype/device |
+
+### 6. Indexing
+
+| 函数 | 签名 | 说明 |
+|---|---|---|
+| `transpose` | `(a, axes=None)` | view，零拷贝 |
+| `permute` | `(a, dims)` | view，等价 transpose(axes=dims) |
+| `flip` | `(a, axis)` | view，stride 取负 |
+| `slice` | `(a, specs)` | view；`a[i:j:k]` 切片语法同样可用（含负索引/step/clamp） |
+| `index_select` | `(a, axis, index)` | view（按 axis 取 index 处子集） |
+| `gather` | `(a, indices, axis=0)` | copy；**indices 必须 int64 1D** |
+| `scatter` | `(a, indices, values, axis=0)` | copy，返回新 Array；indices 须 int64 1D |
+| `contiguous` | `(a)` | 物化为连续布局；已连续时零拷贝 |
+
+### 7. 运行时与上下文
+
+| 函数 | 说明 |
+|---|---|
+| `set_default_device(dev)` | 全局默认设备（必须显式设置一次） |
+| `set_default_dtype(dt)` | 全局默认 dtype |
+| `device(dev)` / `dtype(dt)` / `stream(s)` | context manager（with 块内生效，thread-local） |
+| `memory_summary(device=None)` | 内存统计（allocated/cached/peak/VRAM） |
+| `device_summary()` | 设备名、arch、VRAM、CU 数 |
+| `set_debug(True)` / `debug()` | OpContext 记录（python_frame 归因） |
+| `startup_report()` | 运行时启动报告 |
+| `__version__` | 版本号 |
+
+### 8. Array 属性与方法
+
+```python
+a = ms.array([[1.0, 2.0], [3.0, 4.0]])
+
+# 属性（只读）
+a.shape            # (2, 2)
+a.ndim             # 2
+a.size             # 4
+a.dtype            # Dtype(float32)
+a.device           # Device(musa:0)
+a.stream           # Stream(...)
+a.nbytes           # 16
+a.is_contiguous    # True
+a.name             # None（可选命名）
+
+# 方法
+a.set_name("w")    # 命名（OpContext 归因用）
+a.clear_name()
+a.astype(ms.float64)
+a.tolist()         # 同步 + 回读为嵌套列表（GPU 越界错误在此抛出）
+a.item()           # 0-dim / 单元素 → Python 标量
+```
+
+### 9. Dtype 常量
+
+```python
+ms.bool_            # bool（注意不是 ms.bool）
+ms.int8  ms.int16  ms.int32  ms.int64
+ms.uint8 ms.uint16 ms.uint32 ms.uint64
+ms.float16 ms.float32 ms.float64
+ms.bfloat16
+ms.complex64 ms.complex128
+```
+
+未指定 dtype 时默认 `float32`（`arange` 等按 NumPy 规则推断）。
+
+### 10. 异常层级
+
+```
+MusapyError
+├── DeviceError ────────── DeviceNotConfiguredError
+├── DtypeError
+├── ShapeError
+├── MemoryError ────────── OutOfMemoryError
+├── StreamError
+├── KernelError
+└── InteropError
+```
 
 ## 语义注意（与 NumPy 的差异）
 
@@ -128,8 +236,12 @@ print(row.tolist())                  # [104.0, 108.0, 112.0]
 2. **标量不自动广播**：二元/比较算子的两个操作数都必须是 Array。
    `ms.add(a, 2.0)` 会抛 `TypeError`——请用 `ms.add(a, ms.array([2.0]))`。
    `clamp` 是例外（lo/hi 为 Python 标量）。
-3. **类型提升**：`int64/uint64 + float → float64`（JAX 风格 type-based，
-   见 ADR L1-14），不是 NumPy 的"窄优先"。
+3. **类型提升（2026-08 对齐 v0.2 计划 §1.3 与 ADR L1-14）**：
+   - `int/uint（任意位宽）+ float → float 本身`——整数不因位宽升级浮点：
+     `i64 + f32 → f32`（注意 int64 会被 cast 成 f32，大整数有精度损失）、
+     `i64 + f64 → f64`
+   - GPU 全运算窄优先：`f32 + f64 → f32`（性能优先）；含 CPU 时走 JAX 表取宽
+   - 纯整数：CPU 取宽 / GPU 取窄；`int + uint` 溢出保护升级
 
 ## 核心概念
 
@@ -152,19 +264,6 @@ Device 解析遵循 5 级优先级链：
 | 4 | 全局默认 | `ms.set_default_device("musa:0")` |
 | 5 | 启动 auto-probe | 有 MUSA 用 musa:0，否则 cpu |
 
-### Dtype
-
-支持 15 种数据类型：
-
-```
-bool, int8, int16, int32, int64,
-uint8, uint16, uint32, uint64,
-float16, float32, float64, bfloat16,
-complex64, complex128
-```
-
-未指定 dtype 时默认 `float32`（整数 `arange` 等按 NumPy 规则推断）。
-
 ### Stream
 
 每个设备有独立的 stream，用于异步执行：
@@ -175,20 +274,6 @@ with ms.stream(s):
     a = ms.array([1.0, 2.0])
     b = ms.add(a, a)
 s.synchronize()  # 等待所有操作完成
-```
-
-### Array
-
-核心数据结构，绑定到特定设备和 stream：
-
-```python
-a = ms.array([1.0, 2.0, 3.0], dtype=ms.float32, device="musa:0")
-a.shape    # (3,)
-a.ndim     # 1
-a.dtype    # Dtype(float32)
-a.device   # Device(musa:0)
-a.stream   # Stream(...)
-a.tolist() # 同步 + 回读（GPU 越界错误在此抛出）
 ```
 
 ## 运行测试
@@ -217,6 +302,6 @@ python benchmark/bench_musa_utilization.py --size 1000000 --iters 100
 ## 下一步
 
 - [operators-reference.md](./operators-reference.md) — 已实现算子参考（kernel 符号、ABI、性能）
-- [ADR-zh.md](./ADR-zh.md) — 完整架构决策（L0-L4 分层）
+- [ADR-zh.md](./ADR-zh.md) — 完整架构决策（L0-L4 分层；类型提升见 L1-14）
 - [v0.2-alpha 实现计划](./v0.2-alpha-plan-zh.md) — 版本范围与阶段
 - [benchmark/analysis-followup-2026-08-04.md](../benchmark/analysis-followup-2026-08-04.md) — 性能优化前后对比与 launch 地板分析

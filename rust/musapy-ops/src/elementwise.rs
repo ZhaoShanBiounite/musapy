@@ -276,12 +276,13 @@ mod tests {
 
     #[test]
     fn binary_promotion_i64_plus_f32_cpu() {
-        // i64 + f32 → f64（JAX：位宽 max(64, 32, 32) = 64）
+        // i64 + f32 → f32（JAX：整数不因位宽升级浮点，v0.2 计划 §1.3；
+        // 2026-08 修正自 f64）
         let a = i64_array(&[1, 2], vec![2]);
         let b = f32_array(&[0.5, 0.5], vec![2]);
         let r = mul(&a, &b, None).unwrap();
-        assert_eq!(r.dtype(), Dtype::Float64);
-        assert_eq!(read_f64(&r), vec![0.5, 1.0]);
+        assert_eq!(r.dtype(), Dtype::Float32);
+        assert_eq!(read_f32(&r), vec![0.5, 1.0]);
     }
 
     #[test]

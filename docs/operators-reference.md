@@ -242,18 +242,20 @@ GPU 路径不在 host 端同步校验 indices，而是由 kernel 内检查：
 
 ## 类型提升规则
 
-Binary 算子输入 dtype 不同时自动提升：
+Binary 算子输入 dtype 不同时自动提升（两段式，见 ADR L1-14）：
 
-| 条件 | 结果 |
-|------|------|
-| f32 + f32 | f32 |
-| f64 + f64 | f64 |
-| f32 + f64 | f64 |
-| int(≤32) + f32 | f32 |
-| int64/uint64 + float | f64 |
-| 纯整数 + 纯整数 | f64 |
+| 条件 | 结果（CPU / 全 GPU） |
+|------|----------------------|
+| f32 + f64 | f64 / **f32**（GPU 窄优先） |
+| f16 + bf16 | f32（同宽冲突 → JAX） |
+| int/uint（任意位宽）+ float | **float 本身**（JAX 语义：整数不因位宽升级浮点；`i64 + f32 → f32`，对齐 v0.2 计划 §1.3） |
+| 纯整数 + 纯整数 | 宽者（CPU）/ 窄者（GPU） |
+| int + uint | 溢出保护升级（CPU/GPU 均 JAX 表） |
+| int/float + complex | 宽 complex（CPU/GPU 均 JAX 表） |
 
-设计原则：kernel 仅实例化 f32/f64/i64，整数输入必须先 cast。
+设计原则：kernel 仅实例化 f32/f64/i64，整数输入必须先 cast；
+`i64 + f32 → f32` 意味着 int64 输入会被 cast 成 f32（精度损失为计划
+既定语义——"GPU 窄优先"）。
 
 ---
 

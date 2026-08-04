@@ -281,6 +281,7 @@ op behavior.
 | f16 + bf16 | f32 | same-width conflict → JAX |
 | f32 + f64 | f32 | narrow priority |
 | f32 + i32 | f32 | int→float (JAX), GPU narrow → f32 |
+| f32 + i64 | f32 | same — int width never widens the float (i64+f32 → f32, per v0.2 plan §1.3) |
 | i32 + i64 | i32 | int narrow priority |
 | i32 + u32 | i64 | JAX (signed+unsigned may overflow) |
 | f32 + complex64 | complex64 | complex narrow priority |

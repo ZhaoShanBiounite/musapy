@@ -242,15 +242,22 @@ fn jax_promote(a: Dtype, b: Dtype) -> Result<Dtype> {
     }
 
     // exact(int/uint) + float
-    let exact_float = |exact_w: u16, float_w: u16| -> Dtype {
-        let target = exact_w.max(float_w).max(32);
-        float_of_width(target)
+    // JAX 语义：整数提升到浮点后**不因整数位宽升级浮点**——
+    // i64 + f32 → f32、i8 + f64 → f64（对齐 v0.2 计划 §1.3 与 ADR L1-14 扩展表；
+    // 旧实现 max(exact_w, float_w) 为 NumPy 式加宽，i64+f32 误得 f64）
+    // bf16 特判：float_of_width(16) 返回 f16，int + bf16 应得 bf16（JAX 一致）
+    let exact_float = |float_w: u16, is_bf16: bool| -> Dtype {
+        if is_bf16 {
+            Dtype::Bfloat16
+        } else {
+            float_of_width(float_w)
+        }
     };
     if (ca == CAT_INT || ca == CAT_UINT) && cb == CAT_FLOAT {
-        return Ok(exact_float(pa, pb));
+        return Ok(exact_float(pb, b == Dtype::Bfloat16));
     }
     if (cb == CAT_INT || cb == CAT_UINT) && ca == CAT_FLOAT {
-        return Ok(exact_float(pb, pa));
+        return Ok(exact_float(pa, a == Dtype::Bfloat16));
     }
 
     // exact(int/uint) + complex
@@ -469,15 +476,57 @@ mod tests {
             promote(Dtype::Float32, Dtype::Int32, false).unwrap(),
             Dtype::Float32
         );
-        // f16 + i8 → f32（float 至少 f32）
+        // f16 + i8 → f16（JAX：整数不因位宽升级浮点）
         assert_eq!(
             promote(Dtype::Float16, Dtype::Int8, false).unwrap(),
-            Dtype::Float32
+            Dtype::Float16
         );
         // f64 + i64 → f64
         assert_eq!(
             promote(Dtype::Float64, Dtype::Int64, false).unwrap(),
             Dtype::Float64
+        );
+    }
+
+    // --- promote: exact(int/uint) + float 不因整数位宽升级浮点 ---
+    // （对齐 v0.2 计划 §1.3：a(f32) + b(i64) → f32；旧实现为 NumPy 式
+    //   max(位宽) 加宽，i64+f32 误得 f64）
+
+    #[test]
+    fn jax_i64_plus_f32_is_f32() {
+        assert_eq!(
+            promote(Dtype::Int64, Dtype::Float32, false).unwrap(),
+            Dtype::Float32
+        );
+        assert_eq!(
+            promote(Dtype::Float32, Dtype::Int64, false).unwrap(),
+            Dtype::Float32
+        );
+    }
+
+    #[test]
+    fn jax_u64_plus_f32_is_f32() {
+        assert_eq!(
+            promote(Dtype::Uint64, Dtype::Float32, false).unwrap(),
+            Dtype::Float32
+        );
+        // GPU narrow 路径（跨类走 JAX）同样 f32
+        assert_eq!(
+            promote(Dtype::Uint64, Dtype::Float32, true).unwrap(),
+            Dtype::Float32
+        );
+    }
+
+    #[test]
+    fn jax_i64_plus_f16_is_f16() {
+        // int + f16 → f16（不升级）；int + bf16 → bf16
+        assert_eq!(
+            promote(Dtype::Int64, Dtype::Float16, false).unwrap(),
+            Dtype::Float16
+        );
+        assert_eq!(
+            promote(Dtype::Int64, Dtype::Bfloat16, false).unwrap(),
+            Dtype::Bfloat16
         );
     }
 
