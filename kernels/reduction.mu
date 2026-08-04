@@ -185,12 +185,20 @@ __global__ void musapy_argmin_kernel_v2(
 //
 //   Phase 1 (block-local):  每 block 用 Blelloch 树形 scan 算出本 block 内
 //                            的 inclusive prefix，写回输出；同时记录 block 总和。
-//   Phase 2 (scan sums):    单 block 对所有 block 总和做 inclusive scan，
-//                            得到「每个 block 之前的累加前缀」。
+//   Phase 2 (scan sums):    对 block 总和做 inclusive scan，得到全局前缀。
+//                            * blocks_per_row ≤ 256：每行一个 block 单级扫描；
+//                            * blocks_per_row > 256（host 保证 ≤ 65536）：
+//                              分层——tile_scan 对每 256 个 sum 做 tile 内
+//                              inclusive scan 并记 tile 总和，scan_sums 扫描
+//                              tile 总和（每行一个 block），tile_prefix 把
+//                              tile 前缀传播回各 block sum。容量 256^3 元素/行。
 //   Phase 3 (add prefix):   每 block 把「自身之前的累加前缀」加到本 block
 //                            所有输出上。
 //
-// 总 work O(N)（含 3 遍线性扫描），steps O(log B)（B = block 数）。
+// Phase 2 输出的 block_sums 为 inclusive prefix（截至并包含各 block 的总和），
+// Phase 3 对第 i 个 block（i ≥ 1）读取 block_prefix[i-1]。
+//
+// 总 work O(N)（含常数次线性扫描），steps O(log B)（B = block 数）。
 // 每一「行」（共享同一组非-axis 坐标的 L=axis_len 个元素）独立 scan。
 //
 // 约定：输入/输出共享 NdMetaReduce 结构（axis_len 即每行长度）。
@@ -275,57 +283,141 @@ __global__ void musapy_cumsum_block_kernel_v2(
     }
 }
 
-// ── Phase 2: scan block_sums（单 block，原位 exclusive scan）──
-// grid: 1, block: 256 threads（支撑 blocks_per_row ≤ 256，即 axis_len ≤ 65536）
-// 输出 exclusive prefix：block_sums[row*bpr + i] = sum(block_sums[row*bpr + 0..i))，
-// 即「第 i 个 block 之前所有 block 的累加」。第 0 个恒为 0。
+// ── Phase 2: scan sums（每行一个 block，原位 inclusive scan）──
+// grid: num_rows, block: 256 threads, smem = 256 * sizeof(T)
+// 对至多 256 个 sum（n ≤ 256）做 inclusive scan：block_sums[row*n + i] =
+// sum(block_sums[row*n + 0..=i])。≥ n 的位置补 0 参与扫描但不写回。
 //
-// 算法：先做 inclusive scan，再各 thread 读取「前一个」位置（T0 补 0）。
-// 因读 sdata[tid-1] 需在所有 thread 同步后做，用一个临时寄存器交换。
+// Blelloch 树固定按 256（2 的幂）槽位扫描——补 0 不影响前 n 个前缀，
+// 同时避免 n 非 2 的幂时带 guard 的树归约产生错误结果。
+//
+// 两个调用场景：
+// - blocks_per_row ≤ 256：直接扫描 block_sums；
+// - 分层路径：扫描 tile_sums（tiles_per_row ≤ 256，由 host 保证）。
 template <typename T>
 __global__ void musapy_cumsum_scan_sums_kernel_v2(
-    T* __restrict__ block_sums, size_t num_rows, size_t blocks_per_row
+    T* __restrict__ sums, size_t num_rows, size_t n
 ) {
     extern __shared__ char smem[];
     T* sdata = (T*)smem;
     int tid = threadIdx.x;
 
-    for (size_t row = 0; row < num_rows; row++) {
-        T* row_sums = block_sums + row * blocks_per_row;
+    size_t row = blockIdx.x;
+    if (row >= num_rows) return;
+    T* row_sums = sums + row * n;
 
-        // 载入（边界外补 0）
-        T v = (tid < (int)blocks_per_row) ? row_sums[tid] : (T)0;
-        sdata[tid] = v;
-        __syncthreads();
+    // 载入（边界外补 0）
+    sdata[tid] = ((size_t)tid < n) ? row_sums[tid] : (T)0;
+    __syncthreads();
 
-        // inclusive scan over [0, blocks_per_row)
-        for (int s = 1; s < (int)blocks_per_row; s <<= 1) {
-            int idx = (tid * 2 * s) + (2 * s - 1);
-            if (idx < (int)blocks_per_row) {
-                sdata[idx] += sdata[idx - s];
-            }
-            __syncthreads();
-        }
-        for (int s = (int)blocks_per_row >> 1; s > 0; s >>= 1) {
-            int idx = (tid * 2 * s) + (2 * s - 1);
-            if (idx + s < (int)blocks_per_row) {
-                sdata[idx + s] += sdata[idx];
-            }
-            __syncthreads();
-        }
-
-        // inclusive → exclusive：保存自身，写入前驱（T0 写 0）
-        if (tid < (int)blocks_per_row) {
-            T my_prev = (tid == 0) ? (T)0 : sdata[tid - 1];
-            row_sums[tid] = my_prev;
+    // Blelloch inclusive scan（固定 256 槽位，2 的幂）
+    for (int s = 1; s < blockDim.x; s <<= 1) {
+        int idx = (tid * 2 * s) + (2 * s - 1);
+        if (idx < blockDim.x) {
+            sdata[idx] += sdata[idx - s];
         }
         __syncthreads();
     }
+    for (int s = blockDim.x >> 1; s > 0; s >>= 1) {
+        int idx = (tid * 2 * s) + (2 * s - 1);
+        if (idx + s < blockDim.x) {
+            sdata[idx + s] += sdata[idx];
+        }
+        __syncthreads();
+    }
+
+    if ((size_t)tid < n) {
+        row_sums[tid] = sdata[tid];
+    }
+}
+
+// ── Phase 2a（分层路径）: tile 内 inclusive scan + 写 tile 总和 ──
+// grid: num_rows × tiles_per_row, block: 256 threads, smem = 256 * sizeof(T)
+// 每 block 对一个 tile 内的至多 256 个 block sum 做 inclusive scan（原位
+// 写回），并把 tile 总和写入 tile_sums。仅在 blocks_per_row > 256
+// （axis_len > 65536）时使用。
+template <typename T>
+__global__ void musapy_cumsum_tile_scan_kernel(
+    T* __restrict__ block_sums, T* __restrict__ tile_sums,
+    size_t num_rows, size_t blocks_per_row, size_t tiles_per_row
+) {
+    extern __shared__ char smem[];
+    T* sdata = (T*)smem;
+    int tid = threadIdx.x;
+
+    size_t row = blockIdx.x / tiles_per_row;
+    size_t tile = blockIdx.x % tiles_per_row;
+    if (row >= num_rows) return;
+
+    T* row_sums = block_sums + row * blocks_per_row;
+    size_t j0 = tile * blockDim.x;  // 本 tile 起始 block-sum 下标
+
+    // 载入本 tile（边界外补 0）
+    T v = (T)0;
+    size_t j = j0 + tid;
+    if (j < blocks_per_row) {
+        v = row_sums[j];
+    }
+    sdata[tid] = v;
+    __syncthreads();
+
+    // Blelloch inclusive scan（固定 256 槽位，2 的幂）
+    for (int s = 1; s < blockDim.x; s <<= 1) {
+        int idx = (tid * 2 * s) + (2 * s - 1);
+        if (idx < blockDim.x) {
+            sdata[idx] += sdata[idx - s];
+        }
+        __syncthreads();
+    }
+    for (int s = blockDim.x >> 1; s > 0; s >>= 1) {
+        int idx = (tid * 2 * s) + (2 * s - 1);
+        if (idx + s < blockDim.x) {
+            sdata[idx + s] += sdata[idx];
+        }
+        __syncthreads();
+    }
+
+    // 原位写回（边界外不写）
+    if (j < blocks_per_row) {
+        row_sums[j] = sdata[tid];
+    }
+
+    // tile 总和：有效区间内的最后一个 inclusive 值
+    if (tid == 0) {
+        size_t valid = blocks_per_row - j0;
+        T sum = (valid >= blockDim.x) ? sdata[blockDim.x - 1] : sdata[valid - 1];
+        tile_sums[row * tiles_per_row + tile] = sum;
+    }
+}
+
+// ── Phase 2b（分层路径）: 传播 tile 前缀 ──────────────────────
+// grid: grid_size_1d(num_rows × blocks_per_row), block: 256 threads, 无 smem
+// 每线程为一个 block sum 加上「本 tile 之前所有 tile 的总和」，使
+// block_sums 成为全局 inclusive prefix（截至并包含本 block 的总和）。
+// 前置条件：tile_sums 已被 scan_sums 扫描为 inclusive prefix
+// （tile_sums[t-1] 即 tile t 之前所有 tile 的总和）。
+template <typename T>
+__global__ void musapy_cumsum_tile_prefix_kernel(
+    T* __restrict__ block_sums, const T* __restrict__ tile_sums,
+    size_t num_rows, size_t blocks_per_row, size_t tiles_per_row
+) {
+    size_t idx = blockIdx.x * blockDim.x + threadIdx.x;
+    size_t total = num_rows * blocks_per_row;
+    if (idx >= total) return;
+
+    size_t row = idx / blocks_per_row;
+    size_t j = idx % blocks_per_row;
+    size_t tile = j / 256;
+    if (tile == 0) return;  // tile 0 无前缀可加
+
+    block_sums[idx] += tile_sums[row * tiles_per_row + tile - 1];
 }
 
 // ── Phase 3: add block prefix ────────────────────────────────
 // grid: num_rows × blocks_per_row,  block: 256 threads
 // 每 block 把「自身之前的累加前缀」加到本 tile 的所有输出元素。
+// block_prefix 为全局 inclusive prefix（截至并包含各 block 的总和），
+// 故第 i 个 block（i ≥ 1）的前缀位于 block_prefix[i-1]。
 template <typename T>
 __global__ void musapy_cumsum_add_prefix_kernel_v2(
     T* __restrict__ c, const T* __restrict__ block_prefix,
@@ -344,7 +436,9 @@ __global__ void musapy_cumsum_add_prefix_kernel_v2(
     size_t k = k0 + tid;
     if (k >= axis_len) return;
 
-    T prefix = block_prefix[row * blocks_per_row + block_in_row];
+    // inclusive 约定：本 block 之前所有 block 的总和位于 block_in_row - 1
+    //（block_in_row == 0 已在上方提前返回）
+    T prefix = block_prefix[row * blocks_per_row + block_in_row - 1];
     T* dst = c + base + (size_t)((ssize_t)k * axis_stride);
     *dst += prefix;
 }
@@ -984,15 +1078,19 @@ ARGREDUCE_V2(argmax)
 ARGREDUCE_V2(argmin)
 #undef ARGREDUCE_V2
 
-/// cumsum v3 wrapper — work-efficient 三阶段 prefix sum。
+/// cumsum v3 wrapper — work-efficient 分层 prefix sum。
 ///
 /// 签名（v3）：
 ///   (a, c, tmp, ndim, in_shape, in_strides, axis, axis_len,
 ///    out_size, stream)
 ///
-/// - `tmp`：host 预分配的 scratch buffer，大小 = num_rows × blocks_per_row × sizeof(T)
-///   （num_rows = out_size / axis_len；blocks_per_row = (axis_len+255)/256）。
-///   由 Rust 侧 op_builder 分配（stream-ordered）。
+/// - `tmp`：host 预分配的 scratch buffer（由 Rust 侧 op_builder 分配，
+///   stream-ordered），布局为 block_sums 区 + tile_sums 区：
+///   * blocks_per_row ≤ 256：仅需 block_sums 区，
+///     大小 = num_rows × blocks_per_row × sizeof(T)；
+///   * blocks_per_row > 256（host 保证 ≤ 65536，即 axis_len ≤ 256^3）：
+///     block_sums 区后紧跟 tile_sums 区（num_rows × tiles_per_row × sizeof(T)，
+///     tiles_per_row = ceil(blocks_per_row/256)），wrapper 内以指针偏移切分。
 /// - 单 block 独占模式（blocks_per_row == 1）下，跳过 Phase 2/3 直接返回，
 ///   scratch buffer 可为 NULL（Rust 侧传 NULL 即可）。
 #define CUMSUM_V3(T, SUFFIX)                                                   \
@@ -1018,11 +1116,28 @@ void musapy_cumsum_##SUFFIX##_v3(                                              \
         <<<grid1, 256, smem, stream>>>(a, c, tmp, meta, num_rows, blocks_per_row); \
     /* blocks_per_row == 1 时 Phase 1 已写出最终结果，无需 Phase 2/3 */        \
     if (blocks_per_row > 1) {                                                 \
-        /* Phase 2: scan block_sums (in-place exclusive) */                   \
-        size_t smem2 = 256 * sizeof(T);                                       \
-        musapy_cumsum_scan_sums_kernel_v2<T>                                  \
-            <<<1, 256, smem2, stream>>>(tmp, num_rows, blocks_per_row);       \
-        /* Phase 3: add block prefix */                                       \
+        /* Phase 2: 扫描 block_sums 为 inclusive prefix（每行一个 block）。
+         * - bpr ≤ 256：单级 scan 即可；
+         * - bpr > 256：分层——tile_scan（tile 内 inclusive + tile 总和）→
+         *   scan tile_sums（每行 inclusive）→ tile_prefix（传播 tile 前缀），
+         *   得全局 inclusive prefix。*/                                      \
+        if (blocks_per_row <= 256) {                                          \
+            musapy_cumsum_scan_sums_kernel_v2<T>                              \
+                <<<num_rows, 256, smem, stream>>>(tmp, num_rows, blocks_per_row); \
+        } else {                                                              \
+            size_t tiles_per_row = (blocks_per_row + 255) / 256;              \
+            T* tile_sums = tmp + num_rows * blocks_per_row;                   \
+            musapy_cumsum_tile_scan_kernel<T>                                 \
+                <<<num_rows * tiles_per_row, 256, smem, stream>>>(            \
+                    tmp, tile_sums, num_rows, blocks_per_row, tiles_per_row); \
+            musapy_cumsum_scan_sums_kernel_v2<T>                              \
+                <<<num_rows, 256, smem, stream>>>(                            \
+                    tile_sums, num_rows, tiles_per_row);                      \
+            musapy_cumsum_tile_prefix_kernel<T>                               \
+                <<<grid_size_1d(grid1), 256, 0, stream>>>(                    \
+                    tmp, tile_sums, num_rows, blocks_per_row, tiles_per_row); \
+        }                                                                     \
+        /* Phase 3: add block prefix（inclusive 约定：读本 block 前驱）*/     \
         musapy_cumsum_add_prefix_kernel_v2<T>                                 \
             <<<grid1, 256, 0, stream>>>(c, tmp, meta, num_rows, blocks_per_row); \
     }                                                                         \

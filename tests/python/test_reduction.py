@@ -332,6 +332,96 @@ class TestReductionMusa:
             pytest.approx(6.0),
         ]
 
+    # ── P0: cumsum 长 axis（分层扫描）──────────────────────────
+
+    def test_gpu_cumsum_boundary_65536(self):
+        """axis_len = 65536（blocks_per_row = 256，单级路径上限）。"""
+        n = 65536
+        a = ms.ones(n, dtype=ms.int64, device="musa:0")
+        result = ms.cumsum(a, axis=0)
+        # cumsum(ones) = [1..n]：总和 + 末元素抽查
+        assert ms.sum(result).item() == n * (n + 1) // 2
+        idx = ms.array([n - 1], dtype=ms.int64, device="musa:0")
+        assert ms.gather(result, idx, axis=0).item() == n
+
+    def test_gpu_cumsum_hierarchical_65537(self):
+        """axis_len = 65537（blocks_per_row = 257，进入分层路径的首例）。"""
+        n = 65537
+        a = ms.ones(n, dtype=ms.int64, device="musa:0")
+        result = ms.cumsum(a, axis=0)
+        assert ms.sum(result).item() == n * (n + 1) // 2
+        idx = ms.array([n - 1], dtype=ms.int64, device="musa:0")
+        assert ms.gather(result, idx, axis=0).item() == n
+
+    def test_gpu_cumsum_1m_i64(self):
+        """axis_len = 1M（blocks_per_row = 3907；P0 报告中的 benchmark 规模）。"""
+        n = 1_000_000
+        a = ms.ones(n, dtype=ms.int64, device="musa:0")
+        result = ms.cumsum(a, axis=0)
+        assert ms.sum(result).item() == n * (n + 1) // 2
+        # 抽查：单级边界末位、分层路径首位、末元素
+        idx = ms.array([65535, 65536, n - 1], dtype=ms.int64, device="musa:0")
+        assert ms.gather(result, idx, axis=0).tolist() == [65536, 65537, n]
+
+    def test_gpu_cumsum_long_axis_random_f32(self):
+        """100000 元素 f32 随机数据，对比 numpy（blocks_per_row = 391）。"""
+        import numpy as np
+
+        rng = np.random.default_rng(42)
+        data = rng.random(100000, dtype=np.float32)
+        a = ms.array(data.tolist(), dtype=ms.float32, device="musa:0")
+        result = ms.cumsum(a, axis=0)
+        got = np.array(result.tolist(), dtype=np.float32)
+        assert np.allclose(got, np.cumsum(data), rtol=1e-3, atol=1e-3)
+
+    def test_gpu_cumsum_long_axis_f64(self):
+        """100000 元素 f64，覆盖 f64 实例化。"""
+        import numpy as np
+
+        rng = np.random.default_rng(43)
+        data = rng.random(100000, dtype=np.float64)
+        a = ms.array(data.tolist(), dtype=ms.float64, device="musa:0")
+        result = ms.cumsum(a, axis=0)
+        got = np.array(result.tolist(), dtype=np.float64)
+        assert np.allclose(got, np.cumsum(data), rtol=1e-9, atol=1e-9)
+
+    def test_gpu_cumsum_multirow_long_axis(self):
+        """多行 × 长 axis：(3, 70000) axis=1（blocks_per_row = 274）。"""
+        import numpy as np
+
+        rng = np.random.default_rng(7)
+        data = rng.random((3, 70000), dtype=np.float32)
+        a = ms.array(data.tolist(), dtype=ms.float32, device="musa:0")
+        result = ms.cumsum(a, axis=1)
+        got = np.array(result.tolist(), dtype=np.float32)
+        assert got.shape == (3, 70000)
+        assert np.allclose(got, np.cumsum(data, axis=1), rtol=1e-3, atol=1e-3)
+
+    def test_gpu_cumsum_non_pow2_blocks_per_row(self):
+        """blocks_per_row 非 2 的幂（bpr = 6/7）。
+
+        旧 Phase 2 用带 guard 的 Blelloch 树按 bpr 扫描，非 2 的幂时
+        产生错误前缀；修复后固定按 256 槽位（补 0）扫描。
+        """
+        import numpy as np
+
+        for n in (1300, 1537):  # bpr = 6, 7
+            rng = np.random.default_rng(n)
+            data = rng.random(n, dtype=np.float32)
+            a = ms.array(data.tolist(), dtype=ms.float32, device="musa:0")
+            result = ms.cumsum(a, axis=0)
+            got = np.array(result.tolist(), dtype=np.float32)
+            assert np.allclose(got, np.cumsum(data), rtol=1e-3, atol=1e-3), (
+                f"n={n}"
+            )
+
+    def test_gpu_cumsum_axis_too_long_raises(self):
+        """axis_len > 256^3 超出分层扫描容量，应明确报错。"""
+        n = 256**3 + 1  # 16777217
+        a = ms.ones(n, dtype=ms.float32, device="musa:0")
+        with pytest.raises(Exception):
+            ms.cumsum(a, axis=0)
+
     def test_gpu_prod(self):
         a = ms.array([2.0, 3.0, 4.0], device="musa:0")
         result = ms.prod(a)

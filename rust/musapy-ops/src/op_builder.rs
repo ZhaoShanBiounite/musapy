@@ -2402,12 +2402,31 @@ pub(crate) fn cumsum_op(
                 );
             }
             Device::Musa(_) => {
-                // 三阶段 work-efficient scan：按需分配 scratch buffer。
+                // 分层 work-efficient scan：按需分配 scratch buffer。
                 // num_rows = out_size / axis_len（每行独立 scan）
                 // blocks_per_row = ceil(axis_len / 256)；> 1 时才需要 scratch。
                 let blocks_per_row = (axis_len + 255) / 256;
+                // 分层扫描容量：Phase 2 为两级 256 宽的 tile scan，
+                // blocks_per_row ≤ 256×256 = 65536 → axis_len ≤ 256^3。
+                if blocks_per_row > 65536 {
+                    return Err(ShapeError::Mismatch(format!(
+                        "{}: axis_len {} exceeds max supported length 16777216 (256^3)",
+                        op_name, axis_len
+                    ))
+                    .into());
+                }
                 let num_rows = out_size / axis_len.max(1);
-                let tmp_nbytes = num_rows * blocks_per_row * compute_dtype.element_size();
+                // scratch 布局（与 kernel wrapper 约定一致）：
+                // block_sums 区（num_rows × blocks_per_row）；
+                // blocks_per_row > 256 时其后紧跟 tile_sums 区
+                // （num_rows × tiles_per_row，tiles_per_row = ceil(bpr/256)）。
+                let scratch_elems = if blocks_per_row > 256 {
+                    let tiles_per_row = (blocks_per_row + 255) / 256;
+                    num_rows * (blocks_per_row + tiles_per_row)
+                } else {
+                    num_rows * blocks_per_row
+                };
+                let tmp_nbytes = scratch_elems * compute_dtype.element_size();
                 let tmp_buf = if blocks_per_row > 1 && tmp_nbytes > 0 {
                     Some(Buffer::alloc(tmp_nbytes, device.clone(), &out_stream)?)
                 } else {

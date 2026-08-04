@@ -116,12 +116,10 @@ unsafe extern "C" {
     pub fn musapy_argmin_i64_v2(a: *const i64, c: *mut i64, ndim: i32, in_shape: *const usize, in_strides: *const isize, axis: i32, axis_len: usize, out_size: usize, stream: musaStream_t);
     pub fn musapy_argmin_f32_v2(a: *const f32, c: *mut i64, ndim: i32, in_shape: *const usize, in_strides: *const isize, axis: i32, axis_len: usize, out_size: usize, stream: musaStream_t);
     pub fn musapy_argmin_f64_v2(a: *const f64, c: *mut i64, ndim: i32, in_shape: *const usize, in_strides: *const isize, axis: i32, axis_len: usize, out_size: usize, stream: musaStream_t);
-    pub fn musapy_cumsum_i64_v2(a: *const i64, c: *mut i64, ndim: i32, in_shape: *const usize, in_strides: *const isize, axis: i32, out_size: usize, stream: musaStream_t);
-    pub fn musapy_cumsum_f32_v2(a: *const f32, c: *mut f32, ndim: i32, in_shape: *const usize, in_strides: *const isize, axis: i32, out_size: usize, stream: musaStream_t);
-    pub fn musapy_cumsum_f64_v2(a: *const f64, c: *mut f64, ndim: i32, in_shape: *const usize, in_strides: *const isize, axis: i32, out_size: usize, stream: musaStream_t);
-
-    // v3 Cumsum — work-efficient 三阶段 prefix sum（含 scratch buffer）
+    // v3 Cumsum — work-efficient 分层 prefix sum（含 scratch buffer）
     // 签名：(a, c, tmp, ndim, in_shape, in_strides, axis, axis_len, out_size, stream)
+    // scratch 布局：block_sums 区（num_rows×bpr）；bpr > 256 时其后紧跟
+    // tile_sums 区（num_rows×ceil(bpr/256)）。host 保证 bpr ≤ 65536。
     pub fn musapy_cumsum_i64_v3(a: *const i64, c: *mut i64, tmp: *mut i64, ndim: i32, in_shape: *const usize, in_strides: *const isize, axis: i32, axis_len: usize, out_size: usize, stream: musaStream_t);
     pub fn musapy_cumsum_f32_v3(a: *const f32, c: *mut f32, tmp: *mut f32, ndim: i32, in_shape: *const usize, in_strides: *const isize, axis: i32, axis_len: usize, out_size: usize, stream: musaStream_t);
     pub fn musapy_cumsum_f64_v3(a: *const f64, c: *mut f64, tmp: *mut f64, ndim: i32, in_shape: *const usize, in_strides: *const isize, axis: i32, axis_len: usize, out_size: usize, stream: musaStream_t);
@@ -624,57 +622,8 @@ mod mock {
     mock_argreduce_v2!(musapy_argmin_f32_v2, f32, |v, best| v < best);
     mock_argreduce_v2!(musapy_argmin_f64_v2, f64, |v, best| v < best);
 
-    // cumsum mock（输出同 shape，prefix sum）
-    macro_rules! mock_cumsum_v2 {
-        ($name:ident, $t:ty) => {
-            pub unsafe fn $name(
-                a: *const $t, c: *mut $t,
-                ndim: i32, in_shape: *const usize, in_strides: *const isize,
-                axis: i32, out_size: usize,
-                _stream: musaStream_t,
-            ) {
-                if a.is_null() || c.is_null() || ndim <= 0 || out_size == 0 { return; }
-                let ndim_u = ndim as usize;
-                let shape_s = std::slice::from_raw_parts(in_shape, ndim_u);
-                let strides_s = std::slice::from_raw_parts(in_strides, ndim_u);
-                let axis_u = axis as usize;
-                for idx in 0..out_size {
-                    // 展开 idx 得到 axis 坐标
-                    let mut tmp = idx;
-                    let mut axis_coord = 0usize;
-                    for i in (0..ndim_u).rev() {
-                        let coord = tmp % shape_s[i];
-                        tmp /= shape_s[i];
-                        if i == axis_u { axis_coord = coord; }
-                    }
-                    // 计算 axis=0 时的 base offset
-                    let mut base = 0isize;
-                    tmp = idx;
-                    for i in (0..ndim_u).rev() {
-                        let coord = tmp % shape_s[i];
-                        tmp /= shape_s[i];
-                        if i != axis_u {
-                            base += coord as isize * strides_s[i];
-                        }
-                    }
-                    let axis_stride = strides_s[axis_u];
-                    let mut acc: $t = 0.0 as $t;
-                    for k in 0..=axis_coord {
-                        let off = (base + k as isize * axis_stride) as usize;
-                        acc += *a.add(off);
-                    }
-                    *c.add(idx) = acc;
-                }
-            }
-        };
-    }
-
-    mock_cumsum_v2!(musapy_cumsum_i64_v2, i64);
-    mock_cumsum_v2!(musapy_cumsum_f32_v2, f32);
-    mock_cumsum_v2!(musapy_cumsum_f64_v2, f64);
-
-    // v3 cumsum mock — 与 v2 同算法（逐行 inclusive prefix sum），忽略 scratch buffer。
-    // mock 模式只求正确性，性能不要求；复用 v2 的实现即可。
+    // v3 cumsum mock — 逐行 inclusive prefix sum，忽略 scratch buffer。
+    // mock 模式只求正确性（任意 axis_len 均正确），不模拟分层 kernel 行为。
     macro_rules! mock_cumsum_v3 {
         ($name:ident, $t:ty) => {
             pub unsafe fn $name(
