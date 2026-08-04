@@ -16,6 +16,7 @@ Phase 2:
 - Dunders: -, *, /, **, unary -, abs()
 """
 
+import numpy as np
 import pytest
 
 import musapy as ms
@@ -657,3 +658,55 @@ class TestElementwiseMusa:
         f = ms.mul(ms.array([2, 3], dtype=ms.int64), ms.array([1.5, 2.5], dtype=ms.float64))
         assert f.dtype == ms.float64
         assert f.tolist() == [3.0, 7.5]
+
+    # ── P3: float4 向量化路径 ─────────────────────────────────
+
+    def test_vec4_path_correctness(self):
+        """1M 连续对齐 → vec4 路径：binary 5 op + unary 7 op 对比 numpy。"""
+        rng = np.random.default_rng(51)
+        n = 1_000_000  # ≥ VEC4_THRESHOLD 且 %4==0
+        x = (rng.random(n).astype(np.float32) * 2.0 + 0.5)  # 正数域，避免 log/div 奇异
+        y = rng.random(n).astype(np.float32) * 2.0 + 0.5
+        a = ms.array(x.tolist(), device="musa:0")
+        b = ms.array(y.tolist(), device="musa:0")
+        for op, wf in ((ms.add, lambda: x + y), (ms.sub, lambda: x - y),
+                       (ms.mul, lambda: x * y), (ms.div, lambda: x / y)):
+            np.testing.assert_allclose(np.array(op(a, b).tolist()), wf(),
+                                       rtol=1e-3, atol=1e-3)
+        np.testing.assert_allclose(np.array(ms.pow(a, b).tolist()),
+                                   np.power(x, y), rtol=1e-2, atol=1e-2)
+        for op, wf in ((ms.abs, lambda: np.abs(x)), (ms.neg, lambda: -x),
+                       (ms.exp, lambda: np.exp(x)), (ms.log, lambda: np.log(x)),
+                       (ms.sin, lambda: np.sin(x)), (ms.cos, lambda: np.cos(x))):
+            np.testing.assert_allclose(np.array(op(a).tolist()), wf(),
+                                       rtol=1e-3, atol=1e-3)
+        half = ms.array([0.5], device="musa:0")
+        np.testing.assert_allclose(np.array(ms.sign(ms.sub(a, half)).tolist()),
+                                   np.sign(x - 0.5), rtol=1e-3, atol=1e-3)
+
+    def test_vec4_threshold_boundaries(self):
+        """阈值两侧 + n%4≠0：全部走标量路径且结果正确。"""
+        rng = np.random.default_rng(52)
+        for n in (999_999, 1_000_001, 1_000_003):
+            x = rng.random(n).astype(np.float32)
+            a = ms.array(x.tolist(), device="musa:0")
+            np.testing.assert_allclose(np.array(ms.exp(a).tolist()),
+                                       np.exp(x), rtol=1e-3, atol=1e-3)
+
+    def test_vec4_unaligned_offset_view(self):
+        """offset 视图（指针未 16B 对齐）→ 标量路径，结果正确。"""
+        rng = np.random.default_rng(53)
+        x = rng.random(1_000_002).astype(np.float32)
+        a = ms.array(x.tolist(), device="musa:0")
+        sl = ms.slice(a, [[1, 1_000_001, 1]])  # offset=1 → 未对齐
+        np.testing.assert_allclose(np.array(ms.add(sl, sl).tolist()),
+                                   x[1:1_000_001] * 2, rtol=1e-3, atol=1e-3)
+
+    def test_vec4_broadcast_not_triggered(self):
+        """广播（stride=0）不触发 vec4（is_contiguous 检查），结果正确。"""
+        rng = np.random.default_rng(54)
+        mat = rng.random((1000, 1000)).astype(np.float32)
+        am = ms.array(mat.tolist(), device="musa:0")
+        scl = ms.array([2.0], device="musa:0")
+        np.testing.assert_allclose(np.array(ms.add(am, scl).tolist()),
+                                   mat + 2.0, rtol=1e-3, atol=1e-3)

@@ -457,6 +457,58 @@ __global__ void musapy_ge_flat_v2(
     if (idx < n) c[idx] = (uint8_t)(a[idx] >= b[idx]);
 }
 
+// ── v2 Flat float4 向量化（P3）───────────────────────────────
+// f32 flat-contiguous + 16B 对齐 + n%4==0 + n≥1M 时启用（wrapper 内自检，
+// 无 FFI/ABI 变化）。每线程 4 元素单指令读写；mp_22 实测 +3.6~5.3%
+// @4M/16M（kernel 已接近内存带宽上限，余量有限）。P2 教训：float4
+// 不与 warp shuffle 同函数即可安全使用。
+
+struct VecOpAdd { __device__ static float apply(float x, float y) { return x + y; } };
+struct VecOpSub { __device__ static float apply(float x, float y) { return x - y; } };
+struct VecOpMul { __device__ static float apply(float x, float y) { return x * y; } };
+struct VecOpDiv { __device__ static float apply(float x, float y) { return x / y; } };
+struct VecOpPow { __device__ static float apply(float x, float y) { return powf(x, y); } };
+struct VecOpAbs { __device__ static float apply(float x) { return fabsf(x); } };
+struct VecOpNeg { __device__ static float apply(float x) { return -x; } };
+struct VecOpExp { __device__ static float apply(float x) { return expf(x); } };
+struct VecOpLog { __device__ static float apply(float x) { return logf(x); } };
+struct VecOpSin { __device__ static float apply(float x) { return sinf(x); } };
+struct VecOpCos { __device__ static float apply(float x) { return cosf(x); } };
+struct VecOpSign {
+    __device__ static float apply(float x) { return (x > 0.0f) - (x < 0.0f); }
+};
+
+/// 向量化路径统一门槛（host wrapper 内检查）。
+#define VEC4_THRESHOLD 1000000
+
+/// 二进制 vec4 kernel（每线程 4 元素）。
+template <typename Op>
+__global__ void musapy_binary_vec4_kernel(
+    const float4* __restrict__ a, const float4* __restrict__ b,
+    float4* __restrict__ c, size_t n4
+) {
+    size_t i = blockIdx.x * blockDim.x + threadIdx.x;
+    if (i < n4) {
+        float4 x = a[i];
+        float4 y = b[i];
+        c[i] = make_float4(Op::apply(x.x, y.x), Op::apply(x.y, y.y),
+                           Op::apply(x.z, y.z), Op::apply(x.w, y.w));
+    }
+}
+
+/// 一元 vec4 kernel（每线程 4 元素）。
+template <typename Op>
+__global__ void musapy_unary_vec4_kernel(
+    const float4* __restrict__ a, float4* __restrict__ c, size_t n4
+) {
+    size_t i = blockIdx.x * blockDim.x + threadIdx.x;
+    if (i < n4) {
+        float4 x = a[i];
+        c[i] = make_float4(Op::apply(x.x), Op::apply(x.y),
+                           Op::apply(x.z), Op::apply(x.w));
+    }
+}
+
 // ── extern "C" 稳定 ABI ────────────────────────────────────────
 
 extern "C" {
@@ -478,8 +530,8 @@ void musapy_add_f64_v1(
 }
 
 // ── v2 Binary 符号 ──
-// 宏：生成 binary op 的 f32/f64 wrapper（含 contiguous fast-path）
-#define BINARY_V2(OP)                                                         \
+// 宏：生成 binary op 的 f32/f64 wrapper（含 contiguous fast-path + P3 vec4）
+#define BINARY_V2(OP, VECOP)                                                  \
 void musapy_##OP##_f32_v2(                                                   \
     const float* __restrict__ a, const float* __restrict__ b,                \
     float* __restrict__ c, int ndim, const size_t* shape,                    \
@@ -489,8 +541,16 @@ void musapy_##OP##_f32_v2(                                                   \
     for (int i = 0; i < ndim; i++) n *= shape[i];                           \
     if (is_contiguous_strides(shape, a_strides, ndim) &&                     \
         is_contiguous_strides(shape, b_strides, ndim)) {                     \
-        musapy_##OP##_flat_v2<float><<<grid_size_1d(n), 256, 0, stream>>>(   \
-            a, b, c, n);                                                     \
+        if (n >= VEC4_THRESHOLD && (n & 3) == 0 &&                           \
+            (((uintptr_t)a & 15) == 0) && (((uintptr_t)b & 15) == 0) &&      \
+            (((uintptr_t)c & 15) == 0)) {                                    \
+            musapy_binary_vec4_kernel<VECOP><<<grid_size_1d(n >> 2), 256,    \
+                0, stream>>>((const float4*)a, (const float4*)b,             \
+                (float4*)c, n >> 2);                                         \
+        } else {                                                             \
+            musapy_##OP##_flat_v2<float><<<grid_size_1d(n), 256, 0, stream>>>(\
+                a, b, c, n);                                                 \
+        }                                                                    \
     } else {                                                                 \
         NdMeta meta;                                                         \
         meta.ndim = ndim;                                                    \
@@ -527,16 +587,16 @@ void musapy_##OP##_f64_v2(                                                   \
     }                                                                        \
 }
 
-BINARY_V2(add)
-BINARY_V2(sub)
-BINARY_V2(mul)
-BINARY_V2(div)
-BINARY_V2(pow)
+BINARY_V2(add, VecOpAdd)
+BINARY_V2(sub, VecOpSub)
+BINARY_V2(mul, VecOpMul)
+BINARY_V2(div, VecOpDiv)
+BINARY_V2(pow, VecOpPow)
 
 #undef BINARY_V2
 
 // ── v2 Unary 符号 ──
-#define UNARY_V2(OP)                                                          \
+#define UNARY_V2(OP, VECOP)                                                   \
 void musapy_##OP##_f32_v2(                                                   \
     const float* __restrict__ a, float* __restrict__ c,                      \
     int ndim, const size_t* shape, const ssize_t* a_strides,                 \
@@ -545,8 +605,14 @@ void musapy_##OP##_f32_v2(                                                   \
     size_t n = 1;                                                            \
     for (int i = 0; i < ndim; i++) n *= shape[i];                           \
     if (is_contiguous_strides(shape, a_strides, ndim)) {                     \
-        musapy_##OP##_flat_v2<float><<<grid_size_1d(n), 256, 0, stream>>>(   \
-            a, c, n);                                                        \
+        if (n >= VEC4_THRESHOLD && (n & 3) == 0 &&                           \
+            (((uintptr_t)a & 15) == 0) && (((uintptr_t)c & 15) == 0)) {      \
+            musapy_unary_vec4_kernel<VECOP><<<grid_size_1d(n >> 2), 256,     \
+                0, stream>>>((const float4*)a, (float4*)c, n >> 2);          \
+        } else {                                                             \
+            musapy_##OP##_flat_v2<float><<<grid_size_1d(n), 256, 0, stream>>>(\
+                a, c, n);                                                    \
+        }                                                                    \
     } else {                                                                 \
         NdMetaUnary meta;                                                    \
         meta.ndim = ndim;                                                    \
@@ -580,13 +646,13 @@ void musapy_##OP##_f64_v2(                                                   \
     }                                                                        \
 }
 
-UNARY_V2(sin)
-UNARY_V2(cos)
-UNARY_V2(exp)
-UNARY_V2(log)
-UNARY_V2(abs)
-UNARY_V2(sign)
-UNARY_V2(neg)
+UNARY_V2(sin, VecOpSin)
+UNARY_V2(cos, VecOpCos)
+UNARY_V2(exp, VecOpExp)
+UNARY_V2(log, VecOpLog)
+UNARY_V2(abs, VecOpAbs)
+UNARY_V2(sign, VecOpSign)
+UNARY_V2(neg, VecOpNeg)
 
 #undef UNARY_V2
 
