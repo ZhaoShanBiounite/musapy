@@ -77,6 +77,44 @@ f32 vs f64 gather（+50% 流量）耗时几乎不变 → 计算受限而非内�
 - cumsum 容量上限：256³ ≈ 16.7M 元素/轴，超限报错（P0）。
 - 小 axis 归约路径：naive 仅剩 axis_len ≤ 16 与 arg*（P2）。
 
+## P6 清理（2026-08-04）：死代码审计与删除
+
+对 179 个 extern 符号做可达性审计（双 agent），结论与处置：
+
+### 删除的 3 个死符号（三层同步：kernel wrapper / FFI 声明 / mock）
+
+| 符号 | 死因 |
+|------|------|
+| `musapy_add_f32_v1` / `musapy_add_f64_v1` | v0.1 兼容符号，Rust 侧从未调用，`_flat_v2` 已覆盖 |
+| `musapy_mean_partial_i64_v2` | REDUCE_PARTIAL_V2(mean) 宏顺带生成；mean 的 compute dtype 只有 f32/f64，host 分派不可达 |
+
+### 门禁验证：合并 naive → small_axis **被否决**（保留 naive）
+
+计划先验证再合并，probe 实测（MTT S4000）：
+
+| axis_len × out_size | naive | small_axis G=32 | 回退 |
+|---------------------|-------|-----------------|------|
+| 2 × 1M | 0.037 ms | 0.581 ms | **15.5×** |
+| 4 × 1M | 0.058 ms | 0.581 ms | **10×** |
+| 8 × 1M | 0.173 ms | 0.583 ms | 3.4× |
+| 16 × 1M | 1.166 ms | 0.583 ms | 0.5×（反超） |
+| 2 × 65536 | 0.020 ms | 0.054 ms | 2.7× |
+
+小 axis × 大 out_size 时 32 线程/输出的线程膨胀 + shuffle 开销远超
+naive 顺序循环——**naive 在 axis_len ≤ 8 区间不可替代**，dispatch 的
+16 阈值经实测验证选得恰当。naive 值算子 14 个符号全部保留。
+
+### 顺带清理
+
+- reduction.mu stale 注释（"tiles_per_output==1 时跳过 Phase 2"，该状态不可能出现）
+- op_builder.rs cumsum scratch 分配中恒真的 `tmp_nbytes > 0` 判断
+- ADR-002（中英）v1 保留决策更新为 P6 已删除
+
+### 结果
+
+- extern 符号 179 → **176**；pytest 406 / cargo 293 全绿；benchmark 零回归
+  （1M sum 0.085ms、2D 0.053ms 与清理前一致）
+
 ## 复现
 
 ```bash

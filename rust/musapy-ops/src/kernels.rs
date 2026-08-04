@@ -14,11 +14,7 @@ use musapy_core::musa_ffi::musaStream_t;
 
 #[cfg(not(musapy_mock_musa))]
 unsafe extern "C" {
-    // v1（保留）
-    pub fn musapy_add_f32_v1(a: *const f32, b: *const f32, c: *mut f32, n: usize, stream: musaStream_t);
-    pub fn musapy_add_f64_v1(a: *const f64, b: *const f64, c: *mut f64, n: usize, stream: musaStream_t);
-
-    // v2 Binary
+    // v2 Binary（v1 符号于 P6 清理删除：Rust 侧从未调用，_flat_v2 已覆盖）
     pub fn musapy_add_f32_v2(a: *const f32, b: *const f32, c: *mut f32, ndim: i32, shape: *const usize, a_strides: *const isize, b_strides: *const isize, stream: musaStream_t);
     pub fn musapy_add_f64_v2(a: *const f64, b: *const f64, c: *mut f64, ndim: i32, shape: *const usize, a_strides: *const isize, b_strides: *const isize, stream: musaStream_t);
     pub fn musapy_sub_f32_v2(a: *const f32, b: *const f32, c: *mut f32, ndim: i32, shape: *const usize, a_strides: *const isize, b_strides: *const isize, stream: musaStream_t);
@@ -184,7 +180,7 @@ unsafe extern "C" {
     pub fn musapy_min_partial_i64_v2(a: *const i64, partials: *mut i64, ndim: i32, in_shape: *const usize, in_strides: *const isize, axis: i32, axis_len: usize, out_size: usize, tiles_per_output: usize, stream: musaStream_t);
     pub fn musapy_min_partial_f32_v2(a: *const f32, partials: *mut f32, ndim: i32, in_shape: *const usize, in_strides: *const isize, axis: i32, axis_len: usize, out_size: usize, tiles_per_output: usize, stream: musaStream_t);
     pub fn musapy_min_partial_f64_v2(a: *const f64, partials: *mut f64, ndim: i32, in_shape: *const usize, in_strides: *const isize, axis: i32, axis_len: usize, out_size: usize, tiles_per_output: usize, stream: musaStream_t);
-    pub fn musapy_mean_partial_i64_v2(a: *const i64, partials: *mut i64, ndim: i32, in_shape: *const usize, in_strides: *const isize, axis: i32, axis_len: usize, out_size: usize, tiles_per_output: usize, stream: musaStream_t);
+    // mean partial 只有 f32/f64（compute dtype 规则；P6 移除不可达的 i64）
     pub fn musapy_mean_partial_f32_v2(a: *const f32, partials: *mut f32, ndim: i32, in_shape: *const usize, in_strides: *const isize, axis: i32, axis_len: usize, out_size: usize, tiles_per_output: usize, stream: musaStream_t);
     pub fn musapy_mean_partial_f64_v2(a: *const f64, partials: *mut f64, ndim: i32, in_shape: *const usize, in_strides: *const isize, axis: i32, axis_len: usize, out_size: usize, tiles_per_output: usize, stream: musaStream_t);
 
@@ -342,17 +338,7 @@ macro_rules! mock_cast_v2 {
 mod mock {
     use super::*;
 
-    // v1（保留）
-    pub unsafe fn musapy_add_f32_v1(a: *const f32, b: *const f32, c: *mut f32, n: usize, _s: musaStream_t) {
-        if a.is_null() || b.is_null() || c.is_null() || n == 0 { return; }
-        for i in 0..n { *c.add(i) = *a.add(i) + *b.add(i); }
-    }
-    pub unsafe fn musapy_add_f64_v1(a: *const f64, b: *const f64, c: *mut f64, n: usize, _s: musaStream_t) {
-        if a.is_null() || b.is_null() || c.is_null() || n == 0 { return; }
-        for i in 0..n { *c.add(i) = *a.add(i) + *b.add(i); }
-    }
-
-    // v2 Binary
+    // v2 Binary（v1 符号于 P6 清理删除）
     mock_binary_v2!(musapy_add_f32_v2, f32, |a, b| a + b);
     mock_binary_v2!(musapy_add_f64_v2, f64, |a, b| a + b);
     mock_binary_v2!(musapy_sub_f32_v2, f32, |a, b| a - b);
@@ -817,7 +803,7 @@ mod mock {
     mock_minmax_partial_v2!(musapy_min_partial_f64_v2, f64, |v, acc| v < acc);
 
     // mean partial mock（只做 sum，final 再除）
-    mock_reduce_partial_v2!(musapy_mean_partial_i64_v2, i64, 0, |acc, v| acc + v);
+    // mean partial 只有 f32/f64（P6 移除不可达的 i64 mock）
     mock_reduce_partial_v2!(musapy_mean_partial_f32_v2, f32, 0.0, |acc, v| acc + v);
     mock_reduce_partial_v2!(musapy_mean_partial_f64_v2, f64, 0.0, |acc, v| acc + v);
 

@@ -5,8 +5,8 @@
 // ABI 版本嵌入符号名：musapy_<op>_<dtype>_v<abi>（ADR L2-1）
 //
 // ABI 版本：
-//   _v1: flat contiguous（v0.1-alpha，保留兼容）
 //   _v2: stride-aware N-dimensional（v0.2-alpha, ADR-002-D2）
+//   （v1 flat 符号于 P6 清理删除——Rust 侧从未调用，_flat_v2 已覆盖）
 
 #include "include/common.h"
 #include <math.h>
@@ -29,21 +29,6 @@ struct NdMetaUnary {
     size_t shape[MUSAPY_MAX_NDIM];
     ssize_t a_strides[MUSAPY_MAX_NDIM];
 };
-
-// ── v1: flat contiguous（v0.1-alpha，保留）──────────────────────
-
-template <typename T>
-__global__ void musapy_add_kernel(
-    const T* __restrict__ a,
-    const T* __restrict__ b,
-    T* __restrict__ c,
-    size_t n
-) {
-    size_t idx = blockIdx.x * blockDim.x + threadIdx.x;
-    if (idx < n) {
-        c[idx] = a[idx] + b[idx];
-    }
-}
 
 // ── v2 Binary kernels（ADR-002-D2）────────────────────────────
 
@@ -512,22 +497,6 @@ __global__ void musapy_unary_vec4_kernel(
 // ── extern "C" 稳定 ABI ────────────────────────────────────────
 
 extern "C" {
-
-// ── v1 符号（保留，L4-3 兼容性）──
-
-void musapy_add_f32_v1(
-    const float* __restrict__ a, const float* __restrict__ b,
-    float* __restrict__ c, size_t n, musaStream_t stream
-) {
-    musapy_add_kernel<float><<<grid_size_1d(n), 256, 0, stream>>>(a, b, c, n);
-}
-
-void musapy_add_f64_v1(
-    const double* __restrict__ a, const double* __restrict__ b,
-    double* __restrict__ c, size_t n, musaStream_t stream
-) {
-    musapy_add_kernel<double><<<grid_size_1d(n), 256, 0, stream>>>(a, b, c, n);
-}
 
 // ── v2 Binary 符号 ──
 // 宏：生成 binary op 的 f32/f64 wrapper（含 contiguous fast-path + P3 vec4）

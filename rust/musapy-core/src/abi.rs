@@ -43,8 +43,8 @@ pub const ABI_VERSION: u32 = {
 /// musapy 运行时支持的最低 ABI 版本。
 ///
 /// 低于此版本的 kernel 被视为过旧，拒绝加载。
-/// 当前 ABI_VERSION 即唯一支持版本；未来引入 v2 时，
-/// 若 v1 仍可回退兼容，则把此值保持为 1。
+/// 当前内核为 _v2 世代（v0.2 起，elementwise 的 v1 flat 符号已于
+/// P6 清理删除）；此值保持 1 以兼容符号名解析。
 pub const MIN_SUPPORTED_ABI_VERSION: u32 = 1;
 
 /// MUSA Runtime API 版本（编码整数，来自 musart_version.h）。
@@ -164,7 +164,7 @@ pub fn musapy_abi_version() -> u32 {
 
 /// 生成 kernel 符号名：`musapy_<op>_<dtype>_v<ABI>`。
 ///
-/// 例如 `kernel_symbol("add", "f32")` → `"musapy_add_f32_v1"`。
+/// 例如 `kernel_symbol("add", "f32")` → `"musapy_add_f32_v2"`。
 ///
 /// 所有 kernel 符号必须经此函数生成，确保版本后缀统一。
 pub fn kernel_symbol(op: &str, dtype: &str) -> String {
@@ -173,7 +173,7 @@ pub fn kernel_symbol(op: &str, dtype: &str) -> String {
 
 /// 从 kernel 符号名中解析 ABI 版本后缀。
 ///
-/// 输入 `"musapy_add_f32_v1"` → `Ok(1)`。
+/// 输入 `"musapy_add_f32_v2"` → `Ok(2)`。
 /// 用 `rfind("_v")` 定位最后一个 `_v`，避免与 op/dtype 名中的 `_v` 冲突。
 pub fn parse_kernel_symbol_abi(symbol: &str) -> Result<u32, AbiError> {
     let idx = symbol

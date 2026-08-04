@@ -2478,7 +2478,9 @@ pub(crate) fn cumsum_op(
                     num_rows * blocks_per_row
                 };
                 let tmp_nbytes = scratch_elems * compute_dtype.element_size();
-                let tmp_buf = if blocks_per_row > 1 && tmp_nbytes > 0 {
+                // out_size > 0 保证 num_rows ≥ 1，blocks_per_row > 1 时
+                // tmp_nbytes 恒 > 0（P6 简化：原多余判断）
+                let tmp_buf = if blocks_per_row > 1 {
                     Some(Buffer::alloc(tmp_nbytes, device.clone(), &out_stream)?)
                 } else {
                     None

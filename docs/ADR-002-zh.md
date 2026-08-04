@@ -75,7 +75,7 @@ void musapy_add_f32_v2(
 - 输出 `c` 恒为 **contiguous**（标准 row-major strides），不传 c_strides。
 - stride 以**元素个数**为单位（非字节），kernel 内 `a[idx·stride]` 直接寻址。
 - 输入可能本身非 contiguous（如 transpose view），其 strides 与广播 strides **组合**后传入。
-- 符号版本 `_v2`：按 L4-3，`_v1` 符号在 v0.2 内保留（内部仍可用于 1D 连续快路径），新代码走 `_v2`。
+- 符号版本 `_v2`：`_v1` 符号按 L4-3 曾在 v0.2 内保留（内部 1D 连续快路径），**P6 清理（2026-08-04）已删除**——Rust 层从未调用，`_flat_v2` 已覆盖其功能。
 
 **0-dim 标量广播**：`shape=[]` 的操作数广播到任意形状，所有维 stride=0（L1-11：标量是 0-dim Array，无特殊代码路径）。
 

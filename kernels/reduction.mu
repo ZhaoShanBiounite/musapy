@@ -565,8 +565,9 @@ __global__ void musapy_cumsum_add_prefix_kernel_v2(
 //   grid = out_size blocks
 //   每 block 256 threads 缩减 tiles_per_output 个 partials → 1 个输出
 //
-// 当 tiles_per_output == 1 时，Rust 侧直接将 partials 指向 output，
-// 跳过 Phase 2。
+// 注（P2 起）：tiles_per_output = ceil(axis_len/1024)（每线程 4 元素），
+// 且该路径仅 axis_len > 1024 时进入 → tiles 恒 ≥ 2，两阶段总成对执行；
+// host 侧无「跳过 Phase 2」的捷径。
 
 // ── Phase 1: partial reduction kernels ────────────────────────
 
@@ -1362,8 +1363,32 @@ REDUCE_PARTIAL_V2(sum)
 REDUCE_PARTIAL_V2(prod)
 REDUCE_PARTIAL_V2(max)
 REDUCE_PARTIAL_V2(min)
-REDUCE_PARTIAL_V2(mean)
 #undef REDUCE_PARTIAL_V2
+
+/// mean partial 只有 f32/f64（compute dtype 规则；P6 拆出专用宏，
+/// 删掉原 REDUCE_PARTIAL_V2(mean) 顺带生成的 i64 死符号）。
+#define MEAN_PARTIAL_V2(T, SUFFIX)                                            \
+void musapy_mean_partial_##SUFFIX##_v2(                                       \
+    const T* __restrict__ a, T* __restrict__ partials,                        \
+    int ndim, const size_t* in_shape, const ssize_t* in_strides,              \
+    int axis, size_t axis_len, size_t out_size,                               \
+    size_t tiles_per_output, musaStream_t stream                              \
+) {                                                                           \
+    NdMetaReduce meta;                                                        \
+    meta.ndim = ndim; meta.axis = axis; meta.axis_len = axis_len;            \
+    for (int i = 0; i < ndim; i++) {                                          \
+        meta.in_shape[i] = in_shape[i];                                       \
+        meta.in_strides[i] = in_strides[i];                                   \
+    }                                                                         \
+    size_t grid = out_size * tiles_per_output;                                \
+    size_t smem = 256 * sizeof(T);                                            \
+    musapy_mean_partial_kernel_v2<T>                                          \
+        <<<grid, 256, smem, stream>>>(a, partials, meta, out_size, tiles_per_output); \
+}
+
+MEAN_PARTIAL_V2(float, f32)
+MEAN_PARTIAL_V2(double, f64)
+#undef MEAN_PARTIAL_V2
 
 // ── Parallel wrappers（Phase 2: final）──
 // 签名：(partials, c, num_partials, out_size, stream)

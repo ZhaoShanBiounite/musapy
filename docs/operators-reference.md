@@ -134,19 +134,28 @@ ms.cumsum(a, axis=None, out=None) -> Array
 | mean | cast → f64 | 保持 | 同 compute dtype |
 | argmax/argmin | cast → i64 | 保持 | **恒 i64**（索引） |
 
-### Kernel 符号（46 个）
+### Kernel 符号（76 个，P6 清理后）
 
 ```
 musapy_{sum|prod|max|min}_{i64|f32|f64}_v2                  # 12（naive）
 musapy_mean_{f32|f64}_v2                                     #  2（naive）
 musapy_{argmax|argmin}_{i64|f32|f64}_v2                      #  6（naive）
-musapy_{sum|prod|max|min}_small_axis_{i64|f32|f64}_v2        # 12（P2 小 axis）
-musapy_mean_small_axis_{f32|f64}_v2                          #  2（P2 小 axis）
-musapy_{sum|prod|max|min|mean}_partial_{i64|f32|f64}_v2      # 14（两阶段 P1）
+musapy_{sum|prod|max|min}_small_axis_{i64|f32|f64}_v2        # 12（小 axis）
+musapy_mean_small_axis_{f32|f64}_v2                          #  2（小 axis）
+musapy_{sum|prod|max|min}_partial_{i64|f32|f64}_v2           # 12（两阶段 P1）
+musapy_mean_partial_{f32|f64}_v2                             #  2（两阶段 P1）
 musapy_{sum|prod|max|min}_final_{i64|f32|f64}_v2             # 12（两阶段 P2）
 musapy_mean_final_{f32|f64}_v2                               #  2（两阶段 P2）
+musapy_{argmax|argmin}_partial_{i64|f32|f64}_v2              #  6（两阶段 P1）
+musapy_{argmax|argmin}_final_{i64|f32|f64}_v2                #  6（两阶段 P2）
 musapy_cumsum_{i64|f32|f64}_v3                               #  3（分层扫描）
 ```
+
+> P6（2026-08-04）清理：删除 3 个无调用者的死符号
+> （`musapy_add_f32/f64_v1`、`musapy_mean_partial_i64_v2`），
+> 全库 extern 符号 179 → 176。naive 值算子 14 个保留——门禁实测
+> 在 axis_len ≤ 16 × 大 out_size 时优于小 axis 路径（最高 15.5×），
+> argmax/argmin 在 axis_len ≤ 1024 段也只有 naive 实现。
 
 Reduction ABI（naive / small_axis）:
 ```c
