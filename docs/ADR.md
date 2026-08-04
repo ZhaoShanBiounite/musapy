@@ -168,8 +168,8 @@ ms.array([1,2,3], device=ms.Device.musa(0))  # object
 
 ```python
 ms.device_summary()
-# musa:0 — MTT S4000, arch=mp_22, 24.0 GB VRAM, 7680 CUs
-# musa:1 — MTT S4000, arch=mp_22, 24.0 GB VRAM, 7680 CUs
+# musa:0 — MTT S4000, arch=mp_22, 47.9 GB VRAM, 56 CUs
+# musa:1 — MTT S4000, arch=mp_22, 47.9 GB VRAM, 56 CUs
 ```
 
 ### L1-4: Phase 1 Dtype Set
