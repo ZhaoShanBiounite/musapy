@@ -176,6 +176,9 @@ def run_benchmark(size: int, iters: int, device_id: int):
     # (name, category, fn, flops_per_elem, read_bytes_per_elem, write_bytes_per_elem)
     #   bytes: 按 f32 計算。comparison 輸出 uint8(1B) 非同 dtype。
     #   reduction 全局: 讀 4MB，寫 4B（標量）
+    # log 需要正数域：预计算 abs（P5 修正——原 ms.log(ms.abs(a)) 计时含两个
+    # kernel，log 的延迟被 abs 污染）
+    a_abs = ms.abs(a)
     ops = [
         # ── Elementwise binary（讀 2 輸入 + 寫 1 輸出）──
         ("add",   "elementwise", lambda: ms.add(a, b),   1.0, 8, 4),
@@ -187,7 +190,7 @@ def run_benchmark(size: int, iters: int, device_id: int):
         ("sin",   "elementwise", lambda: ms.sin(a),      8.0, 4, 4),
         ("cos",   "elementwise", lambda: ms.cos(a),      8.0, 4, 4),
         ("exp",   "elementwise", lambda: ms.exp(a),      8.0, 4, 4),
-        ("log",   "elementwise", lambda: ms.log(ms.abs(a)), 8.0, 4, 4),
+        ("log",   "elementwise", lambda: ms.log(a_abs),  8.0, 4, 4),
         ("abs",   "elementwise", lambda: ms.abs(a),      1.0, 4, 4),
         ("sign",  "elementwise", lambda: ms.sign(a),     1.0, 4, 4),
         ("neg",   "elementwise", lambda: ms.neg(a),      1.0, 4, 4),
@@ -260,6 +263,10 @@ def run_benchmark(size: int, iters: int, device_id: int):
     print("\n" + "-" * 72)
     print("  [Reduction 专项 — 2D axis]")
     print("-" * 72)
+    print("  注: 65536 elements（256 KB）远小于带宽敏感规模；延迟由 ~45us")
+    print("      launch 地板主导（P3 扫描坐实），此处数字反映 kernel 并行度")
+    print("      而非带宽。P2 后 axis 缩减走小 axis 并行路径（每输出")
+    print("      32..256 线程组），naive 单线程路径仅剩 axis_len ≤ 16 与 arg*。")
 
     rows, cols = 256, 256
     flat = [float(i % 10000) * 0.01 for i in range(rows * cols)]
@@ -289,8 +296,11 @@ def run_benchmark(size: int, iters: int, device_id: int):
     print("  [Indexing 专项 — gather/scatter/contiguous]")
     print("-" * 72)
     print(f"  主數組: {size:,} elements；view ops 零拷贝（延遲 ≈ Python+Rust 開銷）")
-    print("  注: gather/scatter 每次调用会做 indices 的 D2H + sync 越界校验，")
-    print("      大 indices 数组下该串行化开销主导延迟（非 kernel 瓶颈）。")
+    print("  注: P1 起 gather/scatter 越界校验已移入 kernel（device 错误槽 +")
+    print("      sync 延迟报错），无 host 端 D2H 校验；延迟 ≈ launch 地板 +")
+    print("      kernel 执行。1M 规模下两者均处 ~45us 地板附近。")
+    print("  contig(transp) 走 P4 tiled smem kernel（1M 读数亦受地板限制，")
+    print("      ≥2M 规模 220+ GB/s）。")
 
     # gather/scatter：全量索引（indices = 全排列），等效于整数组读写
     idx_all = ms.arange(size, dtype=ms.int64, device=device_str)
@@ -373,6 +383,11 @@ def run_benchmark(size: int, iters: int, device_id: int):
         print()
         print("  ⚠ 注意: --size < 1M 時延遲主要由 launch overhead 主導，")
         print("    真實帶寬需要 --size ≥ 10M 才能測出。")
+    print()
+    print("  ⚠ launch 地板（P3 扫描坐实）: 单次 kernel launch + sync ≈ 45us")
+    print("    固定开销（driver 提交路径，应用层不可消除）。1M 规模下所有")
+    print("    算子的延迟 ≈ 45us 地板 + kernel 执行；≥4M 规模才反映真实带宽。")
+    print("    16M→64M 元素级斜率 ≈ 683 GB/s ≈ DRAM 峰值（768 GB/s 的 89%）。")
 
 
 def main():

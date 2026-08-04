@@ -117,7 +117,13 @@ ms.cumsum(a, axis=None, out=None) -> Array
 - **axis=None**：全局缩减，视为 1D（kernel_ndim=1, strides=[1]），输出 0-dim scalar
 - **axis=int**：沿指定轴缩减，支持负索引
 - **keepdims**：仅影响输出 Layout shape，kernel 不感知
-- **Kernel 策略**：one-thread-per-output-element，每线程循环 axis_len 次累加（correctness-first）
+- **Kernel 策略（P2 起三路选择）**：
+  - `axis_len ≤ 16` 或 argmax/argmin → naive one-thread-per-output
+  - `16 < axis_len ≤ 1024`（sum/prod/max/min/mean）→ 小 axis 并行
+    （每输出 32..256 线程组，warp shuffle + smem 两级归约）
+  - `axis_len > 1024` → 两阶段并行（partial 每线程 4 元素 + final）
+- **cumsum**：work-efficient 分层扫描，**单轴容量上限 256³ ≈ 16.7M 元素**，
+  超限报错（P0 修复：此前 axis_len > 65536 结果错误 + smem 越界）
 - **NdMetaReduce 结构体按值传入 kernel**（非 host 指针）
 
 ### Compute dtype 规则（ADR-002-D3）
@@ -128,23 +134,33 @@ ms.cumsum(a, axis=None, out=None) -> Array
 | mean | cast → f64 | 保持 | 同 compute dtype |
 | argmax/argmin | cast → i64 | 保持 | **恒 i64**（索引） |
 
-### Kernel 符号（23 个）
+### Kernel 符号（46 个）
 
 ```
-musapy_{sum|prod|max|min}_{i64|f32|f64}_v2     # 12
-musapy_mean_{f32|f64}_v2                        #  2
-musapy_{argmax|argmin}_{i64|f32|f64}_v2         #  6
-musapy_cumsum_{i64|f32|f64}_v2                  #  3
+musapy_{sum|prod|max|min}_{i64|f32|f64}_v2                  # 12（naive）
+musapy_mean_{f32|f64}_v2                                     #  2（naive）
+musapy_{argmax|argmin}_{i64|f32|f64}_v2                      #  6（naive）
+musapy_{sum|prod|max|min}_small_axis_{i64|f32|f64}_v2        # 12（P2 小 axis）
+musapy_mean_small_axis_{f32|f64}_v2                          #  2（P2 小 axis）
+musapy_{sum|prod|max|min|mean}_partial_{i64|f32|f64}_v2      # 14（两阶段 P1）
+musapy_{sum|prod|max|min}_final_{i64|f32|f64}_v2             # 12（两阶段 P2）
+musapy_mean_final_{f32|f64}_v2                               #  2（两阶段 P2）
+musapy_cumsum_{i64|f32|f64}_v3                               #  3（分层扫描）
 ```
 
-Reduction ABI:
+Reduction ABI（naive / small_axis）:
 ```c
+// naive：输入 T，输出 T
 void musapy_{op}_{dtype}_v2(
     const T* a, T* c,
     int ndim, size_t in_shape[MUSAPY_MAX_NDIM],
     ssize_t in_strides[MUSAPY_MAX_NDIM],
     int axis, size_t axis_len, size_t out_size,
     musaStream_t stream);
+// 小 axis：额外 group_size ∈ {32,64,128,256}
+void musapy_{op}_small_axis_{dtype}_v2(..., int group_size, musaStream_t stream);
+// 两阶段 partial：tiles_per_output = ceil(axis_len / 1024)
+void musapy_{op}_partial_{dtype}_v2(..., size_t tiles_per_output, musaStream_t stream);
 ```
 
 Arg-reduction ABI（输出 int64_t*）:
@@ -255,17 +271,23 @@ Binary 算子输入 dtype 不同时自动提升：
 ## 性能参考
 
 **环境**: MTT S4000, mp_22, 56 CUs, 47.9 GB VRAM  
-**规模**: 1M elements × f32
+**规模**: 1M elements × f32（2026-08-04，P0–P5 优化后）
 
-| 类别 | 平均延迟 | 聚合吞吐 |
-|------|---------|---------|
-| elementwise (13 ops) | 0.72 ms | 73 GFLOPS |
-| comparison (6 ops) | 0.31 ms | 19 GFLOPS |
-| reduction global (8 ops) | ~210 ms | — (naive 1-thread) |
-| reduction axis (256×256) | ~1.4 ms | — |
+| 类别 | 平均延迟 | 备注 |
+|------|---------|------|
+| elementwise (13 ops) | ~0.054–0.066 ms | 受 ~45 µs launch 地板限制 |
+| comparison (6 ops) | ~0.057 ms | 同上 |
+| reduction 全局 (8 ops) | 0.084–0.142 ms | sum 0.085 / argmax 0.090 / cumsum 0.306 |
+| reduction 2D (256×256) | 0.053–0.064 ms | 小 axis 并行路径 |
+| gather(full) / scatter(full) | 0.178 / 0.240 ms | P1 去同步后 |
+| contig(transp) / contig(flip) | 0.063 / 0.104 ms | P4 tiled kernel / u32 路径 |
 
-> 全局 reduction 慢是预期的：naive kernel 对 1M 元素只启动 1 个线程循环累加。  
-> 复现: `python benchmark/bench_musa_utilization.py --size 1000000 --iters 50`
+**launch 地板（P3 坐实）**: 单次 kernel launch + sync ≈ 45 µs 固定开销
+（driver 提交路径）。1M 规模的延迟读数 ≈ 地板 + kernel 执行；**≥4M 规模
+才反映真实带宽**：elementwise 16M 620 GB/s、64M 655 GB/s（≈ DRAM 峰值
+89%），转置 4M/16M 221/289 GB/s。
+
+> 复现: `python benchmark/bench_musa_utilization.py --size 1000000 --iters 100`
 
 ---
 
