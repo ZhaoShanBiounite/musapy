@@ -110,6 +110,21 @@ unsafe extern "C" {
     pub fn musapy_min_f64_v2(a: *const f64, c: *mut f64, ndim: i32, in_shape: *const usize, in_strides: *const isize, axis: i32, axis_len: usize, out_size: usize, stream: musaStream_t);
     pub fn musapy_mean_f32_v2(a: *const f32, c: *mut f32, ndim: i32, in_shape: *const usize, in_strides: *const isize, axis: i32, axis_len: usize, out_size: usize, stream: musaStream_t);
     pub fn musapy_mean_f64_v2(a: *const f64, c: *mut f64, ndim: i32, in_shape: *const usize, in_strides: *const isize, axis: i32, axis_len: usize, out_size: usize, stream: musaStream_t);
+    // 小 axis 并行 reduction（P2）：每输出 group_size ∈ {32,64,128,256} 线程
+    pub fn musapy_sum_small_axis_i64_v2(a: *const i64, c: *mut i64, ndim: i32, in_shape: *const usize, in_strides: *const isize, axis: i32, axis_len: usize, out_size: usize, group_size: i32, stream: musaStream_t);
+    pub fn musapy_sum_small_axis_f32_v2(a: *const f32, c: *mut f32, ndim: i32, in_shape: *const usize, in_strides: *const isize, axis: i32, axis_len: usize, out_size: usize, group_size: i32, stream: musaStream_t);
+    pub fn musapy_sum_small_axis_f64_v2(a: *const f64, c: *mut f64, ndim: i32, in_shape: *const usize, in_strides: *const isize, axis: i32, axis_len: usize, out_size: usize, group_size: i32, stream: musaStream_t);
+    pub fn musapy_prod_small_axis_i64_v2(a: *const i64, c: *mut i64, ndim: i32, in_shape: *const usize, in_strides: *const isize, axis: i32, axis_len: usize, out_size: usize, group_size: i32, stream: musaStream_t);
+    pub fn musapy_prod_small_axis_f32_v2(a: *const f32, c: *mut f32, ndim: i32, in_shape: *const usize, in_strides: *const isize, axis: i32, axis_len: usize, out_size: usize, group_size: i32, stream: musaStream_t);
+    pub fn musapy_prod_small_axis_f64_v2(a: *const f64, c: *mut f64, ndim: i32, in_shape: *const usize, in_strides: *const isize, axis: i32, axis_len: usize, out_size: usize, group_size: i32, stream: musaStream_t);
+    pub fn musapy_max_small_axis_i64_v2(a: *const i64, c: *mut i64, ndim: i32, in_shape: *const usize, in_strides: *const isize, axis: i32, axis_len: usize, out_size: usize, group_size: i32, stream: musaStream_t);
+    pub fn musapy_max_small_axis_f32_v2(a: *const f32, c: *mut f32, ndim: i32, in_shape: *const usize, in_strides: *const isize, axis: i32, axis_len: usize, out_size: usize, group_size: i32, stream: musaStream_t);
+    pub fn musapy_max_small_axis_f64_v2(a: *const f64, c: *mut f64, ndim: i32, in_shape: *const usize, in_strides: *const isize, axis: i32, axis_len: usize, out_size: usize, group_size: i32, stream: musaStream_t);
+    pub fn musapy_min_small_axis_i64_v2(a: *const i64, c: *mut i64, ndim: i32, in_shape: *const usize, in_strides: *const isize, axis: i32, axis_len: usize, out_size: usize, group_size: i32, stream: musaStream_t);
+    pub fn musapy_min_small_axis_f32_v2(a: *const f32, c: *mut f32, ndim: i32, in_shape: *const usize, in_strides: *const isize, axis: i32, axis_len: usize, out_size: usize, group_size: i32, stream: musaStream_t);
+    pub fn musapy_min_small_axis_f64_v2(a: *const f64, c: *mut f64, ndim: i32, in_shape: *const usize, in_strides: *const isize, axis: i32, axis_len: usize, out_size: usize, group_size: i32, stream: musaStream_t);
+    pub fn musapy_mean_small_axis_f32_v2(a: *const f32, c: *mut f32, ndim: i32, in_shape: *const usize, in_strides: *const isize, axis: i32, axis_len: usize, out_size: usize, group_size: i32, stream: musaStream_t);
+    pub fn musapy_mean_small_axis_f64_v2(a: *const f64, c: *mut f64, ndim: i32, in_shape: *const usize, in_strides: *const isize, axis: i32, axis_len: usize, out_size: usize, group_size: i32, stream: musaStream_t);
     pub fn musapy_argmax_i64_v2(a: *const i64, c: *mut i64, ndim: i32, in_shape: *const usize, in_strides: *const isize, axis: i32, axis_len: usize, out_size: usize, stream: musaStream_t);
     pub fn musapy_argmax_f32_v2(a: *const f32, c: *mut i64, ndim: i32, in_shape: *const usize, in_strides: *const isize, axis: i32, axis_len: usize, out_size: usize, stream: musaStream_t);
     pub fn musapy_argmax_f64_v2(a: *const f64, c: *mut i64, ndim: i32, in_shape: *const usize, in_strides: *const isize, axis: i32, axis_len: usize, out_size: usize, stream: musaStream_t);
@@ -581,6 +596,38 @@ mod mock {
 
     mock_mean_v2!(musapy_mean_f32_v2, f32);
     mock_mean_v2!(musapy_mean_f64_v2, f64);
+
+    // 小 axis 并行 reduction mock（P2）：结果语义与 naive 完全一致，
+    // group_size 仅影响 GPU 线程映射，mock 直接委托对应 naive 实现。
+    macro_rules! mock_small_axis_v2 {
+        ($name:ident, $inner:ident, $t:ty) => {
+            pub unsafe fn $name(
+                a: *const $t, c: *mut $t,
+                ndim: i32, in_shape: *const usize, in_strides: *const isize,
+                axis: i32, axis_len: usize, out_size: usize,
+                _group_size: i32, stream: musaStream_t,
+            ) {
+                unsafe {
+                    $inner(a, c, ndim, in_shape, in_strides, axis, axis_len, out_size, stream)
+                }
+            }
+        };
+    }
+
+    mock_small_axis_v2!(musapy_sum_small_axis_i64_v2, musapy_sum_i64_v2, i64);
+    mock_small_axis_v2!(musapy_sum_small_axis_f32_v2, musapy_sum_f32_v2, f32);
+    mock_small_axis_v2!(musapy_sum_small_axis_f64_v2, musapy_sum_f64_v2, f64);
+    mock_small_axis_v2!(musapy_prod_small_axis_i64_v2, musapy_prod_i64_v2, i64);
+    mock_small_axis_v2!(musapy_prod_small_axis_f32_v2, musapy_prod_f32_v2, f32);
+    mock_small_axis_v2!(musapy_prod_small_axis_f64_v2, musapy_prod_f64_v2, f64);
+    mock_small_axis_v2!(musapy_max_small_axis_i64_v2, musapy_max_i64_v2, i64);
+    mock_small_axis_v2!(musapy_max_small_axis_f32_v2, musapy_max_f32_v2, f32);
+    mock_small_axis_v2!(musapy_max_small_axis_f64_v2, musapy_max_f64_v2, f64);
+    mock_small_axis_v2!(musapy_min_small_axis_i64_v2, musapy_min_i64_v2, i64);
+    mock_small_axis_v2!(musapy_min_small_axis_f32_v2, musapy_min_f32_v2, f32);
+    mock_small_axis_v2!(musapy_min_small_axis_f64_v2, musapy_min_f64_v2, f64);
+    mock_small_axis_v2!(musapy_mean_small_axis_f32_v2, musapy_mean_f32_v2, f32);
+    mock_small_axis_v2!(musapy_mean_small_axis_f64_v2, musapy_mean_f64_v2, f64);
 
     // argmax/argmin mock（输入 T，输出 i64）
     macro_rules! mock_argreduce_v2 {

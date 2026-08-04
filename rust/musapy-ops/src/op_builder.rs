@@ -142,6 +142,21 @@ macro_rules! launch_reduce {
     };
 }
 
+/// 小 axis 并行 reduction launch（P2，每输出 group_size 线程）。
+macro_rules! launch_reduce_small_axis {
+    ($fn:ident, $ap:expr, $op:expr, $ndim:expr, $in_shape:expr, $in_strides:expr,
+     $axis:expr, $axis_len:expr, $out_size:expr, $group:expr, $stream:expr, $label:expr) => {
+        if let (Some(ap), Some(op)) = ($ap, $op) {
+            unsafe {
+                kernels::$fn(ap.as_ptr() as _, op.as_ptr() as _,
+                    $ndim, $in_shape.as_ptr(), $in_strides.as_ptr(),
+                    $axis, $axis_len, $out_size, $group, $stream);
+            }
+            musa_ffi::check_last_kernel_launch($label)?;
+        }
+    };
+}
+
 /// Argmax/Argmin kernel launch（输入 T，输出 i64 索引）。
 macro_rules! launch_argreduce {
     ($fn:ident, $ap:expr, $op:expr, $ndim:expr, $in_shape:expr, $in_strides:expr,
@@ -2062,12 +2077,18 @@ pub(crate) fn reduction_axis(
                 );
             }
             Device::Musa(_) => {
-                // 两阶段并行阈值：axis_len > 此值时使用 block-cooperative reduction
+                // 路径选择（P2：按 axis_len 双维选择）：
+                //   axis_len > 1024           → 两阶段并行（partial 每线程 4 元素 + final）
+                //   16 < axis_len ≤ 1024      → 小 axis 并行（每输出 32..256 线程组）
+                //   axis_len ≤ 16 / arg* 等   → naive one-thread-per-output
                 const PARALLEL_REDUCE_THRESHOLD: usize = 1024;
+                const SMALL_AXIS_MIN: usize = 16;
 
                 if axis_len > PARALLEL_REDUCE_THRESHOLD {
                     // ═══ 两阶段并行路径 ═══
-                    let tiles_per_output = (axis_len + 255) / 256;
+                    // P2：partial kernel 每线程 REDUCE_ITEMS=4 元素，
+                    // 一个 tile（256 线程）覆盖 1024 个元素
+                    let tiles_per_output = (axis_len + 1023) / 1024;
                     let num_partials = tiles_per_output; // per output element
                     let elem_size = compute_dtype.element_size();
 
@@ -2182,8 +2203,38 @@ pub(crate) fn reduction_axis(
                             _ => unreachable!(),
                         }
                     }
+                } else if axis_len > SMALL_AXIS_MIN && !kernel.output_is_index() {
+                    // ═══ 小 axis 并行路径（P2）═══
+                    // 每输出配 group_size 线程（≥ axis_len 向上取 2 的幂，
+                    // 上限 256），修 naive 在 out_size 小时并行度不足的问题
+                    let group_size: i32 = if axis_len <= 32 {
+                        32
+                    } else if axis_len <= 64 {
+                        64
+                    } else if axis_len <= 128 {
+                        128
+                    } else {
+                        256
+                    };
+                    match (&kernel, compute_dtype) {
+                        (ReduceKernel::Sum, Dtype::Int64) => launch_reduce_small_axis!(musapy_sum_small_axis_i64_v2, a_ptr, out_ptr, kernel_ndim, kernel_shape, in_strides, kernel_axis, axis_len, out_size, group_size, stream_raw, "sum_small_axis_i64_v2"),
+                        (ReduceKernel::Sum, Dtype::Float32) => launch_reduce_small_axis!(musapy_sum_small_axis_f32_v2, a_ptr, out_ptr, kernel_ndim, kernel_shape, in_strides, kernel_axis, axis_len, out_size, group_size, stream_raw, "sum_small_axis_f32_v2"),
+                        (ReduceKernel::Sum, Dtype::Float64) => launch_reduce_small_axis!(musapy_sum_small_axis_f64_v2, a_ptr, out_ptr, kernel_ndim, kernel_shape, in_strides, kernel_axis, axis_len, out_size, group_size, stream_raw, "sum_small_axis_f64_v2"),
+                        (ReduceKernel::Prod, Dtype::Int64) => launch_reduce_small_axis!(musapy_prod_small_axis_i64_v2, a_ptr, out_ptr, kernel_ndim, kernel_shape, in_strides, kernel_axis, axis_len, out_size, group_size, stream_raw, "prod_small_axis_i64_v2"),
+                        (ReduceKernel::Prod, Dtype::Float32) => launch_reduce_small_axis!(musapy_prod_small_axis_f32_v2, a_ptr, out_ptr, kernel_ndim, kernel_shape, in_strides, kernel_axis, axis_len, out_size, group_size, stream_raw, "prod_small_axis_f32_v2"),
+                        (ReduceKernel::Prod, Dtype::Float64) => launch_reduce_small_axis!(musapy_prod_small_axis_f64_v2, a_ptr, out_ptr, kernel_ndim, kernel_shape, in_strides, kernel_axis, axis_len, out_size, group_size, stream_raw, "prod_small_axis_f64_v2"),
+                        (ReduceKernel::Max, Dtype::Int64) => launch_reduce_small_axis!(musapy_max_small_axis_i64_v2, a_ptr, out_ptr, kernel_ndim, kernel_shape, in_strides, kernel_axis, axis_len, out_size, group_size, stream_raw, "max_small_axis_i64_v2"),
+                        (ReduceKernel::Max, Dtype::Float32) => launch_reduce_small_axis!(musapy_max_small_axis_f32_v2, a_ptr, out_ptr, kernel_ndim, kernel_shape, in_strides, kernel_axis, axis_len, out_size, group_size, stream_raw, "max_small_axis_f32_v2"),
+                        (ReduceKernel::Max, Dtype::Float64) => launch_reduce_small_axis!(musapy_max_small_axis_f64_v2, a_ptr, out_ptr, kernel_ndim, kernel_shape, in_strides, kernel_axis, axis_len, out_size, group_size, stream_raw, "max_small_axis_f64_v2"),
+                        (ReduceKernel::Min, Dtype::Int64) => launch_reduce_small_axis!(musapy_min_small_axis_i64_v2, a_ptr, out_ptr, kernel_ndim, kernel_shape, in_strides, kernel_axis, axis_len, out_size, group_size, stream_raw, "min_small_axis_i64_v2"),
+                        (ReduceKernel::Min, Dtype::Float32) => launch_reduce_small_axis!(musapy_min_small_axis_f32_v2, a_ptr, out_ptr, kernel_ndim, kernel_shape, in_strides, kernel_axis, axis_len, out_size, group_size, stream_raw, "min_small_axis_f32_v2"),
+                        (ReduceKernel::Min, Dtype::Float64) => launch_reduce_small_axis!(musapy_min_small_axis_f64_v2, a_ptr, out_ptr, kernel_ndim, kernel_shape, in_strides, kernel_axis, axis_len, out_size, group_size, stream_raw, "min_small_axis_f64_v2"),
+                        (ReduceKernel::Mean, Dtype::Float32) => launch_reduce_small_axis!(musapy_mean_small_axis_f32_v2, a_ptr, out_ptr, kernel_ndim, kernel_shape, in_strides, kernel_axis, axis_len, out_size, group_size, stream_raw, "mean_small_axis_f32_v2"),
+                        (ReduceKernel::Mean, Dtype::Float64) => launch_reduce_small_axis!(musapy_mean_small_axis_f64_v2, a_ptr, out_ptr, kernel_ndim, kernel_shape, in_strides, kernel_axis, axis_len, out_size, group_size, stream_raw, "mean_small_axis_f64_v2"),
+                        _ => unreachable!(),
+                    }
                 } else {
-                    // ═══ 原始 naive 路径（axis_len ≤ 阈值）═══
+                    // ═══ 原始 naive 路径（axis_len ≤ 16 或 argmax/argmin）═══
                     if kernel.output_is_index() {
                         // argmax/argmin：输入 compute_dtype，输出 i64
                         match (&kernel, compute_dtype) {

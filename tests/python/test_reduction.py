@@ -4,6 +4,7 @@ CPU 测试使用 MUSAPY_MOCK_MUSA=1 构建；GPU 测试需真实 MUSA 设备。
 """
 
 import math
+import numpy as np
 import pytest
 import musapy as ms
 
@@ -426,3 +427,75 @@ class TestReductionMusa:
         a = ms.array([2.0, 3.0, 4.0], device="musa:0")
         result = ms.prod(a)
         assert result.item() == pytest.approx(24.0)
+
+    # ── P2: 小 axis 并行（每输出多线程组）+ partial 增强 ──────
+
+    def test_gpu_small_axis_256x256(self):
+        """256×256 axis=0/1：naive(256 线程) → small_axis(G=256)。"""
+        rng = np.random.default_rng(7)
+        data = rng.random((256, 256), dtype=np.float32)
+        a = ms.array(data.tolist(), device="musa:0")
+        for op, wf in ((ms.sum, np.sum), (ms.max, np.max), (ms.min, np.min),
+                       (ms.prod, np.prod), (ms.mean, np.mean)):
+            for ax in (0, 1):
+                got = op(a, axis=ax)
+                np.testing.assert_allclose(np.array(got.tolist()),
+                                           wf(data, axis=ax), rtol=1e-5, atol=1e-5)
+
+    def test_gpu_small_axis_group_boundaries(self):
+        """G 边界 32/64/128/256（axis_len=17/33/129/1024）+ 阈值两侧。"""
+        rng = np.random.default_rng(8)
+        for (r, c) in [(100, 17), (33, 33), (129, 129), (7, 1024), (1025, 5)]:
+            data = rng.random((r, c), dtype=np.float32)
+            a = ms.array(data.tolist(), device="musa:0")
+            for op, wf in ((ms.sum, np.sum), (ms.max, np.max), (ms.min, np.min),
+                           (ms.mean, np.mean)):
+                for ax in (0, 1):
+                    got = op(a, axis=ax)
+                    np.testing.assert_allclose(np.array(got.tolist()),
+                                               wf(data, axis=ax), rtol=1e-5, atol=1e-5)
+
+    def test_gpu_small_axis_i64(self):
+        """i64 小 axis（ReduceLimits 单位元路径）。"""
+        rng = np.random.default_rng(9)
+        data = rng.integers(-1000, 1000, (256, 256))
+        a = ms.array(data.tolist(), dtype=ms.int64, device="musa:0")
+        for op, wf in ((ms.sum, np.sum), (ms.prod, np.prod),
+                       (ms.max, np.max), (ms.min, np.min)):
+            for ax in (0, 1):
+                assert op(a, axis=ax).tolist() == wf(data, axis=ax).tolist()
+
+    def test_gpu_reduce_1m_partial(self):
+        """1M 全局归约（partial 新路径：ITEMS=4 + shuffle），对比 numpy。"""
+        rng = np.random.default_rng(10)
+        data = rng.random(1_000_000, dtype=np.float32)
+        a = ms.array(data.tolist(), device="musa:0")
+        for op, wf in ((ms.sum, np.sum), (ms.max, np.max), (ms.min, np.min),
+                       (ms.mean, np.mean), (ms.prod, np.prod)):
+            got = op(a)
+            np.testing.assert_allclose(np.array(got.tolist()),
+                                       wf(data), rtol=1e-5, atol=1e-5)
+
+    def test_gpu_reduce_axis_5000x3(self):
+        """axis_len=5000（partial 路径）+ out_size=3 的轴归约。"""
+        rng = np.random.default_rng(11)
+        data = rng.random((5000, 3), dtype=np.float32)
+        a = ms.array(data.tolist(), device="musa:0")
+        for op, wf in ((ms.sum, np.sum), (ms.max, np.max), (ms.min, np.min)):
+            for ax in (0, 1):
+                got = op(a, axis=ax)
+                np.testing.assert_allclose(np.array(got.tolist()),
+                                           wf(data, axis=ax), rtol=1e-5, atol=1e-5)
+
+    def test_gpu_reduce_strided_view(self):
+        """非连续视图（flip，stride 为负）走小 axis/partial 路径。"""
+        rng = np.random.default_rng(12)
+        base = rng.random((64, 64), dtype=np.float32)
+        a = ms.array(base.tolist(), device="musa:0")
+        fv = ms.flip(a, axis=1)
+        for op, wf in ((ms.sum, np.sum), (ms.max, np.max), (ms.min, np.min)):
+            for ax in (0, 1):
+                got = op(fv, axis=ax)
+                np.testing.assert_allclose(np.array(got.tolist()),
+                                           wf(base[:, ::-1], axis=ax),
+                                           rtol=1e-5, atol=1e-5)

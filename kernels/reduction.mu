@@ -3,9 +3,11 @@
 // 纯并行计算 kernel，无内存分配、无 host 代码、无错误返回。
 // ABI 版本：_v2（stride-aware N-dimensional）
 //
-// 两代 kernel 共存：
-//   naive（one-thread-per-output）：保留，用于 mock 和小 axis_len
-//   parallel（block-cooperative）：axis_len > 阈值时使用，两阶段缩减
+// 三代 kernel 共存：
+//   naive（one-thread-per-output）：保留，用于 mock、axis_len ≤ 16 与 arg*
+//   small_axis（P2，每输出 32..256 线程组 + warp shuffle）：17..1024 轴长
+//   parallel（block-cooperative）：axis_len > 1024，两阶段缩减；
+//     partial 每线程 REDUCE_ITEMS=4 元素（P2）+ warp shuffle 块内归约
 //
 // 符号命名：musapy_<op>_<dtype>_v2（naive）
 //           musapy_<op>_partial_<dtype>_v2（parallel phase 1）
@@ -13,6 +15,7 @@
 
 #include "include/common.h"
 #include <math.h>
+#include <float.h>
 #include <stdint.h>
 #include <limits.h>
 
@@ -49,6 +52,16 @@ __device__ static inline size_t reduce_offset(
     }
     return offset;
 }
+
+// ── Partial kernel 向量化辅助（P2）───────────────────────────
+//
+// 每线程处理 REDUCE_ITEMS=4 个连续 axis 元素（原为 1 个），线程数降为
+// 1/4。host 侧 tiles_per_output = ceil(axis_len / (256 * REDUCE_ITEMS))。
+// 注意：float4 显式向量加载在本编译器上会与 warp shuffle 组合出病态
+// 代码（实测 47× 变慢，2026-08 基准探针），故只用标量循环——连续线程
+// 访问连续元素，合并效果等价，实测与 float4 路径同速。
+
+#define REDUCE_ITEMS 4
 
 // ── Naive kernel 模板（one-thread-per-output，保留兼容）────────
 
@@ -176,6 +189,103 @@ __global__ void musapy_argmin_kernel_v2(
         }
     }
     c[idx] = best_idx;
+}
+
+// ── 小 axis 并行 kernel（P2）─────────────────────────────────
+//
+// naive one-thread-per-output 在 axis_len 中等（17..1024）且 out_size 小
+// 时并行度极差（256×256 axis=0 只有 256 线程）。此 kernel 每个输出配
+// G 个线程（G=32/64/128/256，host 按 axis_len 选择），组内 warp shuffle
+// + 静态 smem 两级归约。
+//
+// 线程映射：tid = out_idx * G + lane。G 为编译期模板参数（2 的幂），
+// 除法/取模编译为移位（mp_22 64 位 div/mod 为软件模拟，须避免）。
+// G ≥ 32 且 block=256 → 组边界与 warp/block 对齐，shuffle 全 warp 参与。
+
+/// max/min 归约单位元（各 dtype 的极值）。
+template <typename T> struct ReduceLimits;
+template <> struct ReduceLimits<float> {
+    __device__ static float lo() { return -FLT_MAX; }
+    __device__ static float hi() { return FLT_MAX; }
+};
+template <> struct ReduceLimits<double> {
+    __device__ static double lo() { return -DBL_MAX; }
+    __device__ static double hi() { return DBL_MAX; }
+};
+template <> struct ReduceLimits<int64_t> {
+    __device__ static int64_t lo() { return LLONG_MIN; }
+    __device__ static int64_t hi() { return LLONG_MAX; }
+};
+
+template <typename T> struct ReduceOpSum {
+    __device__ static T identity() { return (T)0; }
+    __device__ static T combine(T x, T y) { return x + y; }
+};
+template <typename T> struct ReduceOpProd {
+    __device__ static T identity() { return (T)1; }
+    __device__ static T combine(T x, T y) { return x * y; }
+};
+template <typename T> struct ReduceOpMax {
+    __device__ static T identity() { return ReduceLimits<T>::lo(); }
+    __device__ static T combine(T x, T y) { return y > x ? y : x; }
+};
+template <typename T> struct ReduceOpMin {
+    __device__ static T identity() { return ReduceLimits<T>::hi(); }
+    __device__ static T combine(T x, T y) { return y < x ? y : x; }
+};
+
+/// 小 axis 归约：每输出 G 线程。DIVIDE_AXIS=true 时结果除以 axis_len（mean）。
+template <typename T, typename Op, int G, bool DIVIDE_AXIS>
+__global__ void musapy_reduce_small_axis_kernel(
+    const T* __restrict__ a, T* __restrict__ c,
+    NdMetaReduce meta, size_t out_size
+) {
+    size_t tid = blockIdx.x * blockDim.x + threadIdx.x;
+    size_t out_idx = tid / G;          // G 为 2 的幂 → 移位
+    int lane = (int)(tid & (G - 1));
+    bool valid = out_idx < out_size;
+
+    // 越界线程也参与 shuffle（单位元贡献），避免 warp 内分歧死锁
+    T acc = Op::identity();
+    if (valid) {
+        size_t base = reduce_offset(out_idx, meta, 0);
+        ssize_t axis_stride = meta.in_strides[meta.axis];
+        for (size_t k = (size_t)lane; k < meta.axis_len; k += G) {
+            acc = Op::combine(acc, a[base + k * (size_t)axis_stride]);
+        }
+    }
+
+    // 第一级：warp 内 shuffle 归约（5 级）
+    #pragma unroll
+    for (int offset = 16; offset > 0; offset >>= 1) {
+        acc = Op::combine(acc, __shfl_down_sync(0xffffffff, acc, offset));
+    }
+
+    if (G == 32) {
+        if (valid && (threadIdx.x & 31) == 0) {
+            if (DIVIDE_AXIS) acc /= (T)meta.axis_len;
+            c[out_idx] = acc;
+        }
+        return;
+    }
+
+    // 第二级：组内跨 warp（G/32 个 warp 的 lane0 结果经静态 smem 合并）
+    __shared__ T warp_partials[8];  // block=256 → 8 warps
+    if ((threadIdx.x & 31) == 0) {
+        warp_partials[threadIdx.x >> 5] = acc;
+    }
+    __syncthreads();
+    if (valid && lane == 0) {
+        int warps_per_group = G >> 5;
+        int group_in_block = (int)threadIdx.x / G;
+        int first = group_in_block * warps_per_group;
+        T total = warp_partials[first];
+        for (int w = 1; w < warps_per_group; w++) {
+            total = Op::combine(total, warp_partials[first + w]);
+        }
+        if (DIVIDE_AXIS) total /= (T)meta.axis_len;
+        c[out_idx] = total;
+    }
 }
 
 // ── Cumsum（work-efficient parallel prefix sum）──────────────
@@ -460,36 +570,61 @@ __global__ void musapy_cumsum_add_prefix_kernel_v2(
 
 // ── Phase 1: partial reduction kernels ────────────────────────
 
+/// partial kernel 公共框架（P2 增强版）——宏内联：
+/// 每线程 REDUCE_ITEMS=4 个元素（原为 1）+ warp shuffle 两级块内归约。
+/// 注意：必须宏内联展开，不能用 __device__ 函数——mcc 对含 extern
+/// __shared__ + __shfl 的 device 函数不内联，函数调用路径实测 75× 变慢
+/// （2026-08 probe：inline 0.053ms vs fn 4.0ms）。
+/// OP 为 ReduceOpSum/Prod/Max/Min<T>，提供 identity()/combine()。
+/// 宏展开后 kernel 内变量：acc（线程部分和）、total（块归约结果，仅
+/// threadIdx.x==0 有效）。
+#define PARTIAL_BODY(T, OP)                                                    \
+    size_t base = reduce_offset(blockIdx.x / tiles_per_output, meta, 0);       \
+    ssize_t axis_stride = meta.in_strides[meta.axis];                          \
+    size_t total_threads = tiles_per_output * blockDim.x;                      \
+    size_t global_tid = tile_idx * blockDim.x + threadIdx.x;                   \
+    size_t axis_len = meta.axis_len;                                           \
+    T acc = OP::identity();                                                    \
+    for (size_t k0 = global_tid * REDUCE_ITEMS; k0 < axis_len;                 \
+         k0 += total_threads * REDUCE_ITEMS) {                                 \
+        _Pragma("unroll")                                                      \
+        for (int j = 0; j < REDUCE_ITEMS; j++) {                               \
+            size_t k = k0 + j;                                                 \
+            if (k < axis_len) {                                                \
+                acc = OP::combine(acc, a[base + k * (size_t)axis_stride]);     \
+            }                                                                  \
+        }                                                                      \
+    }                                                                          \
+    extern __shared__ char smem[];                                             \
+    T* sdata = (T*)smem;                                                       \
+    for (int offset = 16; offset > 0; offset >>= 1) {                          \
+        acc = OP::combine(acc, __shfl_down_sync(0xffffffff, acc, offset));     \
+    }                                                                          \
+    if ((threadIdx.x & 31) == 0) {                                             \
+        sdata[threadIdx.x >> 5] = acc;                                         \
+    }                                                                          \
+    __syncthreads();                                                           \
+    T total = OP::identity();                                                  \
+    if (threadIdx.x < 32) {                                                    \
+        int nwarps = (int)(blockDim.x >> 5);                                   \
+        if ((int)threadIdx.x < nwarps) total = sdata[threadIdx.x];             \
+        for (int offset = nwarps / 2; offset > 0; offset >>= 1) {              \
+            total = OP::combine(total, __shfl_down_sync(0xffffffff, total, offset)); \
+        }                                                                      \
+    }
+
 template <typename T>
 __global__ void musapy_sum_partial_kernel_v2(
     const T* __restrict__ a, T* __restrict__ partials,
     NdMetaReduce meta, size_t out_size, size_t tiles_per_output
 ) {
-    extern __shared__ char smem[];
-    T* sdata = (T*)smem;
-
     size_t out_idx = blockIdx.x / tiles_per_output;
     size_t tile_idx = blockIdx.x % tiles_per_output;
     if (out_idx >= out_size) return;
 
-    size_t base = reduce_offset(out_idx, meta, 0);
-    ssize_t axis_stride = meta.in_strides[meta.axis];
-    size_t total_threads = tiles_per_output * blockDim.x;
-    size_t global_tid = tile_idx * blockDim.x + threadIdx.x;
-
-    T acc = (T)0;
-    for (size_t k = global_tid; k < meta.axis_len; k += total_threads) {
-        acc += a[base + (size_t)((ssize_t)k * axis_stride)];
-    }
-
-    sdata[threadIdx.x] = acc;
-    __syncthreads();
-    for (int s = blockDim.x / 2; s > 0; s >>= 1) {
-        if (threadIdx.x < s) sdata[threadIdx.x] += sdata[threadIdx.x + s];
-        __syncthreads();
-    }
+    PARTIAL_BODY(T, ReduceOpSum<T>)
     if (threadIdx.x == 0) {
-        partials[out_idx * tiles_per_output + tile_idx] = sdata[0];
+        partials[out_idx * tiles_per_output + tile_idx] = total;
     }
 }
 
@@ -498,31 +633,13 @@ __global__ void musapy_prod_partial_kernel_v2(
     const T* __restrict__ a, T* __restrict__ partials,
     NdMetaReduce meta, size_t out_size, size_t tiles_per_output
 ) {
-    extern __shared__ char smem[];
-    T* sdata = (T*)smem;
-
     size_t out_idx = blockIdx.x / tiles_per_output;
     size_t tile_idx = blockIdx.x % tiles_per_output;
     if (out_idx >= out_size) return;
 
-    size_t base = reduce_offset(out_idx, meta, 0);
-    ssize_t axis_stride = meta.in_strides[meta.axis];
-    size_t total_threads = tiles_per_output * blockDim.x;
-    size_t global_tid = tile_idx * blockDim.x + threadIdx.x;
-
-    T acc = (T)1;
-    for (size_t k = global_tid; k < meta.axis_len; k += total_threads) {
-        acc *= a[base + (size_t)((ssize_t)k * axis_stride)];
-    }
-
-    sdata[threadIdx.x] = acc;
-    __syncthreads();
-    for (int s = blockDim.x / 2; s > 0; s >>= 1) {
-        if (threadIdx.x < s) sdata[threadIdx.x] *= sdata[threadIdx.x + s];
-        __syncthreads();
-    }
+    PARTIAL_BODY(T, ReduceOpProd<T>)
     if (threadIdx.x == 0) {
-        partials[out_idx * tiles_per_output + tile_idx] = sdata[0];
+        partials[out_idx * tiles_per_output + tile_idx] = total;
     }
 }
 
@@ -531,36 +648,13 @@ __global__ void musapy_max_partial_kernel_v2(
     const T* __restrict__ a, T* __restrict__ partials,
     NdMetaReduce meta, size_t out_size, size_t tiles_per_output
 ) {
-    extern __shared__ char smem[];
-    T* sdata = (T*)smem;
-
     size_t out_idx = blockIdx.x / tiles_per_output;
     size_t tile_idx = blockIdx.x % tiles_per_output;
     if (out_idx >= out_size) return;
 
-    size_t base = reduce_offset(out_idx, meta, 0);
-    ssize_t axis_stride = meta.in_strides[meta.axis];
-    size_t total_threads = tiles_per_output * blockDim.x;
-    size_t global_tid = tile_idx * blockDim.x + threadIdx.x;
-
-    // 初始化为最小可能值
-    T acc = a[base];  // 至少有一个元素
-    for (size_t k = global_tid; k < meta.axis_len; k += total_threads) {
-        T val = a[base + (size_t)((ssize_t)k * axis_stride)];
-        if (val > acc) acc = val;
-    }
-
-    sdata[threadIdx.x] = acc;
-    __syncthreads();
-    for (int s = blockDim.x / 2; s > 0; s >>= 1) {
-        if (threadIdx.x < s) {
-            if (sdata[threadIdx.x + s] > sdata[threadIdx.x])
-                sdata[threadIdx.x] = sdata[threadIdx.x + s];
-        }
-        __syncthreads();
-    }
+    PARTIAL_BODY(T, ReduceOpMax<T>)
     if (threadIdx.x == 0) {
-        partials[out_idx * tiles_per_output + tile_idx] = sdata[0];
+        partials[out_idx * tiles_per_output + tile_idx] = total;
     }
 }
 
@@ -569,35 +663,13 @@ __global__ void musapy_min_partial_kernel_v2(
     const T* __restrict__ a, T* __restrict__ partials,
     NdMetaReduce meta, size_t out_size, size_t tiles_per_output
 ) {
-    extern __shared__ char smem[];
-    T* sdata = (T*)smem;
-
     size_t out_idx = blockIdx.x / tiles_per_output;
     size_t tile_idx = blockIdx.x % tiles_per_output;
     if (out_idx >= out_size) return;
 
-    size_t base = reduce_offset(out_idx, meta, 0);
-    ssize_t axis_stride = meta.in_strides[meta.axis];
-    size_t total_threads = tiles_per_output * blockDim.x;
-    size_t global_tid = tile_idx * blockDim.x + threadIdx.x;
-
-    T acc = a[base];
-    for (size_t k = global_tid; k < meta.axis_len; k += total_threads) {
-        T val = a[base + (size_t)((ssize_t)k * axis_stride)];
-        if (val < acc) acc = val;
-    }
-
-    sdata[threadIdx.x] = acc;
-    __syncthreads();
-    for (int s = blockDim.x / 2; s > 0; s >>= 1) {
-        if (threadIdx.x < s) {
-            if (sdata[threadIdx.x + s] < sdata[threadIdx.x])
-                sdata[threadIdx.x] = sdata[threadIdx.x + s];
-        }
-        __syncthreads();
-    }
+    PARTIAL_BODY(T, ReduceOpMin<T>)
     if (threadIdx.x == 0) {
-        partials[out_idx * tiles_per_output + tile_idx] = sdata[0];
+        partials[out_idx * tiles_per_output + tile_idx] = total;
     }
 }
 
@@ -607,31 +679,13 @@ __global__ void musapy_mean_partial_kernel_v2(
     const T* __restrict__ a, T* __restrict__ partials,
     NdMetaReduce meta, size_t out_size, size_t tiles_per_output
 ) {
-    extern __shared__ char smem[];
-    T* sdata = (T*)smem;
-
     size_t out_idx = blockIdx.x / tiles_per_output;
     size_t tile_idx = blockIdx.x % tiles_per_output;
     if (out_idx >= out_size) return;
 
-    size_t base = reduce_offset(out_idx, meta, 0);
-    ssize_t axis_stride = meta.in_strides[meta.axis];
-    size_t total_threads = tiles_per_output * blockDim.x;
-    size_t global_tid = tile_idx * blockDim.x + threadIdx.x;
-
-    T acc = (T)0;
-    for (size_t k = global_tid; k < meta.axis_len; k += total_threads) {
-        acc += a[base + (size_t)((ssize_t)k * axis_stride)];
-    }
-
-    sdata[threadIdx.x] = acc;
-    __syncthreads();
-    for (int s = blockDim.x / 2; s > 0; s >>= 1) {
-        if (threadIdx.x < s) sdata[threadIdx.x] += sdata[threadIdx.x + s];
-        __syncthreads();
-    }
+    PARTIAL_BODY(T, ReduceOpSum<T>)
     if (threadIdx.x == 0) {
-        partials[out_idx * tiles_per_output + tile_idx] = sdata[0];
+        partials[out_idx * tiles_per_output + tile_idx] = total;
     }
 }
 
@@ -1077,6 +1131,104 @@ void musapy_##OP##_f64_v2(                                                    \
 ARGREDUCE_V2(argmax)
 ARGREDUCE_V2(argmin)
 #undef ARGREDUCE_V2
+
+/// 小 axis 并行 wrapper（P2）：sum/prod/max/min。
+/// group_size ∈ {32,64,128,256}，host 按 axis_len 选择；
+/// grid = ceil(out_size * group_size / 256)，block=256，无动态 smem。
+#define REDUCE_SMALL_AXIS_V2(OP, OPSTRUCT)                                     \
+void musapy_##OP##_small_axis_i64_v2(                                          \
+    const int64_t* __restrict__ a, int64_t* __restrict__ c,                   \
+    int ndim, const size_t* in_shape, const ssize_t* in_strides,              \
+    int axis, size_t axis_len, size_t out_size, int group_size,               \
+    musaStream_t stream                                                       \
+) {                                                                           \
+    NdMetaReduce meta;                                                        \
+    meta.ndim = ndim; meta.axis = axis; meta.axis_len = axis_len;            \
+    for (int i = 0; i < ndim; i++) {                                          \
+        meta.in_shape[i] = in_shape[i];                                       \
+        meta.in_strides[i] = in_strides[i];                                   \
+    }                                                                         \
+    size_t grid = (out_size * (size_t)group_size + 255) / 256;                \
+    switch (group_size) {                                                     \
+        case 32: musapy_reduce_small_axis_kernel<int64_t, OPSTRUCT<int64_t>, 32, false><<<grid, 256, 0, stream>>>(a, c, meta, out_size); break; \
+        case 64: musapy_reduce_small_axis_kernel<int64_t, OPSTRUCT<int64_t>, 64, false><<<grid, 256, 0, stream>>>(a, c, meta, out_size); break; \
+        case 128: musapy_reduce_small_axis_kernel<int64_t, OPSTRUCT<int64_t>, 128, false><<<grid, 256, 0, stream>>>(a, c, meta, out_size); break; \
+        default: musapy_reduce_small_axis_kernel<int64_t, OPSTRUCT<int64_t>, 256, false><<<grid, 256, 0, stream>>>(a, c, meta, out_size); break; \
+    }                                                                         \
+}                                                                             \
+void musapy_##OP##_small_axis_f32_v2(                                          \
+    const float* __restrict__ a, float* __restrict__ c,                       \
+    int ndim, const size_t* in_shape, const ssize_t* in_strides,              \
+    int axis, size_t axis_len, size_t out_size, int group_size,               \
+    musaStream_t stream                                                       \
+) {                                                                           \
+    NdMetaReduce meta;                                                        \
+    meta.ndim = ndim; meta.axis = axis; meta.axis_len = axis_len;            \
+    for (int i = 0; i < ndim; i++) {                                          \
+        meta.in_shape[i] = in_shape[i];                                       \
+        meta.in_strides[i] = in_strides[i];                                   \
+    }                                                                         \
+    size_t grid = (out_size * (size_t)group_size + 255) / 256;                \
+    switch (group_size) {                                                     \
+        case 32: musapy_reduce_small_axis_kernel<float, OPSTRUCT<float>, 32, false><<<grid, 256, 0, stream>>>(a, c, meta, out_size); break; \
+        case 64: musapy_reduce_small_axis_kernel<float, OPSTRUCT<float>, 64, false><<<grid, 256, 0, stream>>>(a, c, meta, out_size); break; \
+        case 128: musapy_reduce_small_axis_kernel<float, OPSTRUCT<float>, 128, false><<<grid, 256, 0, stream>>>(a, c, meta, out_size); break; \
+        default: musapy_reduce_small_axis_kernel<float, OPSTRUCT<float>, 256, false><<<grid, 256, 0, stream>>>(a, c, meta, out_size); break; \
+    }                                                                         \
+}                                                                             \
+void musapy_##OP##_small_axis_f64_v2(                                          \
+    const double* __restrict__ a, double* __restrict__ c,                     \
+    int ndim, const size_t* in_shape, const ssize_t* in_strides,              \
+    int axis, size_t axis_len, size_t out_size, int group_size,               \
+    musaStream_t stream                                                       \
+) {                                                                           \
+    NdMetaReduce meta;                                                        \
+    meta.ndim = ndim; meta.axis = axis; meta.axis_len = axis_len;            \
+    for (int i = 0; i < ndim; i++) {                                          \
+        meta.in_shape[i] = in_shape[i];                                       \
+        meta.in_strides[i] = in_strides[i];                                   \
+    }                                                                         \
+    size_t grid = (out_size * (size_t)group_size + 255) / 256;                \
+    switch (group_size) {                                                     \
+        case 32: musapy_reduce_small_axis_kernel<double, OPSTRUCT<double>, 32, false><<<grid, 256, 0, stream>>>(a, c, meta, out_size); break; \
+        case 64: musapy_reduce_small_axis_kernel<double, OPSTRUCT<double>, 64, false><<<grid, 256, 0, stream>>>(a, c, meta, out_size); break; \
+        case 128: musapy_reduce_small_axis_kernel<double, OPSTRUCT<double>, 128, false><<<grid, 256, 0, stream>>>(a, c, meta, out_size); break; \
+        default: musapy_reduce_small_axis_kernel<double, OPSTRUCT<double>, 256, false><<<grid, 256, 0, stream>>>(a, c, meta, out_size); break; \
+    }                                                                         \
+}
+
+REDUCE_SMALL_AXIS_V2(sum, ReduceOpSum)
+REDUCE_SMALL_AXIS_V2(prod, ReduceOpProd)
+REDUCE_SMALL_AXIS_V2(max, ReduceOpMax)
+REDUCE_SMALL_AXIS_V2(min, ReduceOpMin)
+#undef REDUCE_SMALL_AXIS_V2
+
+/// mean 小 axis wrapper：只有 f32/f64（DIVIDE_AXIS=true）
+#define MEAN_SMALL_AXIS_V2(T, SUFFIX)                                          \
+void musapy_mean_small_axis_##SUFFIX##_v2(                                     \
+    const T* __restrict__ a, T* __restrict__ c,                               \
+    int ndim, const size_t* in_shape, const ssize_t* in_strides,              \
+    int axis, size_t axis_len, size_t out_size, int group_size,               \
+    musaStream_t stream                                                       \
+) {                                                                           \
+    NdMetaReduce meta;                                                        \
+    meta.ndim = ndim; meta.axis = axis; meta.axis_len = axis_len;            \
+    for (int i = 0; i < ndim; i++) {                                          \
+        meta.in_shape[i] = in_shape[i];                                       \
+        meta.in_strides[i] = in_strides[i];                                   \
+    }                                                                         \
+    size_t grid = (out_size * (size_t)group_size + 255) / 256;                \
+    switch (group_size) {                                                     \
+        case 32: musapy_reduce_small_axis_kernel<T, ReduceOpSum<T>, 32, true><<<grid, 256, 0, stream>>>(a, c, meta, out_size); break; \
+        case 64: musapy_reduce_small_axis_kernel<T, ReduceOpSum<T>, 64, true><<<grid, 256, 0, stream>>>(a, c, meta, out_size); break; \
+        case 128: musapy_reduce_small_axis_kernel<T, ReduceOpSum<T>, 128, true><<<grid, 256, 0, stream>>>(a, c, meta, out_size); break; \
+        default: musapy_reduce_small_axis_kernel<T, ReduceOpSum<T>, 256, true><<<grid, 256, 0, stream>>>(a, c, meta, out_size); break; \
+    }                                                                         \
+}
+
+MEAN_SMALL_AXIS_V2(float, f32)
+MEAN_SMALL_AXIS_V2(double, f64)
+#undef MEAN_SMALL_AXIS_V2
 
 /// cumsum v3 wrapper — work-efficient 分层 prefix sum。
 ///
