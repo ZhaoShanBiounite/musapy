@@ -177,6 +177,44 @@ a.astype(dtype) -> Array
 
 ---
 
+## Indexing 算子（v0.2 Phase 6.5-7）
+
+### 签名
+
+```python
+ms.transpose(a, axes=None) -> Array          # 零拷贝视图
+ms.permute(a, dims) -> Array                 # 零拷贝视图
+ms.flip(a, axis) -> Array                    # 零拷贝视图（stride 取负）
+ms.slice(a, specs) -> Array                  # 零拷贝视图
+ms.contiguous(a) -> Array                    # 已连续零拷贝；否则 kernel 物化
+ms.gather(a, indices, axis=0) -> Array       # copy，等价 np.take
+ms.scatter(a, indices, values, axis=0) -> Array  # copy，返回新数组
+```
+
+### 实现要点
+
+- view 算子零拷贝，仅修改 Layout；copy 算子分配新 buffer 走 kernel
+- gather/scatter kernel 实例化 f32/f64/i32/i64（符号 `musapy_{op}_{dtype}_v2`）；
+  其余 dtype 走 D2H→host→H2D fallback
+- indices 固定 1D int64；CPU indices 自动 H2D 上传
+
+### GPU 越界语义（P1 去同步，2026-08）
+
+GPU 路径不在 host 端同步校验 indices，而是由 kernel 内检查：
+
+1. 越界（含负数）元素跳过读/写，并通过 device 错误槽上报
+   （atomicCAS 记录首个越界的展平位置与索引值，atomicOr 置标志）
+2. 异常延迟到下一次流同步抛出（`tolist()`/`item()` 内部会同步），
+   类型为 `ShapeError`，消息含算子上下文、越界值与位置
+3. **流不毒化**：报错后同一流可继续使用；越界条目已被跳过，
+   其余结果有效
+4. CPU 路径与 mock 构建仍为同步校验、立即报错
+
+因此 GPU 上 `ms.gather(a, idx).tolist()` 的报错位置与 numpy 风格一致
+（取值/物化时抛出），但纯异步管线中错误可能延迟数个 op 才暴露。
+
+---
+
 ## 类型提升规则
 
 Binary 算子输入 dtype 不同时自动提升：

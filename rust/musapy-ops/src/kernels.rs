@@ -211,17 +211,18 @@ unsafe extern "C" {
     pub fn musapy_argmin_final_f64_v2(partials_val: *const f64, partials_idx: *const i64, c: *mut i64, num_partials: usize, out_size: usize, stream: musaStream_t);
 
     // ── Phase 6 indexing: gather / scatter / copy ──
-    // gather: out[idx] = input[axis 维坐标经 indices 映射后的偏移]
-    pub fn musapy_gather_f32(input: *const f32, output: *mut f32, indices: *const i64, ndim: i32, axis: i32, out_shape: *const usize, in_strides: *const isize, n_out: usize, stream: musaStream_t);
-    pub fn musapy_gather_f64(input: *const f64, output: *mut f64, indices: *const i64, ndim: i32, axis: i32, out_shape: *const usize, in_strides: *const isize, n_out: usize, stream: musaStream_t);
-    pub fn musapy_gather_i32(input: *const i32, output: *mut i32, indices: *const i64, ndim: i32, axis: i32, out_shape: *const usize, in_strides: *const isize, n_out: usize, stream: musaStream_t);
-    pub fn musapy_gather_i64(input: *const i64, output: *mut i64, indices: *const i64, ndim: i32, axis: i32, out_shape: *const usize, in_strides: *const isize, n_out: usize, stream: musaStream_t);
+    // gather v2（P1）：device 侧越界检查，err_flag/err_pos/err_val 为 16B
+    // 错误槽（flag i32 + pos i32 + val i64），由 Stream index_checks 提供。
+    pub fn musapy_gather_f32_v2(input: *const f32, output: *mut f32, indices: *const i64, ndim: i32, axis: i32, out_shape: *const usize, in_strides: *const isize, n_out: usize, axis_len: usize, err_flag: *mut i32, err_pos: *mut i32, err_val: *mut i64, stream: musaStream_t);
+    pub fn musapy_gather_f64_v2(input: *const f64, output: *mut f64, indices: *const i64, ndim: i32, axis: i32, out_shape: *const usize, in_strides: *const isize, n_out: usize, axis_len: usize, err_flag: *mut i32, err_pos: *mut i32, err_val: *mut i64, stream: musaStream_t);
+    pub fn musapy_gather_i32_v2(input: *const i32, output: *mut i32, indices: *const i64, ndim: i32, axis: i32, out_shape: *const usize, in_strides: *const isize, n_out: usize, axis_len: usize, err_flag: *mut i32, err_pos: *mut i32, err_val: *mut i64, stream: musaStream_t);
+    pub fn musapy_gather_i64_v2(input: *const i64, output: *mut i64, indices: *const i64, ndim: i32, axis: i32, out_shape: *const usize, in_strides: *const isize, n_out: usize, axis_len: usize, err_flag: *mut i32, err_pos: *mut i32, err_val: *mut i64, stream: musaStream_t);
 
-    // scatter: output[连续偏移] = values[idx]（output 为连续布局）
-    pub fn musapy_scatter_f32(output: *mut f32, values: *const f32, indices: *const i64, ndim: i32, axis: i32, val_shape: *const usize, val_strides: *const isize, out_strides: *const usize, n_values: usize, stream: musaStream_t);
-    pub fn musapy_scatter_f64(output: *mut f64, values: *const f64, indices: *const i64, ndim: i32, axis: i32, val_shape: *const usize, val_strides: *const isize, out_strides: *const usize, n_values: usize, stream: musaStream_t);
-    pub fn musapy_scatter_i32(output: *mut i32, values: *const i32, indices: *const i64, ndim: i32, axis: i32, val_shape: *const usize, val_strides: *const isize, out_strides: *const usize, n_values: usize, stream: musaStream_t);
-    pub fn musapy_scatter_i64(output: *mut i64, values: *const i64, indices: *const i64, ndim: i32, axis: i32, val_shape: *const usize, val_strides: *const isize, out_strides: *const usize, n_values: usize, stream: musaStream_t);
+    // scatter v2（P1）：同上，output 为连续布局
+    pub fn musapy_scatter_f32_v2(output: *mut f32, values: *const f32, indices: *const i64, ndim: i32, axis: i32, val_shape: *const usize, val_strides: *const isize, out_strides: *const usize, n_values: usize, axis_len: usize, err_flag: *mut i32, err_pos: *mut i32, err_val: *mut i64, stream: musaStream_t);
+    pub fn musapy_scatter_f64_v2(output: *mut f64, values: *const f64, indices: *const i64, ndim: i32, axis: i32, val_shape: *const usize, val_strides: *const isize, out_strides: *const usize, n_values: usize, axis_len: usize, err_flag: *mut i32, err_pos: *mut i32, err_val: *mut i64, stream: musaStream_t);
+    pub fn musapy_scatter_i32_v2(output: *mut i32, values: *const i32, indices: *const i64, ndim: i32, axis: i32, val_shape: *const usize, val_strides: *const isize, out_strides: *const usize, n_values: usize, axis_len: usize, err_flag: *mut i32, err_pos: *mut i32, err_val: *mut i64, stream: musaStream_t);
+    pub fn musapy_scatter_i64_v2(output: *mut i64, values: *const i64, indices: *const i64, ndim: i32, axis: i32, val_shape: *const usize, val_strides: *const isize, out_strides: *const usize, n_values: usize, axis_len: usize, err_flag: *mut i32, err_pos: *mut i32, err_val: *mut i64, stream: musaStream_t);
 
     // copy：stride-aware identity（视图物化为连续布局）
     pub fn musapy_copy_f32(input: *const f32, output: *mut f32, ndim: i32, shape: *const usize, in_strides: *const isize, stream: musaStream_t);
@@ -1006,12 +1007,17 @@ mod mock {
 
     // ── Phase 6 indexing: gather / scatter / copy ──
 
+    // mock gather/scatter（v2 签名）：越界条目静默跳过（真实 kernel 会置错误
+    // 标志，mock 模式无 sync drain 机制；ops 层在 mock 构建下保留 host 校验，
+    // 越界不会到达这里）。err 指针被忽略。
     macro_rules! mock_gather {
         ($name:ident, $t:ty) => {
             pub unsafe fn $name(
                 input: *const $t, output: *mut $t, indices: *const i64,
                 ndim: i32, axis: i32, out_shape: *const usize, in_strides: *const isize,
-                n_out: usize, _stream: musaStream_t,
+                n_out: usize, axis_len: usize,
+                _err_flag: *mut i32, _err_pos: *mut i32, _err_val: *mut i64,
+                _stream: musaStream_t,
             ) {
                 if input.is_null() || output.is_null() || indices.is_null() || ndim <= 0 { return; }
                 let ndim = ndim as usize;
@@ -1021,13 +1027,19 @@ mod mock {
                 for idx in 0..n_out {
                     let mut tmp = idx;
                     let mut off = 0isize;
+                    let mut oob = false;
                     for i in (0..ndim).rev() {
                         let coord = tmp % shape_s[i];
                         tmp /= shape_s[i];
-                        let k = if i == axis { *indices.add(coord) as usize } else { coord };
+                        let k = if i == axis {
+                            let raw = *indices.add(coord);
+                            if raw < 0 || raw as usize >= axis_len { oob = true; 0 } else { raw as usize }
+                        } else { coord };
                         off += k as isize * strides_s[i];
                     }
-                    *output.add(idx) = *input.add(off as usize);
+                    if !oob {
+                        *output.add(idx) = *input.add(off as usize);
+                    }
                 }
             }
         };
@@ -1038,7 +1050,9 @@ mod mock {
             pub unsafe fn $name(
                 output: *mut $t, values: *const $t, indices: *const i64,
                 ndim: i32, axis: i32, val_shape: *const usize, val_strides: *const isize,
-                out_strides: *const usize, n_values: usize, _stream: musaStream_t,
+                out_strides: *const usize, n_values: usize, axis_len: usize,
+                _err_flag: *mut i32, _err_pos: *mut i32, _err_val: *mut i64,
+                _stream: musaStream_t,
             ) {
                 if output.is_null() || values.is_null() || indices.is_null() || ndim <= 0 { return; }
                 let ndim = ndim as usize;
@@ -1050,14 +1064,20 @@ mod mock {
                     let mut tmp = idx;
                     let mut out_off = 0usize;
                     let mut val_off = 0isize;
+                    let mut oob = false;
                     for i in (0..ndim).rev() {
                         let coord = tmp % val_shape_s[i];
                         tmp /= val_shape_s[i];
                         val_off += coord as isize * val_strides_s[i];
-                        let k = if i == axis { *indices.add(coord) as usize } else { coord };
+                        let k = if i == axis {
+                            let raw = *indices.add(coord);
+                            if raw < 0 || raw as usize >= axis_len { oob = true; 0 } else { raw as usize }
+                        } else { coord };
                         out_off += k * out_strides_s[i];
                     }
-                    *output.add(out_off) = *values.add(val_off as usize);
+                    if !oob {
+                        *output.add(out_off) = *values.add(val_off as usize);
+                    }
                 }
             }
         };
@@ -1083,14 +1103,14 @@ mod mock {
         };
     }
 
-    mock_gather!(musapy_gather_f32, f32);
-    mock_gather!(musapy_gather_f64, f64);
-    mock_gather!(musapy_gather_i32, i32);
-    mock_gather!(musapy_gather_i64, i64);
-    mock_scatter!(musapy_scatter_f32, f32);
-    mock_scatter!(musapy_scatter_f64, f64);
-    mock_scatter!(musapy_scatter_i32, i32);
-    mock_scatter!(musapy_scatter_i64, i64);
+    mock_gather!(musapy_gather_f32_v2, f32);
+    mock_gather!(musapy_gather_f64_v2, f64);
+    mock_gather!(musapy_gather_i32_v2, i32);
+    mock_gather!(musapy_gather_i64_v2, i64);
+    mock_scatter!(musapy_scatter_f32_v2, f32);
+    mock_scatter!(musapy_scatter_f64_v2, f64);
+    mock_scatter!(musapy_scatter_i32_v2, i32);
+    mock_scatter!(musapy_scatter_i64_v2, i64);
     mock_copy!(musapy_copy_f32, f32);
     mock_copy!(musapy_copy_f64, f64);
     mock_copy!(musapy_copy_i32, i32);

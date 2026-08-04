@@ -7,9 +7,10 @@
 // - 纯并行计算 kernel，无内存分配、无 host 代码、无错误返回
 // - 输入指针由 ops 层按 layout.offset 预调整（common.h offset_nd 的
 //   无符号回绕语义要求基指针指向逻辑首元素）
-// - indices 固定 int64；越界由 ops 层校验
+// - indices 固定 int64；越界由 device 侧错误标志报告（P1，见下）
 //
-// ABI 版本嵌入符号名：musapy_<op>_<dtype>（Phase 6 首版）
+// ABI 版本嵌入符号名：gather/scatter v2 起带 _v2 后缀（P1 签名变更）；
+// copy 保持首版签名。
 
 #include "include/common.h"
 
@@ -17,23 +18,49 @@
 
 // ── 元数据结构 ──────────────────────────────────────────────
 
-/// gather 参数：output shape（axis 维 = n_indices）+ input strides。
+/// gather 参数：output shape（axis 维 = n_indices）+ input strides +
+/// axis 长度（device 侧越界检查，P1）。
 struct GatherMeta {
     int ndim;
     int axis;
     size_t out_shape[MUSAPY_MAX_NDIM];
     ssize_t in_strides[MUSAPY_MAX_NDIM];
+    size_t in_axis_len;
 };
 
 /// scatter 参数：values shape（axis 维 = n_indices）+ values strides +
-/// output 各维的连续 stride（row-major）。output 为连续布局。
+/// output 各维的连续 stride（row-major）+ axis 长度（device 侧越界检查，P1）。
+/// output 为连续布局。
 struct ScatterMeta {
     int ndim;
     int axis;
     size_t val_shape[MUSAPY_MAX_NDIM];
     ssize_t val_strides[MUSAPY_MAX_NDIM];
     size_t out_strides[MUSAPY_MAX_NDIM];
+    size_t out_axis_len;
 };
+
+// ── P1：device 侧索引越界报告（方案二：GPU 错误标志）────────
+//
+// gather/scatter 不再依赖 host 端同步 D2H 校验（原 ~10ms/op 的性能瓶颈）：
+// 每个线程检查自己用到的 index，越界时跳过本次读/写，用 atomicCAS 记录
+// 首个越界条目的展平序号（pos）与越界索引值（val），并 atomicOr 置位 flag。
+// host 在下一次 Stream::synchronize() 批量读回 flag 并带算子上下文报错
+// （见 musapy-core stream.rs 的 index_checks 机制）。
+//
+// 错误槽布局（16B）：[flag: int][pos: int][val: long long]，
+// 初始/复位状态 flag=0、pos=-1（atomicCAS 哨兵）。
+// pos 用 int：entry > 2^31 时截断，仅用于错误定位，可接受。
+
+__device__ static inline void musapy_report_index_oob(
+    int* err_flag, int* err_pos, long long* err_val,
+    size_t entry, long long bad_index
+) {
+    if (atomicCAS(err_pos, -1, (int)entry) == -1) {
+        *err_val = bad_index;  // 仅 CAS 胜出者写 val，与 pos 配对
+    }
+    atomicOr(err_flag, 1);
+}
 
 /// copy 参数（stride-aware identity，与 NdMetaUnary 同构）。
 struct CopyMeta {
@@ -45,46 +72,142 @@ struct CopyMeta {
 // ── Kernels ─────────────────────────────────────────────────
 
 /// gather：out[idx] = input[offset]，其中 axis 维坐标取自 indices。
+/// 越界索引：跳过该元素读/写并记录错误标志（P1，host 在 sync 时报错）。
+///
+/// 性能（P1 实测）：64 位整数 div/mod 在 mp_22 上是软件实现，逐元素 unravel
+/// 会让 kernel 变成计算瓶颈（1M f32 gather：f32/f64 同速 ~0.47ms，2D 3 倍慢）。
+/// 因此：ndim==1 直接映射免 unravel；总元素数 ≤ 2^32 时用 32 位 div/mod
+/// （offset 仍 ssize_t 累加，strides 可超 32 位）；更大才走 64 位路径。
 template <typename T>
 __global__ void musapy_gather_kernel(
     const T* __restrict__ input, T* __restrict__ output,
-    const int64_t* __restrict__ indices, GatherMeta meta, size_t n_out
+    const int64_t* __restrict__ indices, GatherMeta meta, size_t n_out,
+    int* err_flag, int* err_pos, long long* err_val
 ) {
     size_t idx = blockIdx.x * blockDim.x + threadIdx.x;
-    if (idx < n_out) {
+    if (idx >= n_out) return;
+
+    // ndim==1 快路径：无 unravel
+    if (meta.ndim == 1) {
+        long long raw = (long long)indices[idx];
+        if (raw < 0 || raw >= (long long)meta.in_axis_len) {
+            musapy_report_index_oob(err_flag, err_pos, err_val, idx, raw);
+            return;
+        }
+        output[idx] = input[(size_t)(raw * meta.in_strides[0])];
+        return;
+    }
+
+    ssize_t off = 0;
+    if (n_out <= 0xFFFFFFFFull) {
+        unsigned int tmp = (unsigned int)idx;
+        for (int i = meta.ndim - 1; i >= 0; i--) {
+            unsigned int dim = (unsigned int)meta.out_shape[i];
+            unsigned int coord = tmp % dim;
+            tmp /= dim;
+            size_t k;
+            if (i == meta.axis) {
+                long long raw = (long long)indices[coord];
+                if (raw < 0 || raw >= (long long)meta.in_axis_len) {
+                    musapy_report_index_oob(err_flag, err_pos, err_val, idx, raw);
+                    return;
+                }
+                k = (size_t)raw;
+            } else {
+                k = coord;
+            }
+            off += (ssize_t)k * meta.in_strides[i];
+        }
+    } else {
         size_t tmp = idx;
-        ssize_t off = 0;
         for (int i = meta.ndim - 1; i >= 0; i--) {
             size_t coord = tmp % meta.out_shape[i];
             tmp /= meta.out_shape[i];
-            size_t k = (i == meta.axis) ? (size_t)indices[coord] : coord;
+            size_t k;
+            if (i == meta.axis) {
+                long long raw = (long long)indices[coord];
+                if (raw < 0 || raw >= (long long)meta.in_axis_len) {
+                    musapy_report_index_oob(err_flag, err_pos, err_val, idx, raw);
+                    return;
+                }
+                k = (size_t)raw;
+            } else {
+                k = coord;
+            }
             off += (ssize_t)k * meta.in_strides[i];
         }
-        output[idx] = input[(size_t)off];
     }
+    output[idx] = input[(size_t)off];
 }
 
 /// scatter：output[out_offset] = values[idx]，axis 维坐标经 indices 映射。
 /// 每个线程处理一个 values 元素；重复 indices 的写序未定义（与 PyTorch 一致）。
+/// 越界索引：跳过该元素写并记录错误标志（P1，host 在 sync 时报错）。
+/// 快路径策略与 gather 相同（ndim==1 免 unravel；≤2^32 用 32 位 div/mod）。
 template <typename T>
 __global__ void musapy_scatter_kernel(
     T* __restrict__ output, const T* __restrict__ values,
-    const int64_t* __restrict__ indices, ScatterMeta meta, size_t n_values
+    const int64_t* __restrict__ indices, ScatterMeta meta, size_t n_values,
+    int* err_flag, int* err_pos, long long* err_val
 ) {
     size_t idx = blockIdx.x * blockDim.x + threadIdx.x;
-    if (idx < n_values) {
+    if (idx >= n_values) return;
+
+    // ndim==1 快路径：无 unravel
+    if (meta.ndim == 1) {
+        long long raw = (long long)indices[idx];
+        if (raw < 0 || raw >= (long long)meta.out_axis_len) {
+            musapy_report_index_oob(err_flag, err_pos, err_val, idx, raw);
+            return;
+        }
+        output[(size_t)(raw * meta.out_strides[0])] =
+            values[(size_t)(idx * meta.val_strides[0])];
+        return;
+    }
+
+    size_t out_off = 0;
+    ssize_t val_off = 0;
+    if (n_values <= 0xFFFFFFFFull) {
+        unsigned int tmp = (unsigned int)idx;
+        for (int i = meta.ndim - 1; i >= 0; i--) {
+            unsigned int dim = (unsigned int)meta.val_shape[i];
+            unsigned int coord = tmp % dim;
+            tmp /= dim;
+            val_off += (ssize_t)coord * meta.val_strides[i];
+            size_t k;
+            if (i == meta.axis) {
+                long long raw = (long long)indices[coord];
+                if (raw < 0 || raw >= (long long)meta.out_axis_len) {
+                    musapy_report_index_oob(err_flag, err_pos, err_val, idx, raw);
+                    return;
+                }
+                k = (size_t)raw;
+            } else {
+                k = coord;
+            }
+            out_off += k * meta.out_strides[i];
+        }
+    } else {
         size_t tmp = idx;
-        size_t out_off = 0;
-        ssize_t val_off = 0;
         for (int i = meta.ndim - 1; i >= 0; i--) {
             size_t coord = tmp % meta.val_shape[i];
             tmp /= meta.val_shape[i];
             val_off += (ssize_t)coord * meta.val_strides[i];
-            size_t k = (i == meta.axis) ? (size_t)indices[coord] : coord;
+            size_t k;
+            if (i == meta.axis) {
+                long long raw = (long long)indices[coord];
+                if (raw < 0 || raw >= (long long)meta.out_axis_len) {
+                    musapy_report_index_oob(err_flag, err_pos, err_val, idx, raw);
+                    return;
+                }
+                k = (size_t)raw;
+            } else {
+                k = coord;
+            }
             out_off += k * meta.out_strides[i];
         }
-        output[out_off] = values[(size_t)val_off];
     }
+    output[out_off] = values[(size_t)val_off];
 }
 
 /// copy：out[idx] = input[offset_nd(idx)]（视图物化为连续布局）。
@@ -107,22 +230,24 @@ extern "C" {
 // ── gather ──
 
 #define GATHER_WRAPPER(T, SUFFIX)                                             \
-void musapy_gather_##SUFFIX(                                                 \
+void musapy_gather_##SUFFIX##_v2(                                            \
     const T* __restrict__ input, T* __restrict__ output,                     \
     const int64_t* __restrict__ indices,                                     \
     int ndim, int axis, const size_t* out_shape, const ssize_t* in_strides,  \
-    size_t n_out, musaStream_t stream                                        \
+    size_t n_out, size_t axis_len,                                           \
+    int* err_flag, int* err_pos, long long* err_val, musaStream_t stream     \
 ) {                                                                          \
     if (n_out == 0) return;                                                  \
     GatherMeta meta;                                                         \
     meta.ndim = ndim;                                                        \
     meta.axis = axis;                                                        \
+    meta.in_axis_len = axis_len;                                             \
     for (int i = 0; i < ndim; i++) {                                        \
         meta.out_shape[i] = out_shape[i];                                    \
         meta.in_strides[i] = in_strides[i];                                  \
     }                                                                        \
     musapy_gather_kernel<T><<<grid_size_1d(n_out), 256, 0, stream>>>(        \
-        input, output, indices, meta, n_out);                                \
+        input, output, indices, meta, n_out, err_flag, err_pos, err_val);    \
 }
 
 GATHER_WRAPPER(float, f32)
@@ -133,23 +258,25 @@ GATHER_WRAPPER(int64_t, i64)
 // ── scatter ──
 
 #define SCATTER_WRAPPER(T, SUFFIX)                                            \
-void musapy_scatter_##SUFFIX(                                                \
+void musapy_scatter_##SUFFIX##_v2(                                           \
     T* __restrict__ output, const T* __restrict__ values,                    \
     const int64_t* __restrict__ indices,                                     \
     int ndim, int axis, const size_t* val_shape, const ssize_t* val_strides, \
-    const size_t* out_strides, size_t n_values, musaStream_t stream          \
+    const size_t* out_strides, size_t n_values, size_t axis_len,             \
+    int* err_flag, int* err_pos, long long* err_val, musaStream_t stream     \
 ) {                                                                          \
     if (n_values == 0) return;                                               \
     ScatterMeta meta;                                                        \
     meta.ndim = ndim;                                                        \
     meta.axis = axis;                                                        \
+    meta.out_axis_len = axis_len;                                            \
     for (int i = 0; i < ndim; i++) {                                        \
         meta.val_shape[i] = val_shape[i];                                    \
         meta.val_strides[i] = val_strides[i];                                \
         meta.out_strides[i] = out_strides[i];                                \
     }                                                                        \
     musapy_scatter_kernel<T><<<grid_size_1d(n_values), 256, 0, stream>>>(    \
-        output, values, indices, meta, n_values);                            \
+        output, values, indices, meta, n_values, err_flag, err_pos, err_val);\
 }
 
 SCATTER_WRAPPER(float, f32)

@@ -4,7 +4,9 @@
 //!   - view 操作（transpose/permute/flip/slice）零拷贝，仅修改 Layout，共享 BufferRef
 //!   - copy 操作（gather/scatter/contiguous）分配新 buffer，走 GPU kernel 或 CPU fallback
 //!   - GPU kernel dtype 实例化：f32/f64/i32/i64；其余 dtype 走 D2H→host→H2D fallback
-//!   - indices 固定 int64 1D；越界在 host 端校验
+//!   - indices 固定 int64 1D；GPU 路径越界由 device 侧错误标志报告
+//!     （P1：kernel 跳过越界元素并置标志，Stream::synchronize 时报错），
+//!     CPU 路径与 via-host fallback 仍在 host 端同步校验
 //!   - 高级索引（boolean mask / fancy indexing）推迟到 v0.3+
 
 use crate::kernels;
@@ -172,6 +174,10 @@ pub fn contiguous(a: &Array) -> Result<Array> {
 /// 等价 `np.take(a, indices, axis=axis)`：
 /// 输出 shape = a.shape 中 axis 维替换为 indices.size()。
 /// indices 必须为 1D int64，值域 [0, a.shape[axis])。
+///
+/// **越界检查（P1）**：GPU 路径不做同步 host 校验，越界索引由 device 侧
+/// 错误标志报告——kernel 跳过越界元素的读/写，错误在下一次流同步
+/// （如 `.tolist()`/`.item()`/显式 sync）时抛出。CPU 路径仍在调用时立即报错。
 pub fn gather(a: &Array, indices: &Array, axis: usize) -> Result<Array> {
     // ── Phase A：校验 ──
     let ndim = a.ndim();
@@ -197,22 +203,13 @@ pub fn gather(a: &Array, indices: &Array, axis: usize) -> Result<Array> {
         .into());
     }
 
-    let idx_host = read_indices_host(indices)?;
+    let n_indices = indices.size();
     let axis_len = a.shape()[axis];
-    for (i, &k) in idx_host.iter().enumerate() {
-        if k < 0 || k as usize >= axis_len {
-            return Err(ShapeError::Mismatch(format!(
-                "gather: index {} at position {} out of bounds for axis {} (size {})",
-                k, i, axis, axis_len
-            ))
-            .into());
-        }
-    }
 
     let device = a.device().clone();
     let dtype = a.dtype();
     let mut out_shape = a.shape().clone();
-    out_shape[axis] = idx_host.len();
+    out_shape[axis] = n_indices;
     let n_out: usize = out_shape.iter().product::<usize>().max(1);
     let nbytes = n_out * dtype.element_size();
 
@@ -234,8 +231,14 @@ pub fn gather(a: &Array, indices: &Array, axis: usize) -> Result<Array> {
     );
     let in_strides = a.layout().strides.clone();
 
+    // kernel 读取的 indices buffer（物化/上传后的实际来源，Phase C 记录读事件用）
+    let idx_read_buffer: Arc<Buffer>;
+
     match &device {
         Device::Cpu => {
+            // CPU 路径：host 端同步校验（立即报错）
+            let idx_host = read_indices_host(indices)?;
+            check_indices_bounds(&idx_host, axis_len, "gather", axis)?;
             cpu_gather_bytes(
                 in_ptr,
                 out_ptr,
@@ -245,27 +248,48 @@ pub fn gather(a: &Array, indices: &Array, axis: usize) -> Result<Array> {
                 axis,
                 dtype.element_size(),
             );
+            idx_read_buffer = Arc::clone(indices.data().arc());
         }
         Device::Musa(_) => {
-            // indices 需与 a 同设备：CPU indices 上传到 GPU
-            let idx_holder;
-            let idx_dev_src: &Array = if indices.device() == &device {
+            // mock 构建保留同步 host 校验（mock 无 sync drain 机制）
+            #[cfg(musapy_mock_musa)]
+            {
+                let idx_host = read_indices_host(indices)?;
+                check_indices_bounds(&idx_host, axis_len, "gather", axis)?;
+            }
+            // kernel 要求 indices 连续：非连续视图先物化（GPU copy kernel，异步）
+            let idx_contig_holder;
+            let idx_src: &Array = if indices.is_contiguous() {
                 indices
             } else {
-                idx_holder = upload_indices(&idx_host, &device, &out_stream)?;
+                idx_contig_holder = contiguous(indices)?;
+                &idx_contig_holder
+            };
+            // indices 需与 a 同设备：CPU indices 直接上传原始字节（不做 host 校验）
+            let idx_holder;
+            let idx_dev_src: &Array = if idx_src.device() == &device {
+                idx_src.data().buffer().wait_last_write_on(&out_stream)?;
+                idx_src
+            } else {
+                idx_holder = upload_indices_bytes(idx_src, &device, &out_stream)?;
                 &idx_holder
             };
-            let indices_dev = idx_dev_src.data().buffer().ptr();
+            let indices_dev = adjust_ptr_offset(
+                idx_dev_src.data().buffer().ptr(),
+                idx_dev_src.layout().offset,
+                8,
+            );
+            idx_read_buffer = Arc::clone(idx_dev_src.data().arc());
             gpu_gather(
-                a, in_ptr, out_ptr, indices_dev, &idx_host, &out_shape, &in_strides, axis,
-                dtype, &out_stream,
+                a, idx_src, in_ptr, out_ptr, indices_dev, axis_len, &out_shape,
+                &in_strides, axis, dtype, &out_stream,
             )?;
         }
     }
 
     // ── Phase C：事件记录 + 构造输出 ──
     a.data().buffer().record_read(&out_stream);
-    indices.data().buffer().record_read(&out_stream);
+    idx_read_buffer.record_read(&out_stream);
     out_data_ref.buffer().record_write(&out_stream);
 
     if musapy_core::debug::is_debug() {
@@ -298,6 +322,9 @@ pub fn gather(a: &Array, indices: &Array, axis: usize) -> Result<Array> {
 /// 返回新数组 = a 的连续副本，其中 `out[..., indices[j], ...] = values[..., j, ...]`。
 /// 不修改原数组。values.shape 必须等于 a.shape 中 axis 维替换为 indices.size()。
 /// 重复 indices 时写入顺序未定义（与 PyTorch 一致）。
+///
+/// **越界检查（P1）**：与 `gather` 相同——GPU 路径越界索引由 device 侧错误
+/// 标志报告，错误在下一次流同步时抛出（越界元素被跳过写入）；CPU 路径立即报错。
 pub fn scatter(a: &Array, indices: &Array, values: &Array, axis: usize) -> Result<Array> {
     // ── Phase A：校验 ──
     let ndim = a.ndim();
@@ -347,24 +374,15 @@ pub fn scatter(a: &Array, indices: &Array, values: &Array, axis: usize) -> Resul
         .into());
     }
 
-    let idx_host = read_indices_host(indices)?;
+    let n_indices = indices.size();
     let axis_len = a.shape()[axis];
-    for (i, &k) in idx_host.iter().enumerate() {
-        if k < 0 || k as usize >= axis_len {
-            return Err(ShapeError::Mismatch(format!(
-                "scatter: index {} at position {} out of bounds for axis {} (size {})",
-                k, i, axis, axis_len
-            ))
-            .into());
-        }
-    }
 
     // values shape 校验：= a.shape 且 axis 维 = n_indices
     let expected_val_shape: Vec<usize> = a
         .shape()
         .iter()
         .enumerate()
-        .map(|(i, &s)| if i == axis { idx_host.len() } else { s })
+        .map(|(i, &s)| if i == axis { n_indices } else { s })
         .collect();
     if values.shape() != &expected_val_shape[..] {
         return Err(ShapeError::Mismatch(format!(
@@ -409,8 +427,14 @@ pub fn scatter(a: &Array, indices: &Array, values: &Array, axis: usize) -> Resul
         out_strides[i] = out_strides[i + 1] * out_shape[i + 1];
     }
 
+    // kernel 读取的 indices buffer（物化/上传后的实际来源，Phase C 记录读事件用）
+    let idx_read_buffer: Arc<Buffer>;
+
     match &device {
         Device::Cpu => {
+            // CPU 路径：host 端同步校验（立即报错）
+            let idx_host = read_indices_host(indices)?;
+            check_indices_bounds(&idx_host, axis_len, "scatter", axis)?;
             cpu_scatter_bytes(
                 out_ptr,
                 val_ptr,
@@ -421,27 +445,49 @@ pub fn scatter(a: &Array, indices: &Array, values: &Array, axis: usize) -> Resul
                 axis,
                 dtype.element_size(),
             );
+            idx_read_buffer = Arc::clone(indices.data().arc());
         }
         Device::Musa(_) => {
-            // indices 需与 a 同设备：CPU indices 上传到 GPU
-            let idx_holder;
-            let idx_dev_src: &Array = if indices.device() == &device {
+            // mock 构建保留同步 host 校验（mock 无 sync drain 机制）
+            #[cfg(musapy_mock_musa)]
+            {
+                let idx_host = read_indices_host(indices)?;
+                check_indices_bounds(&idx_host, axis_len, "scatter", axis)?;
+            }
+            // kernel 要求 indices 连续：非连续视图先物化（GPU copy kernel，异步）
+            let idx_contig_holder;
+            let idx_src: &Array = if indices.is_contiguous() {
                 indices
             } else {
-                idx_holder = upload_indices(&idx_host, &device, &out_stream)?;
+                idx_contig_holder = contiguous(indices)?;
+                &idx_contig_holder
+            };
+            // indices 需与 a 同设备：CPU indices 直接上传原始字节（不做 host 校验）
+            let idx_holder;
+            let idx_dev_src: &Array = if idx_src.device() == &device {
+                idx_src.data().buffer().wait_last_write_on(&out_stream)?;
+                idx_src
+            } else {
+                idx_holder = upload_indices_bytes(idx_src, &device, &out_stream)?;
                 &idx_holder
             };
-            let indices_dev = idx_dev_src.data().buffer().ptr();
+            let indices_dev = adjust_ptr_offset(
+                idx_dev_src.data().buffer().ptr(),
+                idx_dev_src.layout().offset,
+                8,
+            );
+            idx_read_buffer = Arc::clone(idx_dev_src.data().arc());
             gpu_scatter(
-                out_ptr, values, val_ptr, indices_dev, &idx_host, &expected_val_shape,
-                &val_strides, &out_strides, axis, dtype, n_out, &out_stream,
+                out_ptr, values, val_ptr, indices_dev, idx_src, axis_len,
+                &expected_val_shape, &val_strides, &out_strides, axis, dtype, n_out,
+                &out_stream,
             )?;
         }
     }
 
     // ── Phase C：事件记录 + 构造输出 ──
     a.data().buffer().record_read(&out_stream);
-    indices.data().buffer().record_read(&out_stream);
+    idx_read_buffer.record_read(&out_stream);
     values.data().buffer().record_read(&out_stream);
     out_data_ref.buffer().record_write(&out_stream);
 
@@ -595,10 +641,11 @@ fn gpu_copy_via_host(
 #[allow(clippy::too_many_arguments)]
 fn gpu_gather(
     a: &Array,
+    indices_src: &Array,
     in_ptr: Option<NonNull<u8>>,
     out_ptr: Option<NonNull<u8>>,
     indices_dev: Option<NonNull<u8>>,
-    idx_host: &[i64],
+    axis_len: usize,
     out_shape: &[usize],
     in_strides: &[isize],
     axis: usize,
@@ -614,51 +661,67 @@ fn gpu_gather(
     let axis_i32 = axis as i32;
 
     let idx_dev = indices_dev;
+    let n_indices = out_shape[axis];
 
-    let launched = unsafe {
-        match (dtype, idx_dev) {
-            (Dtype::Float32, Some(idp)) => {
-                kernels::musapy_gather_f32(
+    // dtype 已实例化 → launch v2 kernel（device 侧越界检查，P1 方案二）
+    let instantiated = matches!(
+        (dtype, idx_dev),
+        (Dtype::Float32 | Dtype::Float64 | Dtype::Int32 | Dtype::Int64, Some(_))
+    );
+
+    if instantiated {
+        let idp = idx_dev.unwrap();
+        // 错误槽 16B：[flag i32][pos i32][val i64]，synchronize 时批量读回
+        #[cfg(not(musapy_mock_musa))]
+        let (err_flag, err_pos, err_val) = {
+            let slot = out_stream.acquire_index_check(format!(
+                "gather(axis={}, axis_len={}, n_indices={})",
+                axis, axis_len, n_indices
+            ))?;
+            let p = slot.as_ptr();
+            unsafe { (p as *mut i32, (p as *mut i32).add(1), (p as *mut i64).add(1)) }
+        };
+        #[cfg(musapy_mock_musa)]
+        let (err_flag, err_pos, err_val): (*mut i32, *mut i32, *mut i64) =
+            (std::ptr::null_mut(), std::ptr::null_mut(), std::ptr::null_mut());
+
+        unsafe {
+            match dtype {
+                Dtype::Float32 => kernels::musapy_gather_f32_v2(
                     ip.as_ptr() as *const f32, op.as_ptr() as *mut f32,
                     idp.as_ptr() as *const i64, ndim, axis_i32,
-                    out_shape.as_ptr(), in_strides.as_ptr(), n_out, stream_raw,
-                );
-                true
-            }
-            (Dtype::Float64, Some(idp)) => {
-                kernels::musapy_gather_f64(
+                    out_shape.as_ptr(), in_strides.as_ptr(), n_out, axis_len,
+                    err_flag, err_pos, err_val, stream_raw,
+                ),
+                Dtype::Float64 => kernels::musapy_gather_f64_v2(
                     ip.as_ptr() as *const f64, op.as_ptr() as *mut f64,
                     idp.as_ptr() as *const i64, ndim, axis_i32,
-                    out_shape.as_ptr(), in_strides.as_ptr(), n_out, stream_raw,
-                );
-                true
-            }
-            (Dtype::Int32, Some(idp)) => {
-                kernels::musapy_gather_i32(
+                    out_shape.as_ptr(), in_strides.as_ptr(), n_out, axis_len,
+                    err_flag, err_pos, err_val, stream_raw,
+                ),
+                Dtype::Int32 => kernels::musapy_gather_i32_v2(
                     ip.as_ptr() as *const i32, op.as_ptr() as *mut i32,
                     idp.as_ptr() as *const i64, ndim, axis_i32,
-                    out_shape.as_ptr(), in_strides.as_ptr(), n_out, stream_raw,
-                );
-                true
-            }
-            (Dtype::Int64, Some(idp)) => {
-                kernels::musapy_gather_i64(
+                    out_shape.as_ptr(), in_strides.as_ptr(), n_out, axis_len,
+                    err_flag, err_pos, err_val, stream_raw,
+                ),
+                Dtype::Int64 => kernels::musapy_gather_i64_v2(
                     ip.as_ptr() as *const i64, op.as_ptr() as *mut i64,
                     idp.as_ptr() as *const i64, ndim, axis_i32,
-                    out_shape.as_ptr(), in_strides.as_ptr(), n_out, stream_raw,
-                );
-                true
+                    out_shape.as_ptr(), in_strides.as_ptr(), n_out, axis_len,
+                    err_flag, err_pos, err_val, stream_raw,
+                ),
+                _ => unreachable!("guarded by instantiated check"),
             }
-            _ => false,
         }
-    };
-
-    if launched {
-        musa_ffi::check_last_kernel_launch("gather_v1")?;
+        musa_ffi::check_last_kernel_launch("gather_v2")?;
         Ok(())
     } else {
         // fallback：D2H 整个源 buffer → host gather → H2D
-        gpu_gather_via_host(a, out_ptr, idx_host, out_shape, in_strides, axis, dtype.element_size())
+        // （未实例化 dtype；保留 host 端同步校验与立即报错语义）
+        let idx_host = read_indices_host(indices_src)?;
+        check_indices_bounds(&idx_host, axis_len, "gather", axis)?;
+        gpu_gather_via_host(a, out_ptr, &idx_host, out_shape, in_strides, axis, dtype.element_size())
     }
 }
 
@@ -724,12 +787,14 @@ fn gpu_gather_via_host(
 /// `indices_dev` 是已就位于目标设备的 indices int64 指针；
 /// `values` 用于 fallback 时读回 values 内容；`n_out_total` 为 output 总元素数。
 #[allow(clippy::too_many_arguments)]
+#[allow(clippy::too_many_arguments)]
 fn gpu_scatter(
     out_ptr: Option<NonNull<u8>>,
     values: &Array,
     val_ptr: Option<NonNull<u8>>,
     indices_dev: Option<NonNull<u8>>,
-    idx_host: &[i64],
+    indices_src: &Array,
+    axis_len: usize,
     val_shape: &[usize],
     val_strides: &[isize],
     out_strides: &[usize],
@@ -746,62 +811,67 @@ fn gpu_scatter(
     let ndim = val_shape.len() as i32;
     let axis_i32 = axis as i32;
 
-    let launched = match (dtype, indices_dev) {
-        (Dtype::Float32, Some(idp)) => {
-            unsafe {
-                kernels::musapy_scatter_f32(
+    let n_indices = val_shape[axis];
+    let instantiated = matches!(
+        (dtype, indices_dev),
+        (Dtype::Float32 | Dtype::Float64 | Dtype::Int32 | Dtype::Int64, Some(_))
+    );
+
+    if instantiated {
+        let idp = indices_dev.unwrap();
+        // 错误槽 16B：[flag i32][pos i32][val i64]，synchronize 时批量读回
+        #[cfg(not(musapy_mock_musa))]
+        let (err_flag, err_pos, err_val) = {
+            let slot = out_stream.acquire_index_check(format!(
+                "scatter(axis={}, axis_len={}, n_indices={})",
+                axis, axis_len, n_indices
+            ))?;
+            let p = slot.as_ptr();
+            unsafe { (p as *mut i32, (p as *mut i32).add(1), (p as *mut i64).add(1)) }
+        };
+        #[cfg(musapy_mock_musa)]
+        let (err_flag, err_pos, err_val): (*mut i32, *mut i32, *mut i64) =
+            (std::ptr::null_mut(), std::ptr::null_mut(), std::ptr::null_mut());
+
+        unsafe {
+            match dtype {
+                Dtype::Float32 => kernels::musapy_scatter_f32_v2(
                     op.as_ptr() as *mut f32, vp.as_ptr() as *const f32,
                     idp.as_ptr() as *const i64, ndim, axis_i32,
                     val_shape.as_ptr(), val_strides.as_ptr(), out_strides.as_ptr(),
-                    n_values, stream_raw,
-                );
-            }
-            true
-        }
-        (Dtype::Float64, Some(idp)) => {
-            unsafe {
-                kernels::musapy_scatter_f64(
+                    n_values, axis_len, err_flag, err_pos, err_val, stream_raw,
+                ),
+                Dtype::Float64 => kernels::musapy_scatter_f64_v2(
                     op.as_ptr() as *mut f64, vp.as_ptr() as *const f64,
                     idp.as_ptr() as *const i64, ndim, axis_i32,
                     val_shape.as_ptr(), val_strides.as_ptr(), out_strides.as_ptr(),
-                    n_values, stream_raw,
-                );
-            }
-            true
-        }
-        (Dtype::Int32, Some(idp)) => {
-            unsafe {
-                kernels::musapy_scatter_i32(
+                    n_values, axis_len, err_flag, err_pos, err_val, stream_raw,
+                ),
+                Dtype::Int32 => kernels::musapy_scatter_i32_v2(
                     op.as_ptr() as *mut i32, vp.as_ptr() as *const i32,
                     idp.as_ptr() as *const i64, ndim, axis_i32,
                     val_shape.as_ptr(), val_strides.as_ptr(), out_strides.as_ptr(),
-                    n_values, stream_raw,
-                );
-            }
-            true
-        }
-        (Dtype::Int64, Some(idp)) => {
-            unsafe {
-                kernels::musapy_scatter_i64(
+                    n_values, axis_len, err_flag, err_pos, err_val, stream_raw,
+                ),
+                Dtype::Int64 => kernels::musapy_scatter_i64_v2(
                     op.as_ptr() as *mut i64, vp.as_ptr() as *const i64,
                     idp.as_ptr() as *const i64, ndim, axis_i32,
                     val_shape.as_ptr(), val_strides.as_ptr(), out_strides.as_ptr(),
-                    n_values, stream_raw,
-                );
+                    n_values, axis_len, err_flag, err_pos, err_val, stream_raw,
+                ),
+                _ => unreachable!("guarded by instantiated check"),
             }
-            true
         }
-        _ => false,
-    };
-
-    if launched {
-        musa_ffi::check_last_kernel_launch("scatter_v1")?;
+        musa_ffi::check_last_kernel_launch("scatter_v2")?;
         Ok(())
     } else {
-        // fallback 用同步 memcpy 读回 output（copy_into 刚在 out_stream 上写过）
+        // fallback 用同步 memcpy 读回 output（copy_into 刚在 out_stream 上写过）；
+        // 未实例化 dtype 保留 host 端同步校验与立即报错语义
         out_stream.synchronize()?;
+        let idx_host = read_indices_host(indices_src)?;
+        check_indices_bounds(&idx_host, axis_len, "scatter", axis)?;
         gpu_scatter_via_host(
-            out_ptr, values, idx_host, val_shape, val_strides, out_strides, axis,
+            out_ptr, values, &idx_host, val_shape, val_strides, out_strides, axis,
             dtype.element_size(), n_out_total,
         )
     }
@@ -888,23 +958,21 @@ fn gpu_scatter_via_host(
     Ok(())
 }
 
-/// 将 host 端 indices 上传到指定设备（int64 1D contiguous）。
-fn upload_indices(idx_host: &[i64], device: &Device, stream: &Arc<Stream>) -> Result<Array> {
-    let n = idx_host.len();
+/// 将 CPU 端连续 int64 indices 原样上传到指定设备（H2D 字节拷贝，
+/// 不做 host 校验——P1 起越界由 device 侧错误标志报告）。
+fn upload_indices_bytes(indices: &Array, device: &Device, stream: &Arc<Stream>) -> Result<Array> {
+    let n = indices.size();
     let nbytes = (n * 8).max(1);
     let buffer = Buffer::alloc(nbytes, device.clone(), stream)?;
     let data_ref = BufferRef::new(Arc::new(buffer));
     if n > 0 {
-        let mut bytes = Vec::with_capacity(n * 8);
-        for &v in idx_host {
-            bytes.extend_from_slice(&v.to_le_bytes());
-        }
-        if let Some(p) = data_ref.buffer().ptr() {
+        let src = adjust_ptr_offset(indices.data().buffer().ptr(), indices.layout().offset, 8);
+        if let (Some(p), Some(sp)) = (data_ref.buffer().ptr(), src) {
             unsafe {
                 musa_ffi::check_musa(
                     musa_ffi::musaMemcpy(
                         p.as_ptr() as *mut std::ffi::c_void,
-                        bytes.as_ptr() as *const std::ffi::c_void,
+                        sp.as_ptr() as *const std::ffi::c_void,
                         n * 8,
                         musa_ffi::musaMemcpyKind::HostToDevice,
                     ),
@@ -922,6 +990,20 @@ fn upload_indices(idx_host: &[i64], device: &Device, stream: &Arc<Stream>) -> Re
         DeviceResolution::new(device.clone(), ResolutionSource::Arg),
         DtypeResolution::new(Dtype::Int64, ResolutionSource::Arg),
     ))
+}
+
+/// host 端索引越界校验（CPU 路径、via-host fallback、mock 构建使用）。
+fn check_indices_bounds(idx_host: &[i64], axis_len: usize, op: &str, axis: usize) -> Result<()> {
+    for (i, &k) in idx_host.iter().enumerate() {
+        if k < 0 || k as usize >= axis_len {
+            return Err(ShapeError::Mismatch(format!(
+                "{}: index {} at position {} out of bounds for axis {} (size {})",
+                op, k, i, axis, axis_len
+            ))
+            .into());
+        }
+    }
+    Ok(())
 }
 
 /// 读取 indices 数组内容到 host（int64 1D；GPU 时同步 + D2H）。

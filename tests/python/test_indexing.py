@@ -487,6 +487,51 @@ class TestIndexingGPU:
         assert s.tolist() == [[7.0, 2.0, 8.0], [9.0, 5.0, 10.0]]
 
     @musa_required
+    def test_gather_gpu_oob_reports_at_sync(self):
+        """P1 方案二：GPU 路径越界索引在下一次同步时报错（而非调用时）。"""
+        c = ms.array([[1.0, 2.0], [3.0, 4.0]], device="musa:0")
+        g = ms.gather(c, ms.array([0, 5], dtype=ms.int64), axis=0)  # 5 越界
+        with pytest.raises(Exception):
+            g.tolist()
+
+    @musa_required
+    def test_gather_gpu_negative_index_reports_at_sync(self):
+        """P1 方案二：负索引同样在同步时报错。"""
+        c = ms.array([1.0, 2.0, 3.0], device="musa:0")
+        g = ms.gather(c, ms.array([0, -1], dtype=ms.int64), axis=0)
+        with pytest.raises(Exception):
+            g.tolist()
+
+    @musa_required
+    def test_scatter_gpu_oob_reports_at_sync(self):
+        """P1 方案二：scatter 越界在同步时报错。"""
+        c = ms.array([[1.0, 2.0], [3.0, 4.0]], device="musa:0")
+        vals = ms.array([[9.0, 9.0]], device="musa:0")
+        s = ms.scatter(c, ms.array([2], dtype=ms.int64), vals, axis=0)  # 2 越界
+        with pytest.raises(Exception):
+            s.tolist()
+
+    @musa_required
+    def test_gpu_index_error_stream_reusable(self):
+        """越界报错后流仍可用：错误槽复位、不毒化，后续合法 gather 正常。"""
+        c = ms.array([1.0, 2.0, 3.0], device="musa:0")
+        bad = ms.gather(c, ms.array([7], dtype=ms.int64), axis=0)
+        with pytest.raises(Exception):
+            bad.tolist()
+        good = ms.gather(c, ms.array([2, 0], dtype=ms.int64), axis=0)
+        assert good.tolist() == [3.0, 1.0]
+
+    @musa_required
+    def test_gpu_index_check_no_false_positive(self):
+        """连续大量合法 gather（检查槽复用 + arena 扩容路径）不误报。"""
+        c = ms.array([[1.0, 2.0, 3.0], [4.0, 5.0, 6.0]], device="musa:0")
+        idx = ms.array([0, 2], dtype=ms.int64)
+        g = None
+        for _ in range(40):  # > arena 初始容量 16，覆盖扩容路径
+            g = ms.gather(c, idx, axis=1)
+        assert g.tolist() == [[1.0, 3.0], [4.0, 6.0]]
+
+    @musa_required
     def test_offset_view_arithmetic_gpu(self):
         """GPU offset 视图参与算术（slice/flip 视图 + 指针调整路径）。"""
         a = ms.array([[0.0, 1.0, 2.0], [3.0, 4.0, 5.0]], device="musa:0")

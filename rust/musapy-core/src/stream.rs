@@ -7,12 +7,13 @@
 
 use crate::device::Device;
 use crate::dtype::Dtype;
-use crate::error::{Result, StreamError};
+use crate::error::{Result, ShapeError, StreamError};
 use crate::layout::Shape;
 use crate::musa_ffi;
 use parking_lot::Mutex;
 use std::collections::VecDeque;
 use std::fmt;
+use std::ptr::NonNull;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::Instant;
 
@@ -88,6 +89,53 @@ impl fmt::Display for OpContext {
         }
         Ok(())
     }
+}
+
+// ============================================================
+// 2.5 索引越界检查槽（P1 方案二：GPU 侧错误标志）
+// ============================================================
+//
+// gather/scatter 的越界检查不再在 launch 前做「同步 D2H + host 逐元素比较」
+// （~10ms/op 的性能瓶颈），改为 device 侧报告：kernel 发现越界索引时跳过
+// 读/写并置位错误槽，host 在下一次 synchronize() 批量读回并带算子上下文报错。
+//
+// 错误槽布局（16B，对齐满足 i64 访问）：
+//   [0..4)   flag: i32 —— kernel atomicOr 1 置位（初始/复位 = 0）
+//   [4..8)   pos:  i32 —— 首个越界条目的展平序号（atomicCAS 哨兵 = -1）
+//   [8..16)  val:  i64 —— 越界索引值（仅 CAS 胜出线程写入）
+//
+// 槽位从 arena（连续设备内存）按轮分配：两轮 synchronize 之间发出的槽位
+// 必然连续，drain 时每个 arena 一次 D2H 读回整段，避免逐槽拷贝开销。
+// 干净轮次（无越界）槽位天然复位（flag 只会被 kernel 置 1）；报错轮次
+// drain 后整段重新初始化。
+
+/// 单个检查槽的字节数：flag i32 + pos i32 + val i64。
+const INDEX_CHECK_SLOT_BYTES: usize = 16;
+
+struct IndexCheckArena {
+    ptr: *mut u8,
+    /// 槽位总数。
+    capacity: usize,
+    /// 本轮已发出的槽位数（drain 时归零）。
+    cursor: usize,
+}
+
+// arena 指针只在 Mutex 保护下访问，可跨线程。
+unsafe impl Send for IndexCheckArena {}
+
+struct PendingIndexCheck {
+    /// arena 在 `arenas` Vec 中的下标。
+    arena: usize,
+    /// arena 内槽位下标。
+    slot: usize,
+    /// 算子上下文（如 "gather(axis=1, axis_len=3, n_indices=2)"），用于报错归因。
+    context: String,
+}
+
+#[derive(Default)]
+struct IndexCheckState {
+    arenas: Vec<IndexCheckArena>,
+    pending: VecDeque<PendingIndexCheck>,
 }
 
 // ============================================================
@@ -179,6 +227,8 @@ pub struct Stream {
     id: u64,
     pending_ops: Mutex<VecDeque<OpContext>>,
     poisoned: AtomicBool,
+    /// P1 方案二：gather/scatter 越界检查槽（arena + pending 队列）。
+    index_checks: Mutex<IndexCheckState>,
 }
 
 // MUSA 流是线程安全的（可从多线程访问，需外部同步）
@@ -217,6 +267,7 @@ impl Stream {
             id: STREAM_ID_COUNTER.fetch_add(1, Ordering::Relaxed),
             pending_ops: Mutex::new(VecDeque::new()),
             poisoned: AtomicBool::new(false),
+            index_checks: Mutex::new(IndexCheckState::default()),
         })
     }
 
@@ -285,11 +336,21 @@ impl Stream {
                         eprintln!("warn: deferred_free reclaim failed: {}", e);
                     }
                 }
-                Ok(())
+                // P1 方案二：批量读回 gather/scatter 越界检查槽；发现越界则报错。
+                // 不毒化流：越界条目已被 kernel 跳过，GPU 状态仍然一致。
+                self.drain_index_checks()
             }
             Err(e) => {
                 // 失败：标记 poisoned，附带 op 上下文
                 self.poison();
+                // kernel 崩溃时在途检查槽的结果不可信，直接丢弃（流已毒化不再复用）
+                {
+                    let mut st = self.index_checks.lock();
+                    st.pending.clear();
+                    for arena in st.arenas.iter_mut() {
+                        arena.cursor = 0;
+                    }
+                }
                 let op_ctx = self.oldest_op_context_string();
                 let msg = if let Some(ctx) = op_ctx {
                     format!("{} | failed op: {}", e, ctx)
@@ -344,6 +405,176 @@ impl Stream {
     pub fn clear_pending_ops(&self) {
         self.pending_ops.lock().clear();
     }
+
+    // ── P1 方案二：索引越界检查槽 ────────────────────────────
+
+    /// 领取一个 device 侧索引检查槽并注册到本流（P1 方案二）。
+    ///
+    /// 返回槽的设备指针（16B：`[flag: i32][pos: i32][val: i64]`），初始状态
+    /// `flag=0, pos=-1`。gather/scatter kernel 遇越界索引时置位并记录，
+    /// 下一次 `synchronize()` 批量读回并报错。`context` 用于错误归因。
+    ///
+    /// 仅 MUSA 流可用（CPU 流返回错误——CPU 路径在 host 端同步校验）。
+    pub fn acquire_index_check(&self, context: String) -> Result<NonNull<u8>> {
+        if self.raw.is_null() {
+            return Err(StreamError::MusaCallFailed(
+                "acquire_index_check: CPU stream has no device check slots".to_string(),
+            )
+            .into());
+        }
+        let mut st = self.index_checks.lock();
+        // 找一个有空位的 arena，或扩容新 arena（旧 arena 的槽可能仍被本轮
+        // 在途 kernel 引用，不能释放/复用，只能追加）。
+        let (ai, slot) = match st
+            .arenas
+            .iter_mut()
+            .enumerate()
+            .find(|(_, a)| a.cursor < a.capacity)
+        {
+            Some((ai, a)) => {
+                let s = a.cursor;
+                a.cursor += 1;
+                (ai, s)
+            }
+            None => {
+                let cap = st
+                    .arenas
+                    .last()
+                    .map(|a| a.capacity * 2)
+                    .unwrap_or(16)
+                    .max(16);
+                let arena = Self::alloc_check_arena(&self.device, cap)?;
+                st.arenas.push(arena);
+                let ai = st.arenas.len() - 1;
+                st.arenas[ai].cursor = 1;
+                (ai, 0)
+            }
+        };
+        st.pending.push_back(PendingIndexCheck {
+            arena: ai,
+            slot,
+            context,
+        });
+        let ptr = unsafe { st.arenas[ai].ptr.add(slot * INDEX_CHECK_SLOT_BYTES) };
+        Ok(NonNull::new(ptr).expect("check arena ptr non-null"))
+    }
+
+    /// 分配并初始化一个检查槽 arena（flag=0, pos=-1, val=0）。
+    fn alloc_check_arena(device: &Device, capacity: usize) -> Result<IndexCheckArena> {
+        let Device::Musa(id) = device else {
+            unreachable!("acquire_index_check guards for MUSA streams");
+        };
+        musa_ffi::set_device(*id as i32)?;
+        let mut ptr: *mut std::ffi::c_void = std::ptr::null_mut();
+        unsafe {
+            musa_ffi::check_musa(
+                musa_ffi::musaMalloc(&mut ptr, capacity * INDEX_CHECK_SLOT_BYTES),
+                "musaMalloc(index_check arena)",
+            )?;
+        }
+        if let Err(e) = Self::init_check_arena(ptr, capacity) {
+            unsafe {
+                let _ = musa_ffi::musaFree(ptr);
+            }
+            return Err(e);
+        }
+        Ok(IndexCheckArena {
+            ptr: ptr as *mut u8,
+            capacity,
+            cursor: 0,
+        })
+    }
+
+    /// H2D 写入 arena 初始/复位模式（每槽 flag=0, pos=-1, val=0）。
+    fn init_check_arena(ptr: *mut std::ffi::c_void, capacity: usize) -> Result<()> {
+        let mut init = Vec::with_capacity(capacity * INDEX_CHECK_SLOT_BYTES);
+        for _ in 0..capacity {
+            init.extend_from_slice(&0i32.to_le_bytes());
+            init.extend_from_slice(&(-1i32).to_le_bytes());
+            init.extend_from_slice(&0i64.to_le_bytes());
+        }
+        unsafe {
+            musa_ffi::check_musa(
+                musa_ffi::musaMemcpy(
+                    ptr,
+                    init.as_ptr() as *const std::ffi::c_void,
+                    init.len(),
+                    musa_ffi::musaMemcpyKind::HostToDevice,
+                ),
+                "musaMemcpy(index_check init)",
+            )
+        }
+    }
+
+    /// 批量读回本轮所有检查槽（每个 arena 一次 D2H），报告首个越界错误。
+    ///
+    /// 干净轮次：槽位天然复位（flag 只会被 kernel 置 1），cursor 归零即可。
+    /// 报错轮次：整段重新初始化后再复用。
+    fn drain_index_checks(&self) -> Result<()> {
+        let mut st = self.index_checks.lock();
+        if st.pending.is_empty() {
+            // 无检查在途：cursor 也必为 0，直接返回
+            return Ok(());
+        }
+
+        // Pass 1：逐 arena 读回本轮已发出的槽位段。
+        let mut host_bufs: Vec<Vec<u8>> = Vec::with_capacity(st.arenas.len());
+        for arena in st.arenas.iter() {
+            if arena.cursor == 0 {
+                host_bufs.push(Vec::new());
+                continue;
+            }
+            let nbytes = arena.cursor * INDEX_CHECK_SLOT_BYTES;
+            let mut host = vec![0u8; nbytes];
+            unsafe {
+                musa_ffi::check_musa(
+                    musa_ffi::musaMemcpy(
+                        host.as_mut_ptr() as *mut std::ffi::c_void,
+                        arena.ptr as *const std::ffi::c_void,
+                        nbytes,
+                        musa_ffi::musaMemcpyKind::DeviceToHost,
+                    ),
+                    "musaMemcpy(index_check drain)",
+                )?;
+            }
+            host_bufs.push(host);
+        }
+
+        // Pass 2：按注册顺序（FIFO）扫描，取首个越界条目报错。
+        let mut first_error: Option<String> = None;
+        for check in st.pending.iter() {
+            let base = check.slot * INDEX_CHECK_SLOT_BYTES;
+            let buf = &host_bufs[check.arena];
+            let flag = i32::from_le_bytes(buf[base..base + 4].try_into().unwrap());
+            if flag != 0 && first_error.is_none() {
+                let pos = i32::from_le_bytes(buf[base + 4..base + 8].try_into().unwrap());
+                let val = i64::from_le_bytes(buf[base + 8..base + 16].try_into().unwrap());
+                first_error = Some(format!(
+                    "{}: index {} out of bounds at flattened entry {} \
+                     (detected on device, reported at synchronization)",
+                    check.context, val, pos
+                ));
+            }
+        }
+
+        // Pass 3：复位。报错轮次需重新初始化（槽已被置脏）；干净轮次直接归零 cursor。
+        let need_reinit = first_error.is_some();
+        for arena in st.arenas.iter_mut() {
+            if arena.cursor == 0 {
+                continue;
+            }
+            if need_reinit {
+                Self::init_check_arena(arena.ptr as *mut std::ffi::c_void, arena.cursor)?;
+            }
+            arena.cursor = 0;
+        }
+        st.pending.clear();
+
+        match first_error {
+            Some(msg) => Err(ShapeError::Mismatch(msg).into()),
+            None => Ok(()),
+        }
+    }
 }
 
 impl Drop for Stream {
@@ -352,6 +583,13 @@ impl Drop for Stream {
         if !self.raw.is_null() {
             unsafe {
                 let _ = musa_ffi::musaStreamDestroy(self.raw);
+            }
+            // 释放索引检查 arena（get_mut 免锁：drop 时无并发访问）
+            let st = self.index_checks.get_mut();
+            for arena in st.arenas.drain(..) {
+                unsafe {
+                    let _ = musa_ffi::musaFree(arena.ptr as *mut std::ffi::c_void);
+                }
             }
         }
     }

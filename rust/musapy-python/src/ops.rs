@@ -750,6 +750,10 @@ pub fn contiguous(a: &PyArray) -> PyResult<PyArray> {
 /// `ms.gather(a, indices, axis=0)` — 沿 axis 按 indices 取元素（copy）。
 ///
 /// 等价 `np.take(a, indices, axis=axis)`。indices 为 1D int64。
+///
+/// GPU 越界语义（P1 去同步）：kernel 内检查索引，越界元素跳过并记录到
+/// device 错误槽；异常延迟到下一次流同步（如 `tolist()`/`item()`）抛出
+/// `ShapeError`，流本身不失效。CPU 路径仍为同步报错。
 #[pyfunction]
 #[pyo3(signature = (a, indices, axis=0))]
 pub fn gather(a: &PyArray, indices: &PyArray, axis: usize) -> PyResult<PyArray> {
@@ -760,6 +764,9 @@ pub fn gather(a: &PyArray, indices: &PyArray, axis: usize) -> PyResult<PyArray> 
 /// `ms.scatter(a, indices, values, axis=0)` — 沿 axis 把 values 写入 indices 位置（copy）。
 ///
 /// 返回新数组，不修改原数组。重复 indices 写入顺序未定义。
+///
+/// GPU 越界语义同 `gather`：越界写入在 kernel 内跳过并记录，异常延迟到
+/// 下一次流同步抛出 `ShapeError`，流不失效；CPU 路径同步报错。
 #[pyfunction]
 #[pyo3(signature = (a, indices, values, axis=0))]
 pub fn scatter(a: &PyArray, indices: &PyArray, values: &PyArray, axis: usize) -> PyResult<PyArray> {
