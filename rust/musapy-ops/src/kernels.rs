@@ -244,6 +244,12 @@ unsafe extern "C" {
     pub fn musapy_copy_f64(input: *const f64, output: *mut f64, ndim: i32, shape: *const usize, in_strides: *const isize, stream: musaStream_t);
     pub fn musapy_copy_i32(input: *const i32, output: *mut i32, ndim: i32, shape: *const usize, in_strides: *const isize, stream: musaStream_t);
     pub fn musapy_copy_i64(input: *const i64, output: *mut i64, ndim: i32, shape: *const usize, in_strides: *const isize, stream: musaStream_t);
+
+    // copy（2D 转置 tiled，P4）：src[c*rows + r] → dst[r*cols + c]
+    pub fn musapy_copy_transpose2d_f32(src: *const f32, dst: *mut f32, rows: usize, cols: usize, stream: musaStream_t);
+    pub fn musapy_copy_transpose2d_f64(src: *const f64, dst: *mut f64, rows: usize, cols: usize, stream: musaStream_t);
+    pub fn musapy_copy_transpose2d_i32(src: *const i32, dst: *mut i32, rows: usize, cols: usize, stream: musaStream_t);
+    pub fn musapy_copy_transpose2d_i64(src: *const i64, dst: *mut i64, rows: usize, cols: usize, stream: musaStream_t);
 }
 
 // ── Mock 模式：CPU stub ─────────────────────────────────────
@@ -1162,6 +1168,28 @@ mod mock {
     mock_copy!(musapy_copy_f64, f64);
     mock_copy!(musapy_copy_i32, i32);
     mock_copy!(musapy_copy_i64, i64);
+
+    // 2D 转置 tiled copy mock（P4）：dst[r*cols + c] = src[c*rows + r]
+    macro_rules! mock_copy_transpose2d {
+        ($name:ident, $t:ty) => {
+            pub unsafe fn $name(
+                src: *const $t, dst: *mut $t,
+                rows: usize, cols: usize, _stream: musaStream_t,
+            ) {
+                if src.is_null() || dst.is_null() || rows == 0 || cols == 0 { return; }
+                for r in 0..rows {
+                    for c in 0..cols {
+                        *dst.add(r * cols + c) = *src.add(c * rows + r);
+                    }
+                }
+            }
+        };
+    }
+
+    mock_copy_transpose2d!(musapy_copy_transpose2d_f32, f32);
+    mock_copy_transpose2d!(musapy_copy_transpose2d_f64, f64);
+    mock_copy_transpose2d!(musapy_copy_transpose2d_i32, i32);
+    mock_copy_transpose2d!(musapy_copy_transpose2d_i64, i64);
 }
 
 // Mock 模式 re-export

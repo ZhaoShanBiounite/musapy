@@ -3,6 +3,7 @@
 CPU 测试使用 MUSAPY_MOCK_MUSA=1 构建；GPU 测试需真实 MUSA 设备。
 """
 
+import numpy as np
 import pytest
 import musapy as ms
 
@@ -530,6 +531,52 @@ class TestIndexingGPU:
         for _ in range(40):  # > arena 初始容量 16，覆盖扩容路径
             g = ms.gather(c, idx, axis=1)
         assert g.tolist() == [[1.0, 3.0], [4.0, 6.0]]
+
+    # ── P4: 2D 转置 tiled 物化 ────────────────────────────────
+
+    @musa_required
+    def test_gpu_contig_transpose_tiled(self):
+        """转置视图物化走 tiled kernel：多种形状（含 <32 边界、非方阵）对比 numpy。"""
+        rng = np.random.default_rng(31)
+        for (r, c) in [(1024, 1024), (1000, 37), (37, 1000), (31, 33), (33, 31),
+                       (32, 32), (5, 5), (1, 100), (100, 1), (2, 1025)]:
+            data = rng.random((r, c), dtype=np.float32)
+            a = ms.array(data.tolist(), device="musa:0")
+            got = ms.contiguous(ms.transpose(a))
+            np.testing.assert_allclose(np.array(got.tolist()), data.T,
+                                       rtol=1e-6, atol=1e-6)
+
+    @musa_required
+    def test_gpu_contig_transpose_tiled_dtypes(self):
+        """tiled 转置各 dtype 实例化（f64/i32/i64）。"""
+        rng = np.random.default_rng(32)
+        d64 = rng.random((257, 63), dtype=np.float64)
+        a = ms.array(d64.tolist(), dtype=ms.float64, device="musa:0")
+        np.testing.assert_allclose(
+            np.array(ms.contiguous(ms.transpose(a)).tolist()), d64.T, rtol=1e-9)
+        di = rng.integers(-1000, 1000, (63, 257))
+        for dtype in (ms.int64, ms.int32):
+            a = ms.array(di.tolist(), dtype=dtype, device="musa:0")
+            assert ms.contiguous(ms.transpose(a)).tolist() == di.T.tolist()
+
+    @musa_required
+    def test_gpu_contig_non_transpose_still_generic(self):
+        """非转置模式（flip/3D permute/strided slice）仍走通用路径且结果正确。"""
+        rng = np.random.default_rng(33)
+        base = rng.random((64, 64), dtype=np.float32)
+        a = ms.array(base.tolist(), device="musa:0")
+        np.testing.assert_allclose(
+            np.array(ms.contiguous(ms.flip(a, axis=1)).tolist()), base[:, ::-1])
+        np.testing.assert_allclose(
+            np.array(ms.contiguous(ms.flip(a, axis=0)).tolist()), base[::-1, :])
+        b3 = rng.random((16, 17, 18), dtype=np.float32)
+        a3 = ms.array(b3.tolist(), device="musa:0")
+        np.testing.assert_allclose(
+            np.array(ms.contiguous(ms.transpose(a3, [2, 0, 1])).tolist()),
+            b3.transpose(2, 0, 1))
+        sl = ms.slice(a, [[5, 60, 2], [1, 50, 3]])
+        np.testing.assert_allclose(
+            np.array(ms.contiguous(sl).tolist()), base[5:60:2, 1:50:3])
 
     @musa_required
     def test_offset_view_arithmetic_gpu(self):

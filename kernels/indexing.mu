@@ -211,15 +211,75 @@ __global__ void musapy_scatter_kernel(
 }
 
 /// copy：out[idx] = input[offset_nd(idx)]（视图物化为连续布局）。
+/// n ≤ 2^32 时用 32 位 div/mod unravel（mp_22 上 64 位整数除法为软件模拟，
+/// 是 flip 等 strided 视图物化的主要瓶颈，P4）。
 template <typename T>
 __global__ void musapy_copy_kernel(
     const T* __restrict__ input, T* __restrict__ output,
     CopyMeta meta, size_t n
 ) {
     size_t idx = blockIdx.x * blockDim.x + threadIdx.x;
-    if (idx < n) {
-        size_t off = offset_nd(idx, meta.shape, meta.in_strides, meta.ndim);
-        output[idx] = input[off];
+    if (idx >= n) return;
+    size_t off;
+    if (n <= 0xFFFFFFFFull) {
+        unsigned int tmp = (unsigned int)idx;
+        off = 0;
+        for (int i = meta.ndim - 1; i >= 0; i--) {
+            unsigned int dim = (unsigned int)meta.shape[i];
+            unsigned int coord = tmp % dim;
+            tmp /= dim;
+            off += (size_t)((ssize_t)coord * meta.in_strides[i]);
+        }
+    } else {
+        size_t tmp = idx;
+        off = 0;
+        for (int i = meta.ndim - 1; i >= 0; i--) {
+            size_t coord = tmp % meta.shape[i];
+            tmp /= meta.shape[i];
+            off += (size_t)((ssize_t)coord * meta.in_strides[i]);
+        }
+    }
+    output[idx] = input[off];
+}
+
+/// 2D 转置物化专用 kernel（P4）：视图 strides == [1, rows]（= 连续数组
+/// 的转置，V[r][c] = base[c*rows + r]）。
+///
+/// 经典 tiled 转置：32×32 tile，block 32×8=256 线程，每线程 4 元素。
+/// 读侧沿源 r 连续（base 行内），写侧沿输出 c 连续——两侧均全合并；
+/// smem [32][33] padding 防 bank conflict（读写相位各错开 1）。
+template <typename T>
+__global__ void musapy_copy_transpose2d_tiled_kernel(
+    const T* __restrict__ src, T* __restrict__ dst,
+    size_t rows, size_t cols
+) {
+    const int TILE_DIM = 32;
+    const int BLOCK_ROWS = 8;
+    __shared__ T tile[TILE_DIM][TILE_DIM + 1];
+
+    int tx = threadIdx.x;              // [0,32)：tile 内 r 坐标（输入 fast 维）
+    int ty = threadIdx.y;              // [0,8)：tile 内 c 坐标块
+    size_t r0 = blockIdx.x * TILE_DIM;
+    size_t c0 = blockIdx.y * TILE_DIM;
+
+    // 读：warp（tx 连续）沿 r 合并；tile[ty+i][tx] = src[c][r]
+    #pragma unroll
+    for (int i = 0; i < TILE_DIM; i += BLOCK_ROWS) {
+        size_t r = r0 + tx;
+        size_t c = c0 + ty + i;
+        if (r < rows && c < cols) {
+            tile[ty + i][tx] = src[c * rows + r];
+        }
+    }
+    __syncthreads();
+    // 写：warp（tx 连续）沿 c 合并；dst[r][c] = tile[c_in_tile][r_in_tile]
+    #pragma unroll
+    for (int i = 0; i < TILE_DIM; i += BLOCK_ROWS) {
+        size_t r = r0 + ty + i;
+        size_t c = c0 + tx;
+        if (r < rows && c < cols) {
+            dst[r * cols + c] = tile[tx][ty + i];
+        }
     }
 }
 
@@ -309,5 +369,27 @@ COPY_WRAPPER(float, f32)
 COPY_WRAPPER(double, f64)
 COPY_WRAPPER(int32_t, i32)
 COPY_WRAPPER(int64_t, i64)
+
+// ── copy（2D 转置 tiled，P4）──
+// 签名：(src, dst, rows, cols, stream)。src 为转置视图底层 buffer 指针
+// （host 已调整 offset），rows/cols 为视图 shape；src[c*rows + r] 为
+// 视图 (r, c) 元素（= 底层连续数组的转置）。
+
+#define COPY_TRANSPOSE2D_WRAPPER(T, SUFFIX)                                   \
+void musapy_copy_transpose2d_##SUFFIX(                                         \
+    const T* __restrict__ src, T* __restrict__ dst,                           \
+    size_t rows, size_t cols, musaStream_t stream                             \
+) {                                                                            \
+    if (rows == 0 || cols == 0) return;                                       \
+    dim3 grid((unsigned)((rows + 31) / 32), (unsigned)((cols + 31) / 32));    \
+    dim3 block(32, 8);                                                        \
+    musapy_copy_transpose2d_tiled_kernel<T><<<grid, block, 0, stream>>>(      \
+        src, dst, rows, cols);                                                \
+}
+
+COPY_TRANSPOSE2D_WRAPPER(float, f32)
+COPY_TRANSPOSE2D_WRAPPER(double, f64)
+COPY_TRANSPOSE2D_WRAPPER(int32_t, i32)
+COPY_TRANSPOSE2D_WRAPPER(int64_t, i64)
 
 } // extern "C"

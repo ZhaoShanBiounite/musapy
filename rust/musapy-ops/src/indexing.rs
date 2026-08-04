@@ -535,41 +535,74 @@ fn copy_into(a: &Array, out_ptr: Option<NonNull<u8>>, out_stream: &Arc<Stream>) 
         Device::Musa(_) => {
             let stream_raw = out_stream.raw();
             let ndim = shape.len() as i32;
+            // P4：2D 转置模式检测（strides == [1, rows] ⇔ 连续数组的转置视图）
+            // → tiled smem kernel（读/写两侧均合并）；其余走通用 copy kernel
+            let transpose2d = shape.len() == 2
+                && strides[0] == 1
+                && strides[1] == shape[0] as isize;
             let launched = unsafe {
                 match dtype {
                     Dtype::Float32 => {
                         if let (Some(ip), Some(op)) = (in_ptr, out_ptr) {
-                            kernels::musapy_copy_f32(
-                                ip.as_ptr() as *const f32, op.as_ptr() as *mut f32,
-                                ndim, shape.as_ptr(), strides.as_ptr(), stream_raw,
-                            );
+                            if transpose2d {
+                                kernels::musapy_copy_transpose2d_f32(
+                                    ip.as_ptr() as *const f32, op.as_ptr() as *mut f32,
+                                    shape[0], shape[1], stream_raw,
+                                );
+                            } else {
+                                kernels::musapy_copy_f32(
+                                    ip.as_ptr() as *const f32, op.as_ptr() as *mut f32,
+                                    ndim, shape.as_ptr(), strides.as_ptr(), stream_raw,
+                                );
+                            }
                         }
                         true
                     }
                     Dtype::Float64 => {
                         if let (Some(ip), Some(op)) = (in_ptr, out_ptr) {
-                            kernels::musapy_copy_f64(
-                                ip.as_ptr() as *const f64, op.as_ptr() as *mut f64,
-                                ndim, shape.as_ptr(), strides.as_ptr(), stream_raw,
-                            );
+                            if transpose2d {
+                                kernels::musapy_copy_transpose2d_f64(
+                                    ip.as_ptr() as *const f64, op.as_ptr() as *mut f64,
+                                    shape[0], shape[1], stream_raw,
+                                );
+                            } else {
+                                kernels::musapy_copy_f64(
+                                    ip.as_ptr() as *const f64, op.as_ptr() as *mut f64,
+                                    ndim, shape.as_ptr(), strides.as_ptr(), stream_raw,
+                                );
+                            }
                         }
                         true
                     }
                     Dtype::Int32 => {
                         if let (Some(ip), Some(op)) = (in_ptr, out_ptr) {
-                            kernels::musapy_copy_i32(
-                                ip.as_ptr() as *const i32, op.as_ptr() as *mut i32,
-                                ndim, shape.as_ptr(), strides.as_ptr(), stream_raw,
-                            );
+                            if transpose2d {
+                                kernels::musapy_copy_transpose2d_i32(
+                                    ip.as_ptr() as *const i32, op.as_ptr() as *mut i32,
+                                    shape[0], shape[1], stream_raw,
+                                );
+                            } else {
+                                kernels::musapy_copy_i32(
+                                    ip.as_ptr() as *const i32, op.as_ptr() as *mut i32,
+                                    ndim, shape.as_ptr(), strides.as_ptr(), stream_raw,
+                                );
+                            }
                         }
                         true
                     }
                     Dtype::Int64 => {
                         if let (Some(ip), Some(op)) = (in_ptr, out_ptr) {
-                            kernels::musapy_copy_i64(
-                                ip.as_ptr() as *const i64, op.as_ptr() as *mut i64,
-                                ndim, shape.as_ptr(), strides.as_ptr(), stream_raw,
-                            );
+                            if transpose2d {
+                                kernels::musapy_copy_transpose2d_i64(
+                                    ip.as_ptr() as *const i64, op.as_ptr() as *mut i64,
+                                    shape[0], shape[1], stream_raw,
+                                );
+                            } else {
+                                kernels::musapy_copy_i64(
+                                    ip.as_ptr() as *const i64, op.as_ptr() as *mut i64,
+                                    ndim, shape.as_ptr(), strides.as_ptr(), stream_raw,
+                                );
+                            }
                         }
                         true
                     }
@@ -577,7 +610,7 @@ fn copy_into(a: &Array, out_ptr: Option<NonNull<u8>>, out_stream: &Arc<Stream>) 
                 }
             };
             if launched {
-                musa_ffi::check_last_kernel_launch("copy_v1")?;
+                musa_ffi::check_last_kernel_launch("copy_transpose2d")?;
             } else {
                 // 未实例化 dtype：D2H 整个 buffer → host gather → H2D
                 gpu_copy_via_host(a, out_ptr, n, elem_size)?;
