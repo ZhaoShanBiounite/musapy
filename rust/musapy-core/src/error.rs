@@ -10,6 +10,9 @@ pub enum DeviceError {
     Mismatch(String),
     #[error("device unavailable: {0}")]
     Unavailable(String),
+    // 新（v0.3 Phase 1：MUSA-X 句柄/生命周期调用失败，ADR-003 003-D2）
+    #[error("MUSA math library call failed: {0}")]
+    MathLibCallFailed(String),
 }
 
 // ── Dtype errors ──
@@ -178,6 +181,7 @@ mod tests {
         let _ = MusapyError::Device(DeviceError::NotConfigured);
         let _ = MusapyError::Device(DeviceError::Mismatch("x".into()));
         let _ = MusapyError::Device(DeviceError::Unavailable("x".into()));
+        let _ = MusapyError::Device(DeviceError::MathLibCallFailed("x".into()));
         let _ = MusapyError::Dtype(DtypeError::Unsupported("x".into()));
         let _ = MusapyError::Shape(ShapeError::Mismatch("x".into()));
         let _ = MusapyError::Memory(MemoryError::OutOfMemory("x".into()));

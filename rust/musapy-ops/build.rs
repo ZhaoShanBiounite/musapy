@@ -12,6 +12,12 @@
 //
 // 真实模式：mcc 编译 kernels/*.mu → libmusapy_kernels.a
 // Mock 模式：跳过编译，kernels.rs 提供 Rust stub
+//
+// v0.3 Phase 1（ADR-003 003-D1）：
+//   - MUSA-X 数学库（muBLAS/muSOLVER/muRAND/muFFT/muSPARSE）链接指令
+//     统一由本脚本发出（仅真实模式），musapy-core/build.rs 保持 musart-only；
+//   - host BLAS 探测：为 Phase 2+ linalg CPU 降级路径做准备，
+//     产出互斥 cfg `musapy_openblas` / `musapy_no_openblas`（与 MUSA 模式无关）。
 
 use std::env;
 use std::path::{Path, PathBuf};
@@ -26,6 +32,8 @@ const BLOCK_SIZE: usize = 256;
 fn main() {
     // 声明自定义 cfg，消除 unexpected_cfgs 警告
     println!("cargo::rustc-check-cfg=cfg(musapy_mock_musa)");
+    println!("cargo::rustc-check-cfg=cfg(musapy_openblas)");
+    println!("cargo::rustc-check-cfg=cfg(musapy_no_openblas)");
 
     // kernels 源文件路径（相对 workspace root）
     let manifest_dir = env::var("CARGO_MANIFEST_DIR").unwrap();
@@ -60,6 +68,9 @@ fn main() {
             handle_missing_sdk();
         }
     }
+
+    // -------- 2.5. host BLAS 探测（与 MUSA 模式无关，真实/mock 均执行）--------
+    probe_openblas();
 
     // -------- 3. 环境变量 rerun --------
     println!("cargo:rerun-if-env-changed=MUSA_INSTALL_PATH");
@@ -239,6 +250,68 @@ fn compile_kernels(kernels_dir: &Path, elementwise_mu: &Path, reduction_mu: &Pat
     let lib_dir = home.join("lib");
     println!("cargo:rustc-link-search=native={}", lib_dir.display());
     println!("cargo:rustc-link-lib=dylib=musart");
+
+    // MUSA-X 数学库（v0.3 Phase 1，ADR-003 003-D1：链接指令统一由
+    // musapy-ops/build.rs 发出，musapy-core 保持 musart-only）。
+    // SDK 只提供动态库；libmusolver.so 是版本软链（→ libmusolver.so.1.0.0），
+    // mufft 的运行期依赖（libmtfft-device-*.so 等）经 DT_NEEDED 传递加载，无需显式 -l。
+    // 注意：mock 模式（handle_missing_sdk 分支）不发任何 MUSA-X 链接。
+    println!("cargo:rustc-link-lib=dylib=mublas");
+    println!("cargo:rustc-link-lib=dylib=musolver");
+    println!("cargo:rustc-link-lib=dylib=murand");
+    println!("cargo:rustc-link-lib=dylib=mufft");
+    println!("cargo:rustc-link-lib=dylib=musparse");
+}
+
+/// host BLAS 探测（v0.3 Phase 1，为 Phase 2+ linalg CPU 降级路径做准备）。
+///
+/// 探测顺序：
+///   1. pkg-config `openblas`（用户装了 OpenBLAS（含 .pc）时直接命中，
+///      pkg-config 自动发出 link-search/link-lib 指令）
+///   2. fallback：Debian/Ubuntu 标准路径
+///      `/usr/lib/x86_64-linux-gnu/libcblas.so` + `liblapacke.so`
+///      （需 lapacke-dev / cblas 开发包同时存在）
+///   3. 均缺失 → `musapy_no_openblas`（Phase 2+ 源码按纯 Rust 路径编译）
+///
+/// 产出互斥 cfg：`musapy_openblas` / `musapy_no_openblas`。
+/// 与 MUSA SDK 探测独立，真实/mock 模式下均执行。
+fn probe_openblas() {
+    // 探针 1：pkg-config openblas
+    match pkg_config::Config::new().probe("openblas") {
+        Ok(lib) => {
+            println!(
+                "cargo:warning=MUSAPY-OPS: host BLAS found via pkg-config openblas (libs: {:?})",
+                lib.libs
+            );
+            println!("cargo:rustc-cfg=musapy_openblas");
+            return;
+        }
+        Err(_) => {}
+    }
+
+    // 探针 2：Debian/Ubuntu 标准路径 fallback
+    let libdir = Path::new("/usr/lib/x86_64-linux-gnu");
+    let cblas = libdir.join("libcblas.so");
+    let lapacke = libdir.join("liblapacke.so");
+    if cblas.is_file() && lapacke.is_file() {
+        println!(
+            "cargo:warning=MUSAPY-OPS: host BLAS found at {} (cblas + lapacke)",
+            libdir.display()
+        );
+        println!("cargo:rustc-link-search=native={}", libdir.display());
+        println!("cargo:rustc-link-lib=dylib=cblas");
+        println!("cargo:rustc-link-lib=dylib=lapacke");
+        println!("cargo:rustc-cfg=musapy_openblas");
+        return;
+    }
+
+    // 降级：Phase 2+ linalg 源码通过 cfg(musapy_no_openblas) 走纯 Rust 实现
+    println!(
+        "cargo:warning=MUSAPY-OPS: no host BLAS found \
+         (openblas via pkg-config / cblas+lapacke) — \
+         Phase 2+ linalg will use pure-Rust fallback"
+    );
+    println!("cargo:rustc-cfg=musapy_no_openblas");
 }
 
 /// SDK 没找到时的降级处理

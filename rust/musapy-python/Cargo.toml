@@ -10,5 +10,6 @@ crate-type = ["cdylib"]
 
 [dependencies]
 pyo3 = { workspace = true, features = ["extension-module"] }
-musapy-core = { workspace = true }
+# math-libs：句柄冒烟测试 _math_handle_smoke 依赖 musapy-core::math_handle。
+musapy-core = { workspace = true, features = ["math-libs"] }
 musapy-ops = { workspace = true }

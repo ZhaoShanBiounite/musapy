@@ -5,7 +5,9 @@ edition.workspace = true
 license.workspace = true
 
 [dependencies]
-musapy-core = { workspace = true }
+# math-libs：启用 musapy-core 的 MUSA-X FFI + 句柄管理（ADR-003 003-D1/D2）。
+# 5 个 MUSA-X 库的链接指令由本 crate 的 build.rs 发出（core 保持 musart-only）。
+musapy-core = { workspace = true, features = ["math-libs"] }
 
 [build-dependencies]
 pkg-config = "0.3"

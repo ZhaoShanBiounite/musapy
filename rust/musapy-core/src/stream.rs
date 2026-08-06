@@ -336,6 +336,15 @@ impl Stream {
                         eprintln!("warn: deferred_free reclaim failed: {}", e);
                     }
                 }
+                // v0.3（ADR-003 003-D2）：同批回收延迟销毁的 MUSA-X
+                // 句柄/plan/generator（evict_device 入队）。不受 stream-ordered
+                // feature gate（句柄销毁与内存路径无关），gate 与 lib.rs 中
+                // math_handle 模块的声明条件严格一致（真实模式的 core 自身
+                // 测试构建不含该模块，避免链接 MUSA-X 符号）。
+                #[cfg(all(feature = "math-libs", any(musapy_mock_musa, not(test))))]
+                if let Err(e) = crate::math_handle::reclaim_destroys() {
+                    eprintln!("warn: math_handle reclaim_destroys failed: {}", e);
+                }
                 // P1 方案二：批量读回 gather/scatter 越界检查槽；发现越界则报错。
                 // 不毒化流：越界条目已被 kernel 跳过，GPU 状态仍然一致。
                 self.drain_index_checks()

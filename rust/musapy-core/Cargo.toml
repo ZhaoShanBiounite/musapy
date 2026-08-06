@@ -11,6 +11,12 @@ default = []
 # 仅 MUSA SDK 5.x+ 可用：3.x/4.x 的 libmusart.so 不导出这些符号。
 # 默认路径（deferred-free + musaMalloc/musaFree）适用所有 SDK 版本（ADR L3-9, L3-11）。
 stream-ordered = []
+# 启用 MUSA-X 数学库 FFI + 句柄管理（musa_x_ffi.rs / math_handle.rs，ADR-003 003-D1/D2）。
+# 这些模块引用 mublas/murand/mufft/musparse 符号，但 musapy-core 保持 musart-only
+# （L2-3）——链接指令由 musapy-ops/build.rs 发出，最终在 cdylib 链接期解析。
+# 因此 musapy-core 单独构建的测试二进制（cargo test -p musapy-core）不开启本 feature，
+# 由 musapy-ops / musapy-python 依赖侧启用。
+math-libs = []
 
 [dependencies]
 thiserror.workspace = true

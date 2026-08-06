@@ -7,6 +7,7 @@ pub mod array;
 pub mod device;
 pub mod dtype;
 pub mod error;
+pub mod math_handles;
 pub mod ops;
 pub mod stream;
 
@@ -356,6 +357,9 @@ fn _core(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(device_summary, m)?)?;
     m.add_function(wrap_pyfunction!(set_debug, m)?)?;
     m.add_function(wrap_pyfunction!(debug_context, m)?)?;
+
+    // v0.3 P1.7: MUSA-X 句柄冒烟（仅测试用，不进 __init__.py 公开 API）
+    math_handles::register(m)?;
 
     Ok(())
 }
