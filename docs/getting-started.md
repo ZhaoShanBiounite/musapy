@@ -1,6 +1,6 @@
 # musapy 快速上手
 
-> 版本：v0.2-alpha（`phase6-indexing` 开发主干）
+> 版本：v0.2.0-alpha（已发布，2026-08-04）
 > 完整算子参考（kernel 符号 / ABI / 性能）见 [operators-reference.md](./operators-reference.md)
 
 ## 前置条件

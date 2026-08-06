@@ -6,7 +6,7 @@
 
 ---
 
-## 算子总览（28 个）
+## 算子总览（43 个）
 
 | 分类 | 算子 | 数量 |
 |------|------|------|
@@ -18,7 +18,9 @@
 | Arg-reduction | argmax, argmin | 2 |
 | Scan | cumsum | 1 |
 | Cast | astype | 1 |
-| **合计** | | **28** |
+| Init | zeros, ones, full, eye, arange, linspace, zeros_like, ones_like | 8 |
+| Indexing | transpose, permute, flip, slice, index_select, contiguous, gather, scatter | 8 |
+| **合计** | | **43** |
 
 ---
 
@@ -202,6 +204,41 @@ a.astype(dtype) -> Array
 
 ---
 
+## Init 算子
+
+### 签名
+
+```python
+ms.zeros(shape, dtype=None, device=None) -> Array           # 填充 0
+ms.ones(shape, dtype=None, device=None) -> Array            # 填充 1
+ms.full(shape, value, dtype=None, device=None) -> Array     # 填充常量
+ms.eye(n, m=None, k=0, dtype=None, device=None) -> Array    # 单位阵（k 对角线偏移）
+ms.arange(start, stop=None, step=1, dtype=None, device=None) -> Array
+ms.linspace(start, stop, num=50, dtype=None, device=None) -> Array
+ms.zeros_like(a) -> Array                                    # 继承输入 dtype/device
+ms.ones_like(a) -> Array
+```
+
+### 实现要点
+
+- dtype 解析（ADR-002-D5 / L0-7 链）：显式 `dtype=` > context > 全局默认 > **float32**；
+  `arange` / `linspace` 从参数推断（全整数 → int64，含浮点 → float64），显式 `dtype=` 覆盖
+- device 解析（L0-6 链）：首次创建需显式 `ms.set_default_device()` 或 `device=` 参数（L0-9，
+  否则抛 `DeviceNotConfiguredError`）
+- `*_like` 继承输入 Array 的 dtype/device（L3-18）
+- kernel 为「写值」kernel：fill 写常量、arange/linspace 由 idx→value、eye 条件写（`i==j`）
+
+### Kernel 符号
+
+```
+musapy_fill_{f32|f64|i64|i32|i16|i8|u64|u32|u16|u8}      # 10
+musapy_arange_{f32|f64|i64|i32}                           #  4
+musapy_linspace_{f32|f64}                                 #  2
+musapy_eye_{f32|f64|i64|i32}                              #  4
+```
+
+---
+
 ## Indexing 算子（v0.2 Phase 6.5-7）
 
 ### 签名
@@ -211,6 +248,7 @@ ms.transpose(a, axes=None) -> Array          # 零拷贝视图
 ms.permute(a, dims) -> Array                 # 零拷贝视图
 ms.flip(a, axis) -> Array                    # 零拷贝视图（stride 取负）
 ms.slice(a, specs) -> Array                  # 零拷贝视图
+ms.index_select(a, axis, index) -> Array     # 零拷贝视图（按 axis 取 index 处子集）
 ms.contiguous(a) -> Array                    # 已连续零拷贝；否则 kernel 物化
 ms.gather(a, indices, axis=0) -> Array       # copy，等价 np.take
 ms.scatter(a, indices, values, axis=0) -> Array  # copy，返回新数组

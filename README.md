@@ -26,6 +26,10 @@ print(c.tolist())
 | NumPy 广播 | 任意 N 维自动广播，stride-aware kernel 零拷贝 |
 | 类型提升 | `int64 + float64 → float64`，自动 cast，无需手动转换 |
 | 14 个 elementwise 算子 | binary / unary / clamp / astype，全部支持 GPU + CPU |
+| 6 个 comparison 算子 | `== / != / < / > / <= / >=`，输出 bool |
+| 8 个 reduction 算子 | sum / prod / max / min / mean + argmax / argmin / cumsum |
+| 8 个 init 算子 | zeros / ones / full / eye / arange / linspace / `*_like` |
+| 7 个 indexing 算子 | transpose / permute / flip / slice（零拷贝 view）+ gather / scatter（copy） |
 | 显式设备管理 | 5 级 Device 解析链，数据去向可追溯 |
 | Stream 异步 | 多 stream 并行，自动依赖管理，capture-safe 3-phase 骨架 |
 | Rust 核心 | 内存安全、零开销抽象、RAII 生命周期 |
@@ -266,18 +270,21 @@ cargo fmt --check
 
 ```
 设备: MTT S4000, arch=mp_22, 47.9 GB VRAM, 56 CUs
-数组: 1,000,000 elements × f32
+规模: 1,000,000 elements × f32（2026-08-04，P0–P5 优化后）
 
-算子      延迟(ms)    吞吐(GElem/s)   GFLOPS
-add       0.491       2.036           2.036
-mul       0.439       2.280           2.280
-pow       0.446       2.243           17.946
-sin       0.382       2.618           20.943
-exp       0.377       2.654           21.229
-clamp     0.356       2.809           5.617
+类别            延迟(ms)      备注
+elementwise     ~0.054-0.066  受 ~45 µs launch 地板限制（driver 提交路径）
+reduction 全局  0.084-0.086   sum 基准
+reduction 2D    0.053-0.056   小 axis 并行路径
+gather/scatter  0.178 / 0.240 去同步校验后（~50× 提升）
+contig(transp)  0.063         tiled kernel
 
-聚合吞吐: 119.52 GFLOPS
-持续负载: 10,532 kernel launches/s, 126 GB/s 等效带宽
+大数组带宽（≥4M 才反映真实带宽）:
+add 16M → 620 GB/s（≈ DRAM 峰值 89%），64M → 655 GB/s
+转置 4M/16M → 221 / 289 GB/s
+
+复现: python benchmark/bench_musa_utilization.py --size 1000000 --iters 100
+详细分析: benchmark/analysis-2026-08-03.md、benchmark/analysis-followup-2026-08-04.md
 ```
 
 ---
@@ -286,14 +293,14 @@ clamp     0.356       2.809           5.617
 
 | 版本 | 范围 | 状态 |
 |------|------|------|
-| v0.1-alpha | 核心运行时（Device / Dtype / Stream / Array / Buffer） | ✅ 完成 |
+| v0.1-alpha | 核心运行时（Device / Dtype / Stream / Array / Buffer） | ✅ 完成（v0.1.0-alpha，2026-07-28） |
 | v0.2-alpha P1 | Stride-aware ABI + NumPy 广播 | ✅ 完成 |
 | v0.2-alpha P2 | Elementwise 全家桶 + 类型提升 + astype | ✅ 完成 |
-| v0.2-alpha P3 | Reduction（sum / mean / max / min） | 规划中 |
-| v0.2-alpha P4 | Init（zeros / ones / arange / linspace） | 规划中 |
-| v0.2-alpha P5 | Indexing（slice / fancy / boolean mask） | 规划中 |
-| v0.3-alpha | 数学库（linalg / random / fft） | 规划中 |
-| v0.4-beta | 互操作（DLPack / NumPy `__array__` 协议） | 规划中 |
+| v0.2-alpha P3 | Reduction（sum / prod / max / min / mean / argmax / argmin / cumsum） | ✅ 完成 |
+| v0.2-alpha P4 | Init（zeros / ones / full / eye / arange / linspace / `*_like`） | ✅ 完成 |
+| v0.2-alpha P5 | Indexing（transpose / permute / flip / slice 零拷贝 view + gather / scatter copy） | ✅ 完成（v0.2.0-alpha，2026-08-04） |
+| v0.3-alpha | 数学库（linalg / random / fft / sparse）+ axis=tuple / 复数归约 / 高级索引 | 规划中（见 [v0.3-alpha-plan-zh.md](docs/v0.3-alpha-plan-zh.md)） |
+| v0.4-beta | 互操作（DLPack / NumPy 协议） | 规划中 |
 | v1.0 | 正式版 | 规划中 |
 
 ---
