@@ -1,7 +1,7 @@
 # musapy Architecture Decision Records (ADR)
 
-> **Status**: Draft
-> **Last Updated**: 2025-01-15
+> **Status**: Accepted (all 69 decisions finalized; v0.1/v0.2 implementations released)
+> **Last Updated**: 2026-08-04 (v0.2.0-alpha release; implementation synced with decisions)
 > **Scope**: musapy v1.0 design (Python + Rust + MUSA scientific computing library)
 
 This document records all architecture decisions for musapy, organized into 5 layers.
@@ -946,6 +946,7 @@ Use Python standard library `DeprecationWarning` (not custom). Users silence via
 | Date | Change | ADR IDs affected |
 |---|---|---|
 | 2025-01-15 | Initial draft, all 69 decisions | All |
+| 2026-08-04 | v0.2.0-alpha released; status → Accepted; `_v1` retention under L4-3 removed per ADR-002-D2 note | All (status), L4-3 |
 
 ---
 
