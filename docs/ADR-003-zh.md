@@ -247,11 +247,38 @@ OpenBLAS + 纯 Rust 朴素降级；fft/random/sparse 纯 Rust 实现）。废弃
 
 ---
 
+## 003-D8：分解类算子实施注记（2026-08-07 真机探针修正）
+
+**扩展**：003-D7（lu/qr/svd 返回约定）实施过程中的 SDK 3.1.0 实测修正。
+
+**背景**：Phase 3 实施前用 C 探针核对 muSOLVER 语义，两处结论与初始假设
+（头文件浅读）相反，实施时已按实测修正：
+
+| # | 探针发现 | 影响 |
+|---|---|---|
+| 1 | `musolver?gesvd` 的 **V 输出缓冲即 Vᵀ**（头文件 "stored as rows (transposed)"；探针 2：按 V' 列主序重建误差 1e-15，按 V 解释误差 4.1） | `vh` = strides `(1, ldv)` 视图，**非** `(n,1)` |
+| 2 | **SINGULAR 模式 U 输出有 bug**：m>n 时 U 损坏（探针 3：6×4 下 UᵀU−I=4.5，OUTOFPLACE/INPLACE 均复现；同矩阵 ALL 模式误差 1e-15） | 一律 ALL/ALL + 薄视图切片（thin = 全尺寸缓冲的前 k 列/行跨步视图），绕开 SINGULAR |
+| 3 | SINGULAR 模式 V 缓冲按 `min(m,n)` 紧凑写入（传更大 ldv 会写出错乱，探针 2 wide 3×5 实锤） | 与 #2 合并解决（不再使用 SINGULAR） |
+
+**决策**：
+- `ms.svd` 内部恒走 `MUBLAS_SVECT_ALL`（`compute_uv=False` 走 NONE/NONE）；
+  thin 输出（u m×k / vh k×n）为全尺寸缓冲的跨步视图切片——**零额外拷贝**。
+- 奇异值合理性校验（S 全部 ≥0 且有限）作为 gesvd info 可靠性兜底
+  （getrf 的 info 失效已在 Phase 2 实锤，003-D3；gesvd 探针显示 info=0 正常写）。
+- lu/qr 无新增模式问题：getrf/geqrf/orgqr 按头文件签名调用，列主序物化输入
+  + 跨步视图输出（见 003-D3 实施注记）。
+
+**影响**：linalg.rs `svd` 的实现约束；文档注明 SDK 3.1.0 SINGULAR 模式不可用
+（升级 SDK 后可评估改回 SINGULAR 以省显存）。
+
+---
+
 ## 变更记录
 
 | 日期 | 变更 | 影响的决策 ID |
 |---|---|---|
 | 2026-08-06 | 初始草案，7 个 v0.3 补充决策（基于 SDK 3.1.0 头文件实测核对） | 003-D1 至 003-D7 |
+| 2026-08-07 | Phase 3 实施：lu/qr/svd 落地，探针修正 gesvd V 输出 = Vᵀ、SINGULAR 模式 U 损坏 → ALL 模式切片（003-D8） | 003-D7、003-D8 |
 
 ---
 

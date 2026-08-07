@@ -333,6 +333,10 @@ fn _core(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(ops::matmul, m)?)?;
     m.add_function(wrap_pyfunction!(ops::dot, m)?)?;
     m.add_function(wrap_pyfunction!(ops::solve, m)?)?;
+    // Phase 3 (v0.3): 分解类 linalg ops（lu/qr/svd，GPU-only）
+    m.add_function(wrap_pyfunction!(ops::lu, m)?)?;
+    m.add_function(wrap_pyfunction!(ops::qr, m)?)?;
+    m.add_function(wrap_pyfunction!(ops::svd, m)?)?;
     // Phase 5: creation ops
     m.add_function(wrap_pyfunction!(ops::zeros, m)?)?;
     m.add_function(wrap_pyfunction!(ops::ones, m)?)?;

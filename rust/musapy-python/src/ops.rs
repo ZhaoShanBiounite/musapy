@@ -830,3 +830,70 @@ pub fn solve(py: Python<'_>, a: &PyArray, b: &PyArray) -> PyResult<PyArray> {
     let result = musapy_ops::solve(&a.inner, &b.inner).map_err(error::to_pyerr)?;
     Ok(PyArray::from_array(result))
 }
+
+// ── Phase 3 (v0.3): 分解类 linalg ops（ADR-003 003-D3/D6，GPU-only）──
+
+/// `ms.lu(a)` → `(lu, piv)` — LU 分解（torch.linalg.lu 语义）。
+///
+/// `lu` 为 (m×n) 标准行主序布局（L 单位下三角 + U 上三角，LAPACK getrf
+/// 布局，重建 `a = P·L·U`）；`piv` 为 `min(m,n)` 个 1-based int64 主元
+/// （LAPACK ipiv 语义）。GPU 走 muSOLVER getrf（003-D4 共享 helper）。
+#[pyfunction]
+#[pyo3(signature = (a))]
+pub fn lu(py: Python<'_>, a: &PyArray) -> PyResult<(PyArray, PyArray)> {
+    if debug::is_debug() {
+        if let Some(frame) = extract_caller_frame(py) {
+            debug::set_debug_frame(Some(frame));
+        }
+    }
+
+    let (lu_arr, piv) = musapy_ops::lu(&a.inner).map_err(error::to_pyerr)?;
+    Ok((PyArray::from_array(lu_arr), PyArray::from_array(piv)))
+}
+
+/// `ms.qr(a, mode="reduced")` → `(q, r)` — QR 分解（NumPy 语义）。
+///
+/// `mode`：`"reduced"` → q (m,k)、r (k,n)；`"complete"` → q (m,m)、r (m,n)
+/// （r 下三角补零）。GPU 走 muSOLVER geqrf+orgqr。
+#[pyfunction]
+#[pyo3(signature = (a, mode="reduced"))]
+pub fn qr(py: Python<'_>, a: &PyArray, mode: &str) -> PyResult<(PyArray, PyArray)> {
+    if debug::is_debug() {
+        if let Some(frame) = extract_caller_frame(py) {
+            debug::set_debug_frame(Some(frame));
+        }
+    }
+
+    let (q_arr, r_arr) = musapy_ops::qr(&a.inner, mode).map_err(error::to_pyerr)?;
+    Ok((PyArray::from_array(q_arr), PyArray::from_array(r_arr)))
+}
+
+/// `ms.svd(a, full_matrices=True, compute_uv=True)` → `(u, s, vh)`。
+///
+/// `s` 为 `min(m,n)` 个降序奇异值（1D）；`full_matrices=True` 时 u (m,m)、
+/// vh (n,n)，否则 u (m,k)、vh (k,n)。`compute_uv=False` 仅返回 `s`
+/// （NumPy 语义，非三元组）。GPU 走 muSOLVER gesvd（S 合理性校验兜底
+/// info 失效，见 linalg.rs）。
+#[pyfunction]
+#[pyo3(signature = (a, full_matrices=true, compute_uv=true))]
+pub fn svd(
+    py: Python<'_>,
+    a: &PyArray,
+    full_matrices: bool,
+    compute_uv: bool,
+) -> PyResult<PyObject> {
+    if debug::is_debug() {
+        if let Some(frame) = extract_caller_frame(py) {
+            debug::set_debug_frame(Some(frame));
+        }
+    }
+
+    let (u, s, vh) = musapy_ops::svd(&a.inner, full_matrices, compute_uv).map_err(error::to_pyerr)?;
+    let s_py = PyArray::from_array(s);
+    if !compute_uv {
+        return Ok(s_py.into_py(py));
+    }
+    let u_py = u.map(PyArray::from_array);
+    let vh_py = vh.map(PyArray::from_array);
+    Ok((u_py, s_py, vh_py).into_py(py))
+}

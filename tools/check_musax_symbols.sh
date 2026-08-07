@@ -69,6 +69,14 @@ libmusolver.so:musolverSgetrs_bufferSize
 libmusolver.so:musolverDgetrs_bufferSize
 libmusolver.so:musolverCgetrs_bufferSize
 libmusolver.so:musolverZgetrs_bufferSize
+libmusolver.so:musolverSorgqr_bufferSize
+libmusolver.so:musolverDorgqr_bufferSize
+libmusolver.so:musolverCungqr_bufferSize
+libmusolver.so:musolverZungqr_bufferSize
+libmusolver.so:musolverCgeqrf_bufferSize
+libmusolver.so:musolverZgeqrf_bufferSize
+libmusolver.so:musolverCgesvd_bufferSize
+libmusolver.so:musolverZgesvd_bufferSize
 libmusolver.so:musolverSgeqrf_bufferSize
 libmusolver.so:musolverDgeqrf_bufferSize
 libmusolver.so:musolverSgesvd_bufferSize

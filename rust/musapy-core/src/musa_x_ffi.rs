@@ -112,6 +112,19 @@ pub type mublasPointerMode_t = c_int;
 pub const MUBLAS_POINTER_MODE_HOST: mublasPointerMode_t = 0;
 pub const MUBLAS_POINTER_MODE_DEVICE: mublasPointerMode_t = 1;
 
+/// mublasSvect_t(musolver_extra_types.h:43-51)。gesvd 的左/右奇异向量模式
+/// (替代 LAPACK 的 jobu/jobvt 字符参数;Phase 3 svd)。
+pub type mublasSvect_t = c_int;
+pub const MUBLAS_SVECT_ALL: mublasSvect_t = 191; // 计算整个正交矩阵(满)
+pub const MUBLAS_SVECT_SINGULAR: mublasSvect_t = 192; // 仅奇异向量(薄)
+pub const MUBLAS_SVECT_OVERWRITE: mublasSvect_t = 193; // 覆写输入矩阵
+pub const MUBLAS_SVECT_NONE: mublasSvect_t = 194; // 不计算
+
+/// mublasWorkmode_t(musolver_extra_types.h:56-62)。gesvd 的快速算法模式。
+pub type mublasWorkmode_t = c_int;
+pub const MUBLAS_OUTOFPLACE: mublasWorkmode_t = 201;
+pub const MUBLAS_INPLACE: mublasWorkmode_t = 202;
+
 /// murandRngType_t(murand.h)。
 pub type murandRngType_t = c_int;
 pub const MURAND_RNG_PSEUDO_DEFAULT: murandRngType_t = 400;
@@ -396,7 +409,229 @@ mod real {
             ldb: c_int,
             buffer: *mut c_void,
         ) -> mublasStatus_t;
-        // geqrf/orgqr/cungqr/gesvd + *_bufferSize 由 Phase 3 追加。
+
+        // ── muSOLVER Phase 3（musolver_functions.h;lu/qr/svd 分解）──
+        // 注意：geqrf 的 ipiv 参数实为 tau（Householder 反射系数，设备指针）；
+        // gesvd 为 muSOLVER 私有签名（mublasSvect 枚举 + E 输出 + fast_alg）。
+        pub fn musolverSgeqrf_bufferSize(m: c_int, n: c_int, buffersize: *mut c_int)
+            -> mublasStatus_t;
+        pub fn musolverDgeqrf_bufferSize(m: c_int, n: c_int, buffersize: *mut c_int)
+            -> mublasStatus_t;
+        pub fn musolverCgeqrf_bufferSize(m: c_int, n: c_int, buffersize: *mut c_int)
+            -> mublasStatus_t;
+        pub fn musolverZgeqrf_bufferSize(m: c_int, n: c_int, buffersize: *mut c_int)
+            -> mublasStatus_t;
+        pub fn musolverSgeqrf(
+            handle: mublasHandle_t,
+            m: c_int,
+            n: c_int,
+            a: *mut f32,
+            lda: c_int,
+            tau: *mut f32,
+            buffer: *mut c_void,
+        ) -> mublasStatus_t;
+        pub fn musolverDgeqrf(
+            handle: mublasHandle_t,
+            m: c_int,
+            n: c_int,
+            a: *mut f64,
+            lda: c_int,
+            tau: *mut f64,
+            buffer: *mut c_void,
+        ) -> mublasStatus_t;
+        pub fn musolverCgeqrf(
+            handle: mublasHandle_t,
+            m: c_int,
+            n: c_int,
+            a: *mut muComplex,
+            lda: c_int,
+            tau: *mut muComplex,
+            buffer: *mut c_void,
+        ) -> mublasStatus_t;
+        pub fn musolverZgeqrf(
+            handle: mublasHandle_t,
+            m: c_int,
+            n: c_int,
+            a: *mut muDoubleComplex,
+            lda: c_int,
+            tau: *mut muDoubleComplex,
+            buffer: *mut c_void,
+        ) -> mublasStatus_t;
+
+        pub fn musolverSorgqr_bufferSize(
+            m: c_int,
+            n: c_int,
+            k: c_int,
+            buffersize: *mut c_int,
+        ) -> mublasStatus_t;
+        pub fn musolverDorgqr_bufferSize(
+            m: c_int,
+            n: c_int,
+            k: c_int,
+            buffersize: *mut c_int,
+        ) -> mublasStatus_t;
+        pub fn musolverCungqr_bufferSize(
+            m: c_int,
+            n: c_int,
+            k: c_int,
+            buffersize: *mut c_int,
+        ) -> mublasStatus_t;
+        pub fn musolverZungqr_bufferSize(
+            m: c_int,
+            n: c_int,
+            k: c_int,
+            buffersize: *mut c_int,
+        ) -> mublasStatus_t;
+        pub fn musolverSorgqr(
+            handle: mublasHandle_t,
+            m: c_int,
+            n: c_int,
+            k: c_int,
+            a: *mut f32,
+            lda: c_int,
+            tau: *const f32,
+            buffer: *mut c_void,
+        ) -> mublasStatus_t;
+        pub fn musolverDorgqr(
+            handle: mublasHandle_t,
+            m: c_int,
+            n: c_int,
+            k: c_int,
+            a: *mut f64,
+            lda: c_int,
+            tau: *const f64,
+            buffer: *mut c_void,
+        ) -> mublasStatus_t;
+        pub fn musolverCungqr(
+            handle: mublasHandle_t,
+            m: c_int,
+            n: c_int,
+            k: c_int,
+            a: *mut muComplex,
+            lda: c_int,
+            tau: *const muComplex,
+            buffer: *mut c_void,
+        ) -> mublasStatus_t;
+        pub fn musolverZungqr(
+            handle: mublasHandle_t,
+            m: c_int,
+            n: c_int,
+            k: c_int,
+            a: *mut muDoubleComplex,
+            lda: c_int,
+            tau: *const muDoubleComplex,
+            buffer: *mut c_void,
+        ) -> mublasStatus_t;
+
+        pub fn musolverSgesvd_bufferSize(
+            left_svect: c_int,
+            right_svect: c_int,
+            m: c_int,
+            n: c_int,
+            batch_count: c_int,
+            fast_alg: c_int,
+            buffersize: *mut c_int,
+        ) -> mublasStatus_t;
+        pub fn musolverDgesvd_bufferSize(
+            left_svect: c_int,
+            right_svect: c_int,
+            m: c_int,
+            n: c_int,
+            batch_count: c_int,
+            fast_alg: c_int,
+            buffersize: *mut c_int,
+        ) -> mublasStatus_t;
+        pub fn musolverCgesvd_bufferSize(
+            left_svect: c_int,
+            right_svect: c_int,
+            m: c_int,
+            n: c_int,
+            batch_count: c_int,
+            fast_alg: c_int,
+            buffersize: *mut c_int,
+        ) -> mublasStatus_t;
+        pub fn musolverZgesvd_bufferSize(
+            left_svect: c_int,
+            right_svect: c_int,
+            m: c_int,
+            n: c_int,
+            batch_count: c_int,
+            fast_alg: c_int,
+            buffersize: *mut c_int,
+        ) -> mublasStatus_t;
+        pub fn musolverSgesvd(
+            handle: mublasHandle_t,
+            left_svect: c_int,
+            right_svect: c_int,
+            m: c_int,
+            n: c_int,
+            a: *mut f32,
+            lda: c_int,
+            s: *mut f32,
+            u: *mut f32,
+            ldu: c_int,
+            v: *mut f32,
+            ldv: c_int,
+            e: *mut f32,
+            fast_alg: c_int,
+            info: *mut c_int,
+            buffer: *mut c_void,
+        ) -> mublasStatus_t;
+        pub fn musolverDgesvd(
+            handle: mublasHandle_t,
+            left_svect: c_int,
+            right_svect: c_int,
+            m: c_int,
+            n: c_int,
+            a: *mut f64,
+            lda: c_int,
+            s: *mut f64,
+            u: *mut f64,
+            ldu: c_int,
+            v: *mut f64,
+            ldv: c_int,
+            e: *mut f64,
+            fast_alg: c_int,
+            info: *mut c_int,
+            buffer: *mut c_void,
+        ) -> mublasStatus_t;
+        pub fn musolverCgesvd(
+            handle: mublasHandle_t,
+            left_svect: c_int,
+            right_svect: c_int,
+            m: c_int,
+            n: c_int,
+            a: *mut muComplex,
+            lda: c_int,
+            s: *mut f32,
+            u: *mut muComplex,
+            ldu: c_int,
+            v: *mut muComplex,
+            ldv: c_int,
+            e: *mut muComplex,
+            fast_alg: c_int,
+            info: *mut c_int,
+            buffer: *mut c_void,
+        ) -> mublasStatus_t;
+        pub fn musolverZgesvd(
+            handle: mublasHandle_t,
+            left_svect: c_int,
+            right_svect: c_int,
+            m: c_int,
+            n: c_int,
+            a: *mut muDoubleComplex,
+            lda: c_int,
+            s: *mut f64,
+            u: *mut muDoubleComplex,
+            ldu: c_int,
+            v: *mut muDoubleComplex,
+            ldv: c_int,
+            e: *mut muDoubleComplex,
+            fast_alg: c_int,
+            info: *mut c_int,
+            buffer: *mut c_void,
+        ) -> mublasStatus_t;
+        // syevd（对称特征值）由 linalg C（eigh）阶段追加。
 
         // ── muRAND(murand.h;生命周期)──
         pub fn murandCreateGenerator(
@@ -967,6 +1202,555 @@ mod mock {
         MUBLAS_STATUS_SUCCESS
     }
 
+    // ── muSOLVER Phase 3（mock：确定性数值，供 pytest 验证形状/视图逻辑）──
+
+    /// mock 确定性填充的数值类型辅助（f32/f64/complex）。
+    trait MockNum {
+        fn zero() -> Self;
+        fn one() -> Self;
+        fn from_usize(n: usize) -> Self;
+    }
+
+    impl MockNum for f32 {
+        fn zero() -> Self { 0.0 }
+        fn one() -> Self { 1.0 }
+        fn from_usize(n: usize) -> Self { n as f32 }
+    }
+
+    impl MockNum for f64 {
+        fn zero() -> Self { 0.0 }
+        fn one() -> Self { 1.0 }
+        fn from_usize(n: usize) -> Self { n as f64 }
+    }
+
+    impl MockNum for muComplex {
+        fn zero() -> Self { muComplex { re: 0.0, im: 0.0 } }
+        fn one() -> Self { muComplex { re: 1.0, im: 0.0 } }
+        fn from_usize(n: usize) -> Self { muComplex { re: n as f32, im: 0.0 } }
+    }
+
+    impl MockNum for muDoubleComplex {
+        fn zero() -> Self { muDoubleComplex { re: 0.0, im: 0.0 } }
+        fn one() -> Self { muDoubleComplex { re: 1.0, im: 0.0 } }
+        fn from_usize(n: usize) -> Self { muDoubleComplex { re: n as f64, im: 0.0 } }
+    }
+
+    pub unsafe fn musolverSgeqrf_bufferSize(
+        _m: c_int,
+        _n: c_int,
+        buffersize: *mut c_int,
+    ) -> mublasStatus_t {
+        if buffersize.is_null() {
+            return 1;
+        }
+        unsafe { *buffersize = 4096 };
+        MUBLAS_STATUS_SUCCESS
+    }
+
+    pub unsafe fn musolverDgeqrf_bufferSize(
+        _m: c_int,
+        _n: c_int,
+        buffersize: *mut c_int,
+    ) -> mublasStatus_t {
+        if buffersize.is_null() {
+            return 1;
+        }
+        unsafe { *buffersize = 4096 };
+        MUBLAS_STATUS_SUCCESS
+    }
+
+    pub unsafe fn musolverCgeqrf_bufferSize(
+        _m: c_int,
+        _n: c_int,
+        buffersize: *mut c_int,
+    ) -> mublasStatus_t {
+        if buffersize.is_null() {
+            return 1;
+        }
+        unsafe { *buffersize = 4096 };
+        MUBLAS_STATUS_SUCCESS
+    }
+
+    pub unsafe fn musolverZgeqrf_bufferSize(
+        _m: c_int,
+        _n: c_int,
+        buffersize: *mut c_int,
+    ) -> mublasStatus_t {
+        if buffersize.is_null() {
+            return 1;
+        }
+        unsafe { *buffersize = 4096 };
+        MUBLAS_STATUS_SUCCESS
+    }
+
+    pub unsafe fn musolverSorgqr_bufferSize(
+        _m: c_int,
+        _n: c_int,
+        _k: c_int,
+        buffersize: *mut c_int,
+    ) -> mublasStatus_t {
+        if buffersize.is_null() {
+            return 1;
+        }
+        unsafe { *buffersize = 4096 };
+        MUBLAS_STATUS_SUCCESS
+    }
+
+    pub unsafe fn musolverDorgqr_bufferSize(
+        _m: c_int,
+        _n: c_int,
+        _k: c_int,
+        buffersize: *mut c_int,
+    ) -> mublasStatus_t {
+        if buffersize.is_null() {
+            return 1;
+        }
+        unsafe { *buffersize = 4096 };
+        MUBLAS_STATUS_SUCCESS
+    }
+
+    pub unsafe fn musolverCungqr_bufferSize(
+        _m: c_int,
+        _n: c_int,
+        _k: c_int,
+        buffersize: *mut c_int,
+    ) -> mublasStatus_t {
+        if buffersize.is_null() {
+            return 1;
+        }
+        unsafe { *buffersize = 4096 };
+        MUBLAS_STATUS_SUCCESS
+    }
+
+    pub unsafe fn musolverZungqr_bufferSize(
+        _m: c_int,
+        _n: c_int,
+        _k: c_int,
+        buffersize: *mut c_int,
+    ) -> mublasStatus_t {
+        if buffersize.is_null() {
+            return 1;
+        }
+        unsafe { *buffersize = 4096 };
+        MUBLAS_STATUS_SUCCESS
+    }
+
+    pub unsafe fn musolverSgesvd_bufferSize(
+        _left_svect: c_int,
+        _right_svect: c_int,
+        _m: c_int,
+        _n: c_int,
+        _batch_count: c_int,
+        _fast_alg: c_int,
+        buffersize: *mut c_int,
+    ) -> mublasStatus_t {
+        if buffersize.is_null() {
+            return 1;
+        }
+        unsafe { *buffersize = 4096 };
+        MUBLAS_STATUS_SUCCESS
+    }
+
+    pub unsafe fn musolverDgesvd_bufferSize(
+        _left_svect: c_int,
+        _right_svect: c_int,
+        _m: c_int,
+        _n: c_int,
+        _batch_count: c_int,
+        _fast_alg: c_int,
+        buffersize: *mut c_int,
+    ) -> mublasStatus_t {
+        if buffersize.is_null() {
+            return 1;
+        }
+        unsafe { *buffersize = 4096 };
+        MUBLAS_STATUS_SUCCESS
+    }
+
+    pub unsafe fn musolverCgesvd_bufferSize(
+        _left_svect: c_int,
+        _right_svect: c_int,
+        _m: c_int,
+        _n: c_int,
+        _batch_count: c_int,
+        _fast_alg: c_int,
+        buffersize: *mut c_int,
+    ) -> mublasStatus_t {
+        if buffersize.is_null() {
+            return 1;
+        }
+        unsafe { *buffersize = 4096 };
+        MUBLAS_STATUS_SUCCESS
+    }
+
+    pub unsafe fn musolverZgesvd_bufferSize(
+        _left_svect: c_int,
+        _right_svect: c_int,
+        _m: c_int,
+        _n: c_int,
+        _batch_count: c_int,
+        _fast_alg: c_int,
+        buffersize: *mut c_int,
+    ) -> mublasStatus_t {
+        if buffersize.is_null() {
+            return 1;
+        }
+        unsafe { *buffersize = 4096 };
+        MUBLAS_STATUS_SUCCESS
+    }
+
+    pub unsafe fn musolverSgeqrf(
+        handle: mublasHandle_t,
+        m: c_int,
+        n: c_int,
+        _a: *mut f32,
+        _lda: c_int,
+        tau: *mut f32,
+        _buffer: *mut c_void,
+    ) -> mublasStatus_t {
+        if handle.is_null() || tau.is_null() {
+            return 1;
+        }
+        // mock：A 保持原样，tau 全 0（不产生实际反射变换）
+        let k = (m.min(n)) as usize;
+        unsafe {
+            for i in 0..k {
+                *tau.add(i) = MockNum::zero();
+            }
+        }
+        MUBLAS_STATUS_SUCCESS
+    }
+
+    pub unsafe fn musolverDgeqrf(
+        handle: mublasHandle_t,
+        m: c_int,
+        n: c_int,
+        _a: *mut f64,
+        _lda: c_int,
+        tau: *mut f64,
+        _buffer: *mut c_void,
+    ) -> mublasStatus_t {
+        if handle.is_null() || tau.is_null() {
+            return 1;
+        }
+        // mock：A 保持原样，tau 全 0（不产生实际反射变换）
+        let k = (m.min(n)) as usize;
+        unsafe {
+            for i in 0..k {
+                *tau.add(i) = MockNum::zero();
+            }
+        }
+        MUBLAS_STATUS_SUCCESS
+    }
+
+    pub unsafe fn musolverCgeqrf(
+        handle: mublasHandle_t,
+        m: c_int,
+        n: c_int,
+        _a: *mut muComplex,
+        _lda: c_int,
+        tau: *mut muComplex,
+        _buffer: *mut c_void,
+    ) -> mublasStatus_t {
+        if handle.is_null() || tau.is_null() {
+            return 1;
+        }
+        // mock：A 保持原样，tau 全 0（不产生实际反射变换）
+        let k = (m.min(n)) as usize;
+        unsafe {
+            for i in 0..k {
+                *tau.add(i) = MockNum::zero();
+            }
+        }
+        MUBLAS_STATUS_SUCCESS
+    }
+
+    pub unsafe fn musolverZgeqrf(
+        handle: mublasHandle_t,
+        m: c_int,
+        n: c_int,
+        _a: *mut muDoubleComplex,
+        _lda: c_int,
+        tau: *mut muDoubleComplex,
+        _buffer: *mut c_void,
+    ) -> mublasStatus_t {
+        if handle.is_null() || tau.is_null() {
+            return 1;
+        }
+        // mock：A 保持原样，tau 全 0（不产生实际反射变换）
+        let k = (m.min(n)) as usize;
+        unsafe {
+            for i in 0..k {
+                *tau.add(i) = MockNum::zero();
+            }
+        }
+        MUBLAS_STATUS_SUCCESS
+    }
+
+    pub unsafe fn musolverSorgqr(
+        handle: mublasHandle_t,
+        _m: c_int,
+        _n: c_int,
+        _k: c_int,
+        _a: *mut f32,
+        _lda: c_int,
+        _tau: *const f32,
+        _buffer: *mut c_void,
+    ) -> mublasStatus_t {
+        if handle.is_null() {
+            return 1;
+        }
+        // mock：缓冲原样返回（Q = geqrf 后的 A 内容，仅验证形状/视图）
+        MUBLAS_STATUS_SUCCESS
+    }
+
+    pub unsafe fn musolverDorgqr(
+        handle: mublasHandle_t,
+        _m: c_int,
+        _n: c_int,
+        _k: c_int,
+        _a: *mut f64,
+        _lda: c_int,
+        _tau: *const f64,
+        _buffer: *mut c_void,
+    ) -> mublasStatus_t {
+        if handle.is_null() {
+            return 1;
+        }
+        // mock：缓冲原样返回（Q = geqrf 后的 A 内容，仅验证形状/视图）
+        MUBLAS_STATUS_SUCCESS
+    }
+
+    pub unsafe fn musolverCungqr(
+        handle: mublasHandle_t,
+        _m: c_int,
+        _n: c_int,
+        _k: c_int,
+        _a: *mut muComplex,
+        _lda: c_int,
+        _tau: *const muComplex,
+        _buffer: *mut c_void,
+    ) -> mublasStatus_t {
+        if handle.is_null() {
+            return 1;
+        }
+        // mock：缓冲原样返回（Q = geqrf 后的 A 内容，仅验证形状/视图）
+        MUBLAS_STATUS_SUCCESS
+    }
+
+    pub unsafe fn musolverZungqr(
+        handle: mublasHandle_t,
+        _m: c_int,
+        _n: c_int,
+        _k: c_int,
+        _a: *mut muDoubleComplex,
+        _lda: c_int,
+        _tau: *const muDoubleComplex,
+        _buffer: *mut c_void,
+    ) -> mublasStatus_t {
+        if handle.is_null() {
+            return 1;
+        }
+        // mock：缓冲原样返回（Q = geqrf 后的 A 内容，仅验证形状/视图）
+        MUBLAS_STATUS_SUCCESS
+    }
+
+    pub unsafe fn musolverSgesvd(
+        handle: mublasHandle_t,
+        left_svect: c_int,
+        right_svect: c_int,
+        m: c_int,
+        n: c_int,
+        _a: *mut f32,
+        _lda: c_int,
+        s: *mut f32,
+        u: *mut f32,
+        ldu: c_int,
+        v: *mut f32,
+        ldv: c_int,
+        _e: *mut f32,
+        _fast_alg: c_int,
+        info: *mut c_int,
+        _buffer: *mut c_void,
+    ) -> mublasStatus_t {
+        if handle.is_null() || s.is_null() || info.is_null() {
+            return 1;
+        }
+        let k = m.min(n) as usize;
+        unsafe {
+            // S 降序 k..1（mock 确定性数值；真实值由真机 pytest 对照）
+            for i in 0..k {
+                *s.add(i) = MockNum::from_usize(k - i);
+            }
+            // U/V 单位阵（left/right_svect 决定列数；NONE 时指针可为 null）
+            if !u.is_null() {
+                let u_cols = if left_svect == super::MUBLAS_SVECT_ALL { m as usize } else { k };
+                for j in 0..u_cols {
+                    for i in 0..m as usize {
+                        *u.add(i + j * ldu as usize) = if i == j { MockNum::one() } else { MockNum::zero() };
+                    }
+                }
+            }
+            if !v.is_null() {
+                let v_cols = if right_svect == super::MUBLAS_SVECT_ALL { n as usize } else { k };
+                for j in 0..v_cols {
+                    for i in 0..n as usize {
+                        *v.add(i + j * ldv as usize) = if i == j { MockNum::one() } else { MockNum::zero() };
+                    }
+                }
+            }
+            *info = 0;
+        }
+        MUBLAS_STATUS_SUCCESS
+    }
+
+    pub unsafe fn musolverDgesvd(
+        handle: mublasHandle_t,
+        left_svect: c_int,
+        right_svect: c_int,
+        m: c_int,
+        n: c_int,
+        _a: *mut f64,
+        _lda: c_int,
+        s: *mut f64,
+        u: *mut f64,
+        ldu: c_int,
+        v: *mut f64,
+        ldv: c_int,
+        _e: *mut f64,
+        _fast_alg: c_int,
+        info: *mut c_int,
+        _buffer: *mut c_void,
+    ) -> mublasStatus_t {
+        if handle.is_null() || s.is_null() || info.is_null() {
+            return 1;
+        }
+        let k = m.min(n) as usize;
+        unsafe {
+            // S 降序 k..1（mock 确定性数值；真实值由真机 pytest 对照）
+            for i in 0..k {
+                *s.add(i) = MockNum::from_usize(k - i);
+            }
+            // U/V 单位阵（left/right_svect 决定列数；NONE 时指针可为 null）
+            if !u.is_null() {
+                let u_cols = if left_svect == super::MUBLAS_SVECT_ALL { m as usize } else { k };
+                for j in 0..u_cols {
+                    for i in 0..m as usize {
+                        *u.add(i + j * ldu as usize) = if i == j { MockNum::one() } else { MockNum::zero() };
+                    }
+                }
+            }
+            if !v.is_null() {
+                let v_cols = if right_svect == super::MUBLAS_SVECT_ALL { n as usize } else { k };
+                for j in 0..v_cols {
+                    for i in 0..n as usize {
+                        *v.add(i + j * ldv as usize) = if i == j { MockNum::one() } else { MockNum::zero() };
+                    }
+                }
+            }
+            *info = 0;
+        }
+        MUBLAS_STATUS_SUCCESS
+    }
+
+    pub unsafe fn musolverCgesvd(
+        handle: mublasHandle_t,
+        left_svect: c_int,
+        right_svect: c_int,
+        m: c_int,
+        n: c_int,
+        _a: *mut muComplex,
+        _lda: c_int,
+        s: *mut muComplex,
+        u: *mut muComplex,
+        ldu: c_int,
+        v: *mut muComplex,
+        ldv: c_int,
+        _e: *mut muComplex,
+        _fast_alg: c_int,
+        info: *mut c_int,
+        _buffer: *mut c_void,
+    ) -> mublasStatus_t {
+        if handle.is_null() || s.is_null() || info.is_null() {
+            return 1;
+        }
+        let k = m.min(n) as usize;
+        unsafe {
+            // S 降序 k..1（mock 确定性数值；真实值由真机 pytest 对照）
+            for i in 0..k {
+                *s.add(i) = MockNum::from_usize(k - i);
+            }
+            // U/V 单位阵（left/right_svect 决定列数；NONE 时指针可为 null）
+            if !u.is_null() {
+                let u_cols = if left_svect == super::MUBLAS_SVECT_ALL { m as usize } else { k };
+                for j in 0..u_cols {
+                    for i in 0..m as usize {
+                        *u.add(i + j * ldu as usize) = if i == j { MockNum::one() } else { MockNum::zero() };
+                    }
+                }
+            }
+            if !v.is_null() {
+                let v_cols = if right_svect == super::MUBLAS_SVECT_ALL { n as usize } else { k };
+                for j in 0..v_cols {
+                    for i in 0..n as usize {
+                        *v.add(i + j * ldv as usize) = if i == j { MockNum::one() } else { MockNum::zero() };
+                    }
+                }
+            }
+            *info = 0;
+        }
+        MUBLAS_STATUS_SUCCESS
+    }
+
+    pub unsafe fn musolverZgesvd(
+        handle: mublasHandle_t,
+        left_svect: c_int,
+        right_svect: c_int,
+        m: c_int,
+        n: c_int,
+        _a: *mut muDoubleComplex,
+        _lda: c_int,
+        s: *mut muDoubleComplex,
+        u: *mut muDoubleComplex,
+        ldu: c_int,
+        v: *mut muDoubleComplex,
+        ldv: c_int,
+        _e: *mut muDoubleComplex,
+        _fast_alg: c_int,
+        info: *mut c_int,
+        _buffer: *mut c_void,
+    ) -> mublasStatus_t {
+        if handle.is_null() || s.is_null() || info.is_null() {
+            return 1;
+        }
+        let k = m.min(n) as usize;
+        unsafe {
+            // S 降序 k..1（mock 确定性数值；真实值由真机 pytest 对照）
+            for i in 0..k {
+                *s.add(i) = MockNum::from_usize(k - i);
+            }
+            // U/V 单位阵（left/right_svect 决定列数；NONE 时指针可为 null）
+            if !u.is_null() {
+                let u_cols = if left_svect == super::MUBLAS_SVECT_ALL { m as usize } else { k };
+                for j in 0..u_cols {
+                    for i in 0..m as usize {
+                        *u.add(i + j * ldu as usize) = if i == j { MockNum::one() } else { MockNum::zero() };
+                    }
+                }
+            }
+            if !v.is_null() {
+                let v_cols = if right_svect == super::MUBLAS_SVECT_ALL { n as usize } else { k };
+                for j in 0..v_cols {
+                    for i in 0..n as usize {
+                        *v.add(i + j * ldv as usize) = if i == j { MockNum::one() } else { MockNum::zero() };
+                    }
+                }
+            }
+            *info = 0;
+        }
+        MUBLAS_STATUS_SUCCESS
+    }
+
     // ── muRAND ──
 
     pub unsafe fn murandCreateGenerator(
@@ -1502,6 +2286,115 @@ mod tests {
             MUSPARSE_STATUS_SUCCESS
         );
         assert_eq!(unsafe { musparseDestroy(h) }, MUSPARSE_STATUS_SUCCESS);
+    }
+
+    #[test]
+    fn test_musolver_phase3_mock() {
+        let mut h: mublasHandle_t = std::ptr::null_mut();
+        assert_eq!(unsafe { mublasCreate(&mut h) }, MUBLAS_STATUS_SUCCESS);
+
+        // bufferSize：无 handle 参数，返回 4096
+        let mut bs: c_int = 0;
+        assert_eq!(unsafe { musolverDgeqrf_bufferSize(4, 3, &mut bs) }, MUBLAS_STATUS_SUCCESS);
+        assert_eq!(bs, 4096);
+        assert_eq!(unsafe { musolverDorgqr_bufferSize(4, 3, 3, &mut bs) }, MUBLAS_STATUS_SUCCESS);
+        assert_eq!(
+            unsafe { musolverDgesvd_bufferSize(MUBLAS_SVECT_ALL, MUBLAS_SVECT_ALL, 4, 3, 1, MUBLAS_OUTOFPLACE, &mut bs) },
+            MUBLAS_STATUS_SUCCESS
+        );
+        assert_eq!(bs, 4096);
+
+        // geqrf：A 保持原样，tau 置 0
+        let mut a = [1.0f64; 12];
+        let mut tau = [9.9f64; 3];
+        assert_eq!(
+            unsafe { musolverDgeqrf(h, 4, 3, a.as_mut_ptr(), 4, tau.as_mut_ptr(), std::ptr::null_mut()) },
+            MUBLAS_STATUS_SUCCESS
+        );
+        assert_eq!(a, [1.0; 12]);
+        assert_eq!(tau, [0.0; 3]);
+
+        // orgqr：缓冲原样返回
+        assert_eq!(
+            unsafe { musolverDorgqr(h, 4, 3, 3, a.as_mut_ptr(), 4, tau.as_ptr(), std::ptr::null_mut()) },
+            MUBLAS_STATUS_SUCCESS
+        );
+
+        // gesvd：S 降序 k..1，U/V 单位阵，info=0
+        let mut s = [0.0f64; 3];
+        let mut u = [0.0f64; 16]; // m×m=4×4
+        let mut v = [0.0f64; 9]; // n×n=3×3
+        let mut e = [0.0f64; 4];
+        let mut info: c_int = -1;
+        assert_eq!(
+            unsafe {
+                musolverDgesvd(
+                    h,
+                    MUBLAS_SVECT_ALL,
+                    MUBLAS_SVECT_ALL,
+                    4,
+                    3,
+                    a.as_mut_ptr(),
+                    4,
+                    s.as_mut_ptr(),
+                    u.as_mut_ptr(),
+                    4,
+                    v.as_mut_ptr(),
+                    3,
+                    e.as_mut_ptr(),
+                    MUBLAS_OUTOFPLACE,
+                    &mut info,
+                    std::ptr::null_mut(),
+                )
+            },
+            MUBLAS_STATUS_SUCCESS
+        );
+        assert_eq!(s, [3.0, 2.0, 1.0]); // 降序
+        assert_eq!(info, 0);
+        // U 单位阵（4×4 列主序直读 U[i + j*ldu]）
+        for j in 0..4 {
+            for i in 0..4 {
+                let expect = if i == j { 1.0 } else { 0.0 };
+                assert_eq!(u[i + j * 4], expect, "U[{i}][{j}]");
+            }
+        }
+        // V 单位阵（3×3）
+        for j in 0..3 {
+            for i in 0..3 {
+                let expect = if i == j { 1.0 } else { 0.0 };
+                assert_eq!(v[i + j * 3], expect, "V[{i}][{j}]");
+            }
+        }
+
+        // NONE 模式：U/V 可为 null
+        let mut s2 = [0.0f64; 3];
+        let mut info2: c_int = -1;
+        assert_eq!(
+            unsafe {
+                musolverDgesvd(
+                    h,
+                    MUBLAS_SVECT_NONE,
+                    MUBLAS_SVECT_NONE,
+                    4,
+                    3,
+                    a.as_mut_ptr(),
+                    4,
+                    s2.as_mut_ptr(),
+                    std::ptr::null_mut(),
+                    4,
+                    std::ptr::null_mut(),
+                    3,
+                    e.as_mut_ptr(),
+                    MUBLAS_OUTOFPLACE,
+                    &mut info2,
+                    std::ptr::null_mut(),
+                )
+            },
+            MUBLAS_STATUS_SUCCESS
+        );
+        assert_eq!(s2, [3.0, 2.0, 1.0]);
+
+        assert_eq!(unsafe { mublasDestroy(h) }, MUBLAS_STATUS_SUCCESS);
     }
 
     #[test]

@@ -42,6 +42,10 @@ from ._core import (
     matmul,
     dot,
     solve,
+    # linalg decomp ops (v0.3 Phase 3)
+    lu,
+    qr,
+    svd,
     # creation ops (Phase 5)
     zeros,
     ones,
@@ -142,6 +146,10 @@ __all__ = [
     "matmul",
     "dot",
     "solve",
+    # linalg decomp ops (v0.3 Phase 3)
+    "lu",
+    "qr",
+    "svd",
     # creation ops (Phase 5)
     "zeros",
     "ones",

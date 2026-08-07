@@ -1,10 +1,11 @@
 #!/usr/bin/env python3
-"""v0.3 Phase 2 linalg 性能基准（matmul / dot / solve）。
+"""v0.3 Phase 2/3 linalg 性能基准（matmul / dot / solve / lu / qr / svd）。
 
-测量 GPU 上三个 linalg 算子（ADR-003 003-D3/D4/D6）：
+测量 GPU 上 linalg 算子（ADR-003 003-D3/D4/D6）：
   - matmul：f32/f64 矩阵乘法 GFLOPS 规模扫描（128³ → 2048³，方阵）
   - dot：1D 内积延迟 + 等效带宽（读 2 数组 + 写标量）
   - solve：n ∈ {64, 256, 1024} LU 分解 + 回代延迟（含 LU 对角 D2H 同步点）
+  - lu / qr / svd：分解类算子方阵延迟表（getrf / geqrf+orgqr / gesvd）
 
 计时方法（与 bench_musa_utilization.py 一致）：
     warmup(5) → sync → timed loop → sync → wall-clock / N
@@ -160,11 +161,38 @@ def run_solve(device_str: str, iters: int) -> None:
             print(f"    {n:>6} {nrhs:>5} {lat:>12.3f}")
 
 
+# ── 分解类（Phase 3: lu / qr / svd）───────────────────────────
+
+
+def bench_decomp_latency_ms(device_str: str, n: int, iters: int) -> tuple[float, float, float]:
+    """lu / qr / svd 方阵延迟（f64；同一 A，各算子独立计时）。"""
+    a = ms.add(
+        ms.full([n, n], 1.0, dtype=ms.float64, device=device_str),
+        ms.eye(n, dtype=ms.float64, device=device_str),
+    )
+    return (
+        bench_latency_ms(lambda: ms.lu(a), iters),
+        bench_latency_ms(lambda: ms.qr(a), iters),
+        bench_latency_ms(lambda: ms.svd(a), iters),
+    )
+
+
+def run_decomp(device_str: str, iters: int) -> None:
+    print("-" * 72)
+    print("  [lu / qr / svd — f64 方阵；getrf / geqrf+orgqr / gesvd]")
+    print("-" * 72)
+    print(f"    {'n':>6} {'lu(ms)':>10} {'qr(ms)':>10} {'svd(ms)':>10}")
+    print(f"    {'─'*6} {'─'*10} {'─'*10} {'─'*10}")
+    for n in (64, 256, 1024):
+        lu_lat, qr_lat, svd_lat = bench_decomp_latency_ms(device_str, n, iters)
+        print(f"    {n:>6} {lu_lat:>10.3f} {qr_lat:>10.3f} {svd_lat:>10.3f}")
+
+
 # ── 主函数 ────────────────────────────────────────────────────
 
 
 def main() -> None:
-    ap = argparse.ArgumentParser(description="linalg (matmul/dot/solve) benchmark")
+    ap = argparse.ArgumentParser(description="linalg (matmul/dot/solve/lu/qr/svd) benchmark")
     ap.add_argument("--iters", type=int, default=20, help="每配置迭代次数（默认 20）")
     ap.add_argument("--device", type=int, default=0, help="MUSA 设备 id（默认 0）")
     ap.add_argument("--max-n", type=int, default=2048, help="matmul 最大方阵边长（默认 2048）")
@@ -184,7 +212,7 @@ def main() -> None:
     ms.set_default_device(device_str)
 
     print("=" * 72)
-    print("  linalg 性能基准（v0.3 Phase 2: matmul / dot / solve）")
+    print("  linalg 性能基准（v0.3 Phase 2/3: matmul / dot / solve / lu / qr / svd）")
     print("=" * 72)
     print()
     print("  [设备信息]")
@@ -205,6 +233,7 @@ def main() -> None:
     run_matmul(device_str, args.iters, args.max_n)
     run_dot(device_str, args.iters)
     run_solve(device_str, args.iters)
+    run_decomp(device_str, args.iters)
 
     # ═══ Stream 状态 ═══
     s = ms.ones([2], device=device_str).stream
@@ -227,11 +256,15 @@ def main() -> None:
     print("\n" + "=" * 72)
     print("  ✓ 测试结论")
     print("=" * 72)
-    print("  ✓ matmul（f32/f64 规模扫描）+ dot + solve 全部执行正常")
+    print("  ✓ matmul（f32/f64 规模扫描）+ dot + solve + lu/qr/svd 全部执行正常")
     print("  ✓ 覆盖: matmul(f32+f64×5 规模) + dot(1M/10M) + solve(f64×3 规模×2 nrhs)")
+    print("         + lu/qr/svd(f64×3 规模方阵延迟)")
     print("  ⚠ solve 延迟含 LU 对角 D2H 同步（003-D3 奇异检测；muSOLVER")
     print("    3.1.0 不写 getrf info，见 linalg.rs gpu_solve 注释），与 matmul")
     print("    不可直接对比；matmul 延迟 ≈ 45µs launch 地板 + kernel 执行")
+    print("  ⚠ svd 走 ALL 模式（003-D3 修订：SDK 3.1.0 SINGULAR 模式 U 输出")
+    print("    有 bug，见 linalg.rs svd 注释），1024² 约 2.7s；S 合理性校验")
+    print("    含一次 D2H 同步")
     print("=" * 72)
 
 

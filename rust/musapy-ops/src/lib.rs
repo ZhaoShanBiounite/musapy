@@ -27,4 +27,4 @@ pub use creation::{zeros, ones, full, eye, arange, linspace, zeros_like, ones_li
 pub use indexing::{
     contiguous, flip, gather, index_select, permute, scatter, slice, transpose, SliceSpec,
 };
-pub use linalg::{dot, matmul, solve};
+pub use linalg::{dot, lu, matmul, qr, solve, svd};
