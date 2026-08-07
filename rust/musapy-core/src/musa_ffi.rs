@@ -13,7 +13,7 @@
 
 #![allow(non_camel_case_types)]
 use crate::error::{KernelError, MusapyError, Result, StreamError};
-use std::ffi::{CStr, c_char, c_int, c_uint, c_void};
+use std::ffi::{c_char, c_int, c_uint, c_void, CStr};
 
 // ============================================================
 // 类型定义（对标 CUDA/MUSA）
@@ -144,6 +144,18 @@ mod real {
             kind: musaMemcpyKind,
         ) -> musaError_t;
 
+        // musaMemcpy2D：跨步 2D 拷贝（对标 cudaMemcpy2D）。solve 奇异检测
+        // 用它单次读回 LU 对角线（跨步 = (n+1)·elem，v0.3 Phase 2）。
+        pub fn musaMemcpy2D(
+            dst: *mut c_void,
+            dpitch: usize,
+            src: *const c_void,
+            spitch: usize,
+            width: usize,
+            height: usize,
+            kind: musaMemcpyKind,
+        ) -> musaError_t;
+
         // --- Error（ADR L3-1）---
         pub fn musaGetErrorString(error: musaError_t) -> *const c_char;
         pub fn musaGetLastError() -> musaError_t;
@@ -157,8 +169,8 @@ mod real {
 #[cfg(musapy_mock_musa)]
 mod mock {
     use super::*;
-    use std::sync::Mutex;
     use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::Mutex;
 
     static MOCK_HANDLE_COUNTER: AtomicUsize = AtomicUsize::new(1);
 
@@ -320,6 +332,26 @@ mod mock {
             return 1;
         }
         std::ptr::copy_nonoverlapping(src as *const u8, dst as *mut u8, count);
+        MUSA_SUCCESS
+    }
+
+    /// mock musaMemcpy2D：逐行拷贝（spitch/dpitch 语义与真实实现一致）。
+    pub unsafe fn musaMemcpy2D(
+        dst: *mut c_void,
+        dpitch: usize,
+        src: *const c_void,
+        spitch: usize,
+        width: usize,
+        height: usize,
+        _kind: musaMemcpyKind,
+    ) -> musaError_t {
+        if dst.is_null() || src.is_null() {
+            return 1;
+        }
+        let (d, s) = (dst as *mut u8, src as *const u8);
+        for row in 0..height {
+            std::ptr::copy_nonoverlapping(s.add(row * spitch), d.add(row * dpitch), width);
+        }
         MUSA_SUCCESS
     }
 

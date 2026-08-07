@@ -141,6 +141,24 @@ impl PyArray {
         Ok(PyArray::from_array(result))
     }
 
+    /// `a @ b` — 矩阵乘法（ADR-003 003-D6）。
+    ///
+    /// 等价于 `ms.matmul(self, other)`。支持 1D/2D 组合（含内积退化）。
+    fn __matmul__(&self, other: &PyArray) -> PyResult<PyArray> {
+        let result =
+            musapy_ops::matmul(&self.inner, &other.inner, None).map_err(error::to_pyerr)?;
+        Ok(PyArray::from_array(result))
+    }
+
+    /// `a.dot(b)` — 点积（ADR-003 003-D6）。
+    ///
+    /// 等价于 `ms.dot(self, other)`：`(n,)·(n,)` → 0-dim 标量；
+    /// 2D 组合委托 matmul。
+    fn dot(&self, other: &PyArray) -> PyResult<PyArray> {
+        let result = musapy_ops::dot(&self.inner, &other.inner, None).map_err(error::to_pyerr)?;
+        Ok(PyArray::from_array(result))
+    }
+
     /// `-a` — 逐元素取负（0 - a）。
     fn __neg__(&self) -> PyResult<PyArray> {
         let result = musapy_ops::neg(&self.inner, None).map_err(error::to_pyerr)?;

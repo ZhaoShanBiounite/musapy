@@ -12,7 +12,8 @@
 //!        │    └── OutOfMemoryError
 //!        ├── StreamError
 //!        ├── KernelError
-//!        └── InteropError
+//!        ├── InteropError
+//!        └── LinAlgError          # v0.3 Phase 2（ADR-003 003-D3）
 //! ```
 //!
 //! ADR L3-6 理想状态要求部分继承 Python builtins
@@ -40,6 +41,7 @@ create_exception!(musapy, OutOfMemoryError, MemoryError);
 create_exception!(musapy, StreamError, MusapyError);
 create_exception!(musapy, KernelError, MusapyError);
 create_exception!(musapy, InteropError, MusapyError);
+create_exception!(musapy, LinAlgError, MusapyError);
 
 // ============================================================
 // MusapyError → PyErr 转换辅助函数
@@ -64,6 +66,7 @@ pub fn to_pyerr(e: musapy_core::MusapyError) -> PyErr {
         musapy_core::MusapyError::Stream(_) => StreamError::new_err(msg),
         musapy_core::MusapyError::Kernel(_) => KernelError::new_err(msg),
         musapy_core::MusapyError::Interop(_) => InteropError::new_err(msg),
+        musapy_core::MusapyError::LinAlg(_) => LinAlgError::new_err(msg),
     }
 }
 
@@ -88,5 +91,6 @@ pub fn register_exceptions(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add("StreamError", m.py().get_type::<StreamError>())?;
     m.add("KernelError", m.py().get_type::<KernelError>())?;
     m.add("InteropError", m.py().get_type::<InteropError>())?;
+    m.add("LinAlgError", m.py().get_type::<LinAlgError>())?;
     Ok(())
 }

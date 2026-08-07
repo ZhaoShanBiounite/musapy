@@ -774,3 +774,59 @@ pub fn scatter(a: &PyArray, indices: &PyArray, values: &PyArray, axis: usize) ->
         musapy_ops::scatter(&a.inner, &indices.inner, &values.inner, axis).map_err(error::to_pyerr)?;
     Ok(PyArray::from_array(result))
 }
+
+// ── Phase 2 (v0.3): linalg ops（ADR-003 003-D3/D4/D6）────────
+
+/// `ms.matmul(a, b, out=None)` — 矩阵乘法（NumPy `@` 语义）。
+///
+/// 支持 1D/2D 组合（含 `(n,)@(n,m)`/`(m,n)@(n,)`/`(n,)@(n,)` 的内积退化）；
+/// 3D+ batch 推迟到 v0.4。GPU 走 muBLAS gemm（转置技巧），CPU 走
+/// OpenBLAS/朴素实现。
+#[pyfunction]
+#[pyo3(signature = (a, b, out=None))]
+pub fn matmul(py: Python<'_>, a: &PyArray, b: &PyArray, out: Option<&PyArray>) -> PyResult<PyArray> {
+    // Debug 模式：捕获 Python 调用帧（ADR L3-26）
+    if debug::is_debug() {
+        if let Some(frame) = extract_caller_frame(py) {
+            debug::set_debug_frame(Some(frame));
+        }
+    }
+
+    let result =
+        musapy_ops::matmul(&a.inner, &b.inner, out.map(|o| &o.inner)).map_err(error::to_pyerr)?;
+    Ok(PyArray::from_array(result))
+}
+
+/// `ms.dot(a, b, out=None)` — 点积（ADR-003 003-D6）。
+///
+/// `(n,)·(n,)` → 0-dim 标量；2D 组合委托 matmul；0-dim/3D+ 抛 ShapeError。
+#[pyfunction]
+#[pyo3(signature = (a, b, out=None))]
+pub fn dot(py: Python<'_>, a: &PyArray, b: &PyArray, out: Option<&PyArray>) -> PyResult<PyArray> {
+    if debug::is_debug() {
+        if let Some(frame) = extract_caller_frame(py) {
+            debug::set_debug_frame(Some(frame));
+        }
+    }
+
+    let result =
+        musapy_ops::dot(&a.inner, &b.inner, out.map(|o| &o.inner)).map_err(error::to_pyerr)?;
+    Ok(PyArray::from_array(result))
+}
+
+/// `ms.solve(a, b)` — 解线性方程组 `a @ x = b`。
+///
+/// `a` 必须为方阵；`b` 为 `(n,)` 或 `(n,k)`。奇异矩阵抛 `LinAlgError`
+/// （003-D3）。GPU 走 muSOLVER getrf+getrs，CPU 走 OpenBLAS/朴素 LU。
+#[pyfunction]
+#[pyo3(signature = (a, b))]
+pub fn solve(py: Python<'_>, a: &PyArray, b: &PyArray) -> PyResult<PyArray> {
+    if debug::is_debug() {
+        if let Some(frame) = extract_caller_frame(py) {
+            debug::set_debug_frame(Some(frame));
+        }
+    }
+
+    let result = musapy_ops::solve(&a.inner, &b.inner).map_err(error::to_pyerr)?;
+    Ok(PyArray::from_array(result))
+}

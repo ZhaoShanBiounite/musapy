@@ -7,6 +7,7 @@
 //!       reduction 套件（Phase 4）;
 //!       creation 套件（Phase 5）;
 //!       indexing 套件（Phase 6）
+//! v0.3: linalg A——matmul/dot/solve（Phase 2，ADR-003 003-D3/D6，GPU-only）
 
 pub mod broadcast;
 pub mod comparison;
@@ -14,6 +15,7 @@ pub mod creation;
 pub mod elementwise;
 pub mod indexing;
 pub mod kernels;
+pub mod linalg;
 pub mod op_builder;
 pub mod reduction;
 
@@ -25,3 +27,4 @@ pub use creation::{zeros, ones, full, eye, arange, linspace, zeros_like, ones_li
 pub use indexing::{
     contiguous, flip, gather, index_select, permute, scatter, slice, transpose, SliceSpec,
 };
+pub use linalg::{dot, matmul, solve};

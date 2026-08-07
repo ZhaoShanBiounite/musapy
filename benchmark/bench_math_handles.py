@@ -51,10 +51,13 @@ def main() -> None:
     print(f"device = {device}, iters = {args.iters:,}")
     print()
 
-    # GPU 可用性探测
+    # GPU 可用性探测（ms.Device 是惰性对象，构造不校验设备存在；
+    # 用真实设备操作触发 set_device，无效设备在此抛出而非中途 traceback）
     try:
-        ms.Device(device)
-    except Exception as e:  # noqa: BLE001
+        ms.ones([1], device=device)
+    except BaseException as e:  # noqa: BLE001
+        # 无效设备在 Rust 侧触发 panic → pyo3 转 PanicException
+        # （继承 BaseException 而非 Exception，须捕 BaseException）
         print(f"SKIP: {device} not available ({e})")
         sys.exit(0)
 

@@ -38,6 +38,10 @@ from ._core import (
     argmax,
     argmin,
     cumsum,
+    # linalg ops (v0.3 Phase 2)
+    matmul,
+    dot,
+    solve,
     # creation ops (Phase 5)
     zeros,
     ones,
@@ -93,6 +97,7 @@ from ._core import (
     StreamError,
     KernelError,
     InteropError,
+    LinAlgError,
 )
 
 __all__ = [
@@ -133,6 +138,10 @@ __all__ = [
     "argmax",
     "argmin",
     "cumsum",
+    # linalg ops (v0.3 Phase 2)
+    "matmul",
+    "dot",
+    "solve",
     # creation ops (Phase 5)
     "zeros",
     "ones",
@@ -188,4 +197,5 @@ __all__ = [
     "StreamError",
     "KernelError",
     "InteropError",
+    "LinAlgError",
 ]

@@ -27,6 +27,7 @@ libmublas.so:mublasCreate
 libmublas.so:mublasDestroy
 libmublas.so:mublasSetStream
 libmublas.so:mublasGetVersion
+libmublas.so:mublasSetPointerMode
 libmublas.so:mublasSgemm
 libmublas.so:mublasDgemm
 libmublas.so:mublasCgemm
@@ -64,6 +65,10 @@ libmusolver.so:musolverSgetrf_bufferSize
 libmusolver.so:musolverDgetrf_bufferSize
 libmusolver.so:musolverCgetrf_bufferSize
 libmusolver.so:musolverZgetrf_bufferSize
+libmusolver.so:musolverSgetrs_bufferSize
+libmusolver.so:musolverDgetrs_bufferSize
+libmusolver.so:musolverCgetrs_bufferSize
+libmusolver.so:musolverZgetrs_bufferSize
 libmusolver.so:musolverSgeqrf_bufferSize
 libmusolver.so:musolverDgeqrf_bufferSize
 libmusolver.so:musolverSgesvd_bufferSize

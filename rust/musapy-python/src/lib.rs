@@ -329,6 +329,10 @@ fn _core(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(ops::argmax, m)?)?;
     m.add_function(wrap_pyfunction!(ops::argmin, m)?)?;
     m.add_function(wrap_pyfunction!(ops::cumsum, m)?)?;
+    // Phase 2 (v0.3): linalg ops（ADR-003 003-D3/D4/D6）
+    m.add_function(wrap_pyfunction!(ops::matmul, m)?)?;
+    m.add_function(wrap_pyfunction!(ops::dot, m)?)?;
+    m.add_function(wrap_pyfunction!(ops::solve, m)?)?;
     // Phase 5: creation ops
     m.add_function(wrap_pyfunction!(ops::zeros, m)?)?;
     m.add_function(wrap_pyfunction!(ops::ones, m)?)?;

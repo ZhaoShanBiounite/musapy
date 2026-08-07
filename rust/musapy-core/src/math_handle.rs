@@ -139,40 +139,8 @@ pub fn reclaim_destroys() -> Result<()> {
     let entries: Vec<DeferredDestroy> = std::mem::take(&mut *deferred_destroys().lock());
     let mut first_err: Option<MusapyError> = None;
     for entry in entries {
-        let (device, result) = match entry {
-            DeferredDestroy::Mublas(h, d) => (
-                d,
-                musa_x_ffi::check_mublas(unsafe { musa_x_ffi::mublasDestroy(h) }, "mublasDestroy"),
-            ),
-            DeferredDestroy::Murand(g, d) => (
-                d,
-                musa_x_ffi::check_murand(
-                    unsafe { musa_x_ffi::murandDestroyGenerator(g) },
-                    "murandDestroyGenerator",
-                ),
-            ),
-            DeferredDestroy::Mufft(p, d) => (
-                d,
-                musa_x_ffi::check_mufft(unsafe { musa_x_ffi::mufftDestroy(p) }, "mufftDestroy"),
-            ),
-            DeferredDestroy::Musparse(h, d) => (
-                d,
-                musa_x_ffi::check_musparse(
-                    unsafe { musa_x_ffi::musparseDestroy(h) },
-                    "musparseDestroy",
-                ),
-            ),
-        };
-        // 句柄绑定设备:销毁前 set_device
-        if let Some(id) = device.musa_id() {
-            if let Err(e) = musa_ffi::set_device(id as i32) {
-                if first_err.is_none() {
-                    first_err = Some(e);
-                }
-                continue;
-            }
-        }
-        if let Err(e) = result {
+        if let Err(e) = reclaim_one_destroy(entry) {
+            // 保留第一个错误,继续尝试其余(避免一个坏句柄阻塞队列)
             if first_err.is_none() {
                 first_err = Some(e);
             }
@@ -181,6 +149,36 @@ pub fn reclaim_destroys() -> Result<()> {
     match first_err {
         Some(e) => Err(e),
         None => Ok(()),
+    }
+}
+
+/// 销毁单个延迟句柄:先 set_device 再 Destroy(L3-10 惯例,
+/// 同 deferred_free::reclaim_one —— 句柄/内存操作绑定当前设备)。
+fn reclaim_one_destroy(entry: DeferredDestroy) -> Result<()> {
+    let device = match &entry {
+        DeferredDestroy::Mublas(_, d)
+        | DeferredDestroy::Murand(_, d)
+        | DeferredDestroy::Mufft(_, d)
+        | DeferredDestroy::Musparse(_, d) => d.clone(),
+    };
+    // 句柄绑定设备:必须先 set 再 Destroy(多设备场景下 current device 可能已切换)
+    if let Some(id) = device.musa_id() {
+        musa_ffi::set_device(id as i32)?;
+    }
+    match entry {
+        DeferredDestroy::Mublas(h, _) => {
+            musa_x_ffi::check_mublas(unsafe { musa_x_ffi::mublasDestroy(h) }, "mublasDestroy")
+        }
+        DeferredDestroy::Murand(g, _) => musa_x_ffi::check_murand(
+            unsafe { musa_x_ffi::murandDestroyGenerator(g) },
+            "murandDestroyGenerator",
+        ),
+        DeferredDestroy::Mufft(p, _) => {
+            musa_x_ffi::check_mufft(unsafe { musa_x_ffi::mufftDestroy(p) }, "mufftDestroy")
+        }
+        DeferredDestroy::Musparse(h, _) => {
+            musa_x_ffi::check_musparse(unsafe { musa_x_ffi::musparseDestroy(h) }, "musparseDestroy")
+        }
     }
 }
 
@@ -209,6 +207,14 @@ pub fn with_mublas_handle<T>(
             None => {
                 let mut h: mublasHandle_t = std::ptr::null_mut();
                 musa_x_ffi::check_mublas(unsafe { musa_x_ffi::mublasCreate(&mut h) }, "mublasCreate")?;
+                // HOST pointer mode:alpha/beta 以 host 标量传入(Phase 2 约定);
+                // 创建时一次性设置,避免每次计算前重复调用。
+                musa_x_ffi::check_mublas(
+                    unsafe {
+                        musa_x_ffi::mublasSetPointerMode(h, musa_x_ffi::MUBLAS_POINTER_MODE_HOST)
+                    },
+                    "mublasSetPointerMode",
+                )?;
                 dh.mublas = Some(h);
                 h
             }

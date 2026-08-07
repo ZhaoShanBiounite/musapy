@@ -131,26 +131,24 @@
 
 **澄清**：与 L4-2 的关系（L4-2 推迟的是**独立 `musapy-cpu` crate**，v2+）；扩展 L2-1（build 探测）
 
-**决策**：v0.3 的 CPU fallback 是**算子内嵌路径**（v0.2 既有惯例），不新建独立 crate。
-各域宿主库策略：
+**决策（2026-08-07 修订）**：v0.3 及以后的数学库算子**一律 GPU-only，不建 CPU fallback**；
+CPU 设备上调用抛 `DeviceError`（`linalg::require_musa`）。v0.2 及以前的算子
+（elementwise/comparison/reduction/creation/indexing）CPU 设备支持**保持不变**。
 
-| 域 | 首选 | 缺失降级 | 备注 |
-|---|---|---|---|
-| linalg | OpenBLAS（cblas / lapacke），build.rs 探测（pkg-config 优先） | 纯 Rust 朴素实现（gemm 三重循环 / Jacobi svd 等） | OpenBLAS 为 BSD-3，与 MIT 兼容 |
-| fft | **纯 Rust radix-2 Cooley-Tukey（自研）** | — | **不链接 FFTW**：GPL-2+ 与 MIT 许可冲突 |
-| random | 纯 Rust PRNG（splitmix64 seed 扩展 + ziggurat 或 Box-Muller） | — | 零依赖 |
-| sparse | 朴素循环（按 indptr 遍历） | — | 零依赖 |
+修订前（已废弃）的决策：v0.3 数学库的 CPU fallback 是算子内嵌路径（linalg 走
+OpenBLAS + 纯 Rust 朴素降级；fft/random/sparse 纯 Rust 实现）。废弃原因：
+- mock 模式（`MUSAPY_MOCK_MUSA`）已提供无 GPU 环境下的 GPU 路径测试覆盖，
+  CPU fallback 的测试价值冗余；
+- OpenBLAS 系统依赖 + 双路径（openblas/朴素）分派显著增加维护与验证成本
+  （本轮实施中即暴露 openblas 路径 2 个语义 bug）；
+- 数学库（muBLAS/muSOLVER 等）本质是 GPU 库，CPU 侧无对等物。
 
-降级路径**仅承诺功能正确**，不承诺性能（风险登记表已列）。
-
-**依据**：
-- musapy 是 MIT（pyproject.toml）；FFTW 的 GPL-2+ 会传染到分发产物，必须规避。
-- v0.2 已验证「每算子 CPU fallback + mock stub」模式（elementwise/comparison/indexing/reduction）。
-- `apt install libopenblas-dev` 在目标机常见，探测失败也不阻塞构建（cfg 降级）。
-
-**影响**：
-- musapy-ops/build.rs：openblas 探测 → `cfg(musapy_host_openblas)`；linalg.rs 双路径分派。
-- 测试矩阵：CPU-OpenBLAS / CPU-朴素 / MUSA 三条路径（mock 模式覆盖后两条 + 前两条之一）。
+**当前影响**：
+- linalg.rs（matmul/dot/solve）：GPU-only；CPU 输入 → `DeviceError::Mismatch`
+  （与 math_handle 对 CPU 的既有报错风格一致）。
+- musapy-ops/build.rs：OpenBLAS 探测已移除（原产出 `musapy_openblas` cfg）。
+- 测试矩阵：MUSA 真机 + mock（GPU stub）两条路径。
+- 后续 Phase（qr/svd/eig/random/fft/sparse）按本策略实施，不再建 CPU 路径。
 
 ---
 

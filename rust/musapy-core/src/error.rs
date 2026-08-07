@@ -73,6 +73,14 @@ pub enum InteropError {
     UnsupportedProtocol(String),
 }
 
+// ── Linear algebra errors（v0.3 Phase 2，ADR-003 003-D3）──
+
+#[derive(Error, Clone, Debug, PartialEq, Eq)]
+pub enum LinAlgError {
+    #[error("singular matrix: {0}")]
+    Singular(String),
+}
+
 // ── Top-level error (ADR L3-5: two-level shallow hierarchy) ──
 
 #[derive(Error, Clone, Debug, PartialEq, Eq)]
@@ -91,6 +99,8 @@ pub enum MusapyError {
     Kernel(KernelError),
     #[error("{0}")]
     Interop(InteropError),
+    #[error("{0}")]
+    LinAlg(LinAlgError),
 }
 
 // ── From impls for ergonomic conversions ──
@@ -134,6 +144,12 @@ impl From<KernelError> for MusapyError {
 impl From<InteropError> for MusapyError {
     fn from(e: InteropError) -> Self {
         MusapyError::Interop(e)
+    }
+}
+
+impl From<LinAlgError> for MusapyError {
+    fn from(e: LinAlgError) -> Self {
+        MusapyError::LinAlg(e)
     }
 }
 
@@ -193,5 +209,6 @@ mod tests {
         let _ = MusapyError::Kernel(KernelError::ExecutionFailed("x".into()));
         let _ = MusapyError::Interop(InteropError::DlpackExport("x".into()));
         let _ = MusapyError::Interop(InteropError::UnsupportedProtocol("x".into()));
+        let _ = MusapyError::LinAlg(LinAlgError::Singular("x".into()));
     }
 }
