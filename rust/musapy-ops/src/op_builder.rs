@@ -205,31 +205,7 @@ macro_rules! launch_reduce_partial {
 }
 
 /// Parallel reduction final launch（Phase 2）。
-macro_rules! launch_reduce_final {
-    ($fn:ident, $pp:expr, $op:expr, $num_partials:expr, $out_size:expr, $stream:expr, $label:expr) => {
-        if let (Some(pp), Some(op)) = ($pp, $op) {
-            unsafe {
-                kernels::$fn(pp.as_ptr() as _, op.as_ptr() as _,
-                    $num_partials, $out_size, $stream);
-            }
-            musa_ffi::check_last_kernel_launch($label)?;
-        }
-    };
-}
-
 /// Mean final launch（额外 axis_len 参数）。
-macro_rules! launch_mean_final {
-    ($fn:ident, $pp:expr, $op:expr, $num_partials:expr, $out_size:expr, $axis_len:expr, $stream:expr, $label:expr) => {
-        if let (Some(pp), Some(op)) = ($pp, $op) {
-            unsafe {
-                kernels::$fn(pp.as_ptr() as _, op.as_ptr() as _,
-                    $num_partials, $out_size, $axis_len, $stream);
-            }
-            musa_ffi::check_last_kernel_launch($label)?;
-        }
-    };
-}
-
 /// Argmax/Argmin parallel partial launch（Phase 1）。
 macro_rules! launch_argreduce_partial {
     ($fn:ident, $ap:expr, $vp:expr, $ip:expr, $ndim:expr, $in_shape:expr, $in_strides:expr,
@@ -246,18 +222,6 @@ macro_rules! launch_argreduce_partial {
 }
 
 /// Argmax/Argmin parallel final launch（Phase 2）。
-macro_rules! launch_argreduce_final {
-    ($fn:ident, $vp:expr, $ip:expr, $op:expr, $num_partials:expr, $out_size:expr, $stream:expr, $label:expr) => {
-        if let (Some(vp), Some(ip), Some(op)) = ($vp, $ip, $op) {
-            unsafe {
-                kernels::$fn(vp.as_ptr() as _, ip.as_ptr() as _, op.as_ptr() as _,
-                    $num_partials, $out_size, $stream);
-            }
-            musa_ffi::check_last_kernel_launch($label)?;
-        }
-    };
-}
-
 /// CPU cast 单 (src, dst) 类型对的 `as` 转换循环（stride-aware）。
 macro_rules! cpu_cast_pair {
     ($src_t:ty, $dst_t:ty, $a:expr, $c:expr, $shape:expr, $strides:expr) => {{
@@ -1887,6 +1851,84 @@ fn reduction_compute_dtype(input_dtype: Dtype, kernel: &ReduceKernel) -> Dtype {
     }
 }
 
+/// P2b（2026-08-08）：多级 partial 归约收尾。
+///
+/// 调用方已生成第一级 partials（`tiles` = ceil(axis_len/1024) 个/输出）。
+/// 把 partials 以 (out_size, tiles) 布局逐级喂给 partial kernel 递归归约
+/// （每级 ÷1024），直到 tiles ≤ FINAL_TILES_THRESHOLD——final kernel 每
+/// 输出单 block 256 线程扫 partials，tiles 过大时串行扫成带宽瓶颈
+/// （64M 全局 sum：65536 partials → 200 GB/s，P2 遗留；多级后 final 只
+/// 扫 ≤256 个）。中间缓冲在函数内分配，随作用域释放（实际级数 ≤ 2）。
+///
+/// `launch_partial(src, dst, out_size, tiles)`：把 src（每输出 tiles 个
+/// 元素，紧凑布局 [out_size, tiles]）归约到 dst（每输出
+/// ceil(tiles/1024) 个）；`launch_final(partials, num_partials)` 收尾。
+#[allow(clippy::too_many_arguments)]
+fn multi_stage_reduce_tail(
+    device: &Device,
+    out_stream: &Arc<Stream>,
+    out_size: usize,
+    elem_size: usize,
+    mut src: *mut u8,
+    mut tiles: usize,
+    launch_partial: impl Fn(*mut u8, *mut u8, usize, usize) -> Result<()>,
+    launch_final: impl Fn(*mut u8, usize) -> Result<()>,
+) -> Result<()> {
+    // 触发阈值（P2b 实测校准，2026-08-08）：tiles > 32K（axis_len > 32M）
+    // 才走多级——final 串行扫 partials 的代价是每线程逐次依赖 load
+    // （64M 时 ~90µs），而每级多级化要付 ~45µs launch 地板；1M/16M
+    // 规模多级化净亏（1M sum 0.085→0.121ms 实测），故设此下限。
+    const MULTI_STAGE_MIN_TILES: usize = 32768;
+    const FINAL_TILES_THRESHOLD: usize = 256;
+    let mut stage_bufs: Vec<Buffer> = Vec::new();
+    while tiles > FINAL_TILES_THRESHOLD && tiles > MULTI_STAGE_MIN_TILES {
+        let next_tiles = (tiles + 1023) / 1024;
+        let buf = Buffer::alloc(out_size * next_tiles * elem_size, device.clone(), out_stream)?;
+        let dst = buf.ptr().expect("multi-stage partial buf").as_ptr();
+        launch_partial(src, dst, out_size, tiles)?;
+        stage_bufs.push(buf);
+        src = dst;
+        tiles = next_tiles;
+    }
+    launch_final(src, tiles)
+}
+
+/// P2b（2026-08-08）：argmax/argmin 多级 partial 收尾（val/idx 双缓冲）。
+///
+/// 与 `multi_stage_reduce_tail` 同构，但 val/idx 两路 partials 同步递归
+/// （argmid kernel 沿袭输入对的 idx，不能复用 argreduce_partial——后者
+/// 只读值数组、idx 按轴内 k 重新计算）。每级 ÷1024，直到
+/// tiles ≤ FINAL_TILES_THRESHOLD 再走 arg final。
+#[allow(clippy::too_many_arguments)]
+fn multi_stage_arg_reduce_tail(
+    device: &Device,
+    out_stream: &Arc<Stream>,
+    out_size: usize,
+    elem_size: usize,
+    mut src_val: *mut u8,
+    mut src_idx: *mut u8,
+    mut tiles: usize,
+    launch_partial: impl Fn(*mut u8, *mut u8, *mut u8, *mut u8, usize, usize) -> Result<()>,
+    launch_final: impl Fn(*mut u8, *mut u8, usize) -> Result<()>,
+) -> Result<()> {
+    const MULTI_STAGE_MIN_TILES: usize = 32768;
+    const FINAL_TILES_THRESHOLD: usize = 256;
+    let mut stage_bufs: Vec<(Buffer, Buffer)> = Vec::new();
+    while tiles > FINAL_TILES_THRESHOLD && tiles > MULTI_STAGE_MIN_TILES {
+        let next_tiles = (tiles + 1023) / 1024;
+        let vbuf = Buffer::alloc(out_size * next_tiles * elem_size, device.clone(), out_stream)?;
+        let ibuf = Buffer::alloc(out_size * next_tiles * 8, device.clone(), out_stream)?;
+        let dst_val = vbuf.ptr().expect("multi-stage arg val buf").as_ptr();
+        let dst_idx = ibuf.ptr().expect("multi-stage arg idx buf").as_ptr();
+        launch_partial(src_val, src_idx, dst_val, dst_idx, out_size, tiles)?;
+        stage_bufs.push((vbuf, ibuf));
+        src_val = dst_val;
+        src_idx = dst_idx;
+        tiles = next_tiles;
+    }
+    launch_final(src_val, src_idx, tiles)
+}
+
 /// 通用 reduction 3-phase 骨架（Phase 4, ADR-002-D3）。
 ///
 /// 支持 sum/prod/max/min/mean/argmax/argmin。
@@ -2089,11 +2131,12 @@ pub(crate) fn reduction_axis(
                     // P2：partial kernel 每线程 REDUCE_ITEMS=4 元素，
                     // 一个 tile（256 线程）覆盖 1024 个元素
                     let tiles_per_output = (axis_len + 1023) / 1024;
-                    let num_partials = tiles_per_output; // per output element
                     let elem_size = compute_dtype.element_size();
 
                     if kernel.output_is_index() {
-                        // argmax/argmin：需要 partials_val + partials_idx 两个 buffer
+                        // argmax/argmin：需要 partials_val + partials_idx 两个 buffer。
+                        // P2b：tiles > 256 时经 argmid kernel 逐级 ÷1024
+                        // （(val, idx) 对归约，idx 沿袭输入），final 只扫 ≤256 对。
                         let partial_val_nbytes = out_size * tiles_per_output * elem_size;
                         let partial_idx_nbytes = out_size * tiles_per_output * 8; // i64
                         let partial_val_buf = Buffer::alloc(partial_val_nbytes, device.clone(), &out_stream)?;
@@ -2101,35 +2144,124 @@ pub(crate) fn reduction_axis(
                         let pv_ptr = partial_val_buf.ptr();
                         let pi_ptr = partial_idx_buf.ptr();
 
+                        // 中间级 arg 归约 launch（读 (val, idx) 对，写缩小后的对）
+                        macro_rules! launch_argmid {
+                            ($fn:ident, $sv:expr, $si:expr, $dv:expr, $di:expr, $os:expr, $tiles:expr, $axis_len:expr, $label:expr) => {{
+                                unsafe {
+                                    kernels::$fn(
+                                        $sv as *const _,
+                                        $si as *const _,
+                                        $dv as *mut _,
+                                        $di as *mut _,
+                                        $os,
+                                        $tiles,
+                                        $axis_len,
+                                        stream_raw,
+                                    );
+                                }
+                                musa_ffi::check_last_kernel_launch($label)
+                            }};
+                        }
+                        // final：num_partials ≤ FINAL_TILES_THRESHOLD
+                        macro_rules! launch_argfinal_tail {
+                            ($fn:ident, $vp:expr, $ip:expr, $np:expr, $label:expr) => {{
+                                if let Some(op) = out_ptr {
+                                    unsafe {
+                                        kernels::$fn(
+                                            $vp as *const _,
+                                            $ip as *const _,
+                                            op.as_ptr() as _,
+                                            $np,
+                                            out_size,
+                                            stream_raw,
+                                        );
+                                    }
+                                    musa_ffi::check_last_kernel_launch($label)
+                                } else {
+                                    Ok(())
+                                }
+                            }};
+                        }
+
                         match (&kernel, compute_dtype) {
                             (ReduceKernel::Argmax, Dtype::Int64) => {
                                 launch_argreduce_partial!(musapy_argmax_partial_i64_v2, a_ptr, pv_ptr, pi_ptr, kernel_ndim, kernel_shape, in_strides, kernel_axis, axis_len, out_size, tiles_per_output, stream_raw, "argmax_partial_i64_v2");
-                                launch_argreduce_final!(musapy_argmax_final_i64_v2, pv_ptr, pi_ptr, out_ptr, num_partials, out_size, stream_raw, "argmax_final_i64_v2");
+                                multi_stage_arg_reduce_tail(
+                                    &device, &out_stream, out_size, elem_size, pv_ptr.expect("arg partial val buf").as_ptr(), pi_ptr.expect("arg partial idx buf").as_ptr(), tiles_per_output,
+                                    |sv, si, dv, di, os, tiles| {
+                                        launch_argmid!(musapy_argmax_mid_i64_v2, sv, si, dv, di, os, (tiles + 1023) / 1024, tiles, "argmax_mid_i64_v2")
+                                    },
+                                    |vp, ip, np| {
+                                        launch_argfinal_tail!(musapy_argmax_final_i64_v2, vp, ip, np, "argmax_final_i64_v2")
+                                    },
+                                )?;
                             }
                             (ReduceKernel::Argmax, Dtype::Float32) => {
                                 launch_argreduce_partial!(musapy_argmax_partial_f32_v2, a_ptr, pv_ptr, pi_ptr, kernel_ndim, kernel_shape, in_strides, kernel_axis, axis_len, out_size, tiles_per_output, stream_raw, "argmax_partial_f32_v2");
-                                launch_argreduce_final!(musapy_argmax_final_f32_v2, pv_ptr, pi_ptr, out_ptr, num_partials, out_size, stream_raw, "argmax_final_f32_v2");
+                                multi_stage_arg_reduce_tail(
+                                    &device, &out_stream, out_size, elem_size, pv_ptr.expect("arg partial val buf").as_ptr(), pi_ptr.expect("arg partial idx buf").as_ptr(), tiles_per_output,
+                                    |sv, si, dv, di, os, tiles| {
+                                        launch_argmid!(musapy_argmax_mid_f32_v2, sv, si, dv, di, os, (tiles + 1023) / 1024, tiles, "argmax_mid_f32_v2")
+                                    },
+                                    |vp, ip, np| {
+                                        launch_argfinal_tail!(musapy_argmax_final_f32_v2, vp, ip, np, "argmax_final_f32_v2")
+                                    },
+                                )?;
                             }
                             (ReduceKernel::Argmax, Dtype::Float64) => {
                                 launch_argreduce_partial!(musapy_argmax_partial_f64_v2, a_ptr, pv_ptr, pi_ptr, kernel_ndim, kernel_shape, in_strides, kernel_axis, axis_len, out_size, tiles_per_output, stream_raw, "argmax_partial_f64_v2");
-                                launch_argreduce_final!(musapy_argmax_final_f64_v2, pv_ptr, pi_ptr, out_ptr, num_partials, out_size, stream_raw, "argmax_final_f64_v2");
+                                multi_stage_arg_reduce_tail(
+                                    &device, &out_stream, out_size, elem_size, pv_ptr.expect("arg partial val buf").as_ptr(), pi_ptr.expect("arg partial idx buf").as_ptr(), tiles_per_output,
+                                    |sv, si, dv, di, os, tiles| {
+                                        launch_argmid!(musapy_argmax_mid_f64_v2, sv, si, dv, di, os, (tiles + 1023) / 1024, tiles, "argmax_mid_f64_v2")
+                                    },
+                                    |vp, ip, np| {
+                                        launch_argfinal_tail!(musapy_argmax_final_f64_v2, vp, ip, np, "argmax_final_f64_v2")
+                                    },
+                                )?;
                             }
                             (ReduceKernel::Argmin, Dtype::Int64) => {
                                 launch_argreduce_partial!(musapy_argmin_partial_i64_v2, a_ptr, pv_ptr, pi_ptr, kernel_ndim, kernel_shape, in_strides, kernel_axis, axis_len, out_size, tiles_per_output, stream_raw, "argmin_partial_i64_v2");
-                                launch_argreduce_final!(musapy_argmin_final_i64_v2, pv_ptr, pi_ptr, out_ptr, num_partials, out_size, stream_raw, "argmin_final_i64_v2");
+                                multi_stage_arg_reduce_tail(
+                                    &device, &out_stream, out_size, elem_size, pv_ptr.expect("arg partial val buf").as_ptr(), pi_ptr.expect("arg partial idx buf").as_ptr(), tiles_per_output,
+                                    |sv, si, dv, di, os, tiles| {
+                                        launch_argmid!(musapy_argmin_mid_i64_v2, sv, si, dv, di, os, (tiles + 1023) / 1024, tiles, "argmin_mid_i64_v2")
+                                    },
+                                    |vp, ip, np| {
+                                        launch_argfinal_tail!(musapy_argmin_final_i64_v2, vp, ip, np, "argmin_final_i64_v2")
+                                    },
+                                )?;
                             }
                             (ReduceKernel::Argmin, Dtype::Float32) => {
                                 launch_argreduce_partial!(musapy_argmin_partial_f32_v2, a_ptr, pv_ptr, pi_ptr, kernel_ndim, kernel_shape, in_strides, kernel_axis, axis_len, out_size, tiles_per_output, stream_raw, "argmin_partial_f32_v2");
-                                launch_argreduce_final!(musapy_argmin_final_f32_v2, pv_ptr, pi_ptr, out_ptr, num_partials, out_size, stream_raw, "argmin_final_f32_v2");
+                                multi_stage_arg_reduce_tail(
+                                    &device, &out_stream, out_size, elem_size, pv_ptr.expect("arg partial val buf").as_ptr(), pi_ptr.expect("arg partial idx buf").as_ptr(), tiles_per_output,
+                                    |sv, si, dv, di, os, tiles| {
+                                        launch_argmid!(musapy_argmin_mid_f32_v2, sv, si, dv, di, os, (tiles + 1023) / 1024, tiles, "argmin_mid_f32_v2")
+                                    },
+                                    |vp, ip, np| {
+                                        launch_argfinal_tail!(musapy_argmin_final_f32_v2, vp, ip, np, "argmin_final_f32_v2")
+                                    },
+                                )?;
                             }
                             (ReduceKernel::Argmin, Dtype::Float64) => {
                                 launch_argreduce_partial!(musapy_argmin_partial_f64_v2, a_ptr, pv_ptr, pi_ptr, kernel_ndim, kernel_shape, in_strides, kernel_axis, axis_len, out_size, tiles_per_output, stream_raw, "argmin_partial_f64_v2");
-                                launch_argreduce_final!(musapy_argmin_final_f64_v2, pv_ptr, pi_ptr, out_ptr, num_partials, out_size, stream_raw, "argmin_final_f64_v2");
+                                multi_stage_arg_reduce_tail(
+                                    &device, &out_stream, out_size, elem_size, pv_ptr.expect("arg partial val buf").as_ptr(), pi_ptr.expect("arg partial idx buf").as_ptr(), tiles_per_output,
+                                    |sv, si, dv, di, os, tiles| {
+                                        launch_argmid!(musapy_argmin_mid_f64_v2, sv, si, dv, di, os, (tiles + 1023) / 1024, tiles, "argmin_mid_f64_v2")
+                                    },
+                                    |vp, ip, np| {
+                                        launch_argfinal_tail!(musapy_argmin_final_f64_v2, vp, ip, np, "argmin_final_f64_v2")
+                                    },
+                                )?;
                             }
                             _ => unreachable!(),
                         }
                     } else if kernel == ReduceKernel::Mean {
-                        // mean：partial 做 sum，final 除以 axis_len
+                        // mean：partial 做 sum，final 除以 axis_len。
+                        // P2b：中间级用 sum partial（与 mean_partial 同计算），
+                        // 最终 mean_final 带原始 axis_len。
                         let partial_nbytes = out_size * tiles_per_output * elem_size;
                         let partial_buf = Buffer::alloc(partial_nbytes, device.clone(), &out_stream)?;
                         let pp_ptr = partial_buf.ptr();
@@ -2137,11 +2269,65 @@ pub(crate) fn reduction_axis(
                         match compute_dtype {
                             Dtype::Float32 => {
                                 launch_reduce_partial!(musapy_mean_partial_f32_v2, a_ptr, pp_ptr, kernel_ndim, kernel_shape, in_strides, kernel_axis, axis_len, out_size, tiles_per_output, stream_raw, "mean_partial_f32_v2");
-                                launch_mean_final!(musapy_mean_final_f32_v2, pp_ptr, out_ptr, num_partials, out_size, axis_len, stream_raw, "mean_final_f32_v2");
+                                multi_stage_reduce_tail(
+                                    &device, &out_stream, out_size, elem_size, pp_ptr.expect("reduce partial buf").as_ptr(), tiles_per_output,
+                                    |src, dst, os, tiles| {
+                                        let shape = [os, tiles];
+                                        let strides = [tiles as isize, 1];
+                                        unsafe {
+                                            kernels::musapy_sum_partial_f32_v2(
+                                                src as *const f32, dst as *mut f32, 2,
+                                                shape.as_ptr(), strides.as_ptr(), 1, tiles, os,
+                                                (tiles + 1023) / 1024, stream_raw,
+                                            );
+                                        }
+                                        musa_ffi::check_last_kernel_launch("sum_partial_f32_v2_mid")
+                                    },
+                                    |pp, np| {
+                                        if let Some(op) = out_ptr {
+                                            unsafe {
+                                                kernels::musapy_mean_final_f32_v2(
+                                                    pp as *const f32, op.as_ptr() as *mut f32,
+                                                    np, out_size, axis_len, stream_raw,
+                                                );
+                                            }
+                                            musa_ffi::check_last_kernel_launch("mean_final_f32_v2")
+                                        } else {
+                                            Ok(())
+                                        }
+                                    },
+                                )?;
                             }
                             Dtype::Float64 => {
                                 launch_reduce_partial!(musapy_mean_partial_f64_v2, a_ptr, pp_ptr, kernel_ndim, kernel_shape, in_strides, kernel_axis, axis_len, out_size, tiles_per_output, stream_raw, "mean_partial_f64_v2");
-                                launch_mean_final!(musapy_mean_final_f64_v2, pp_ptr, out_ptr, num_partials, out_size, axis_len, stream_raw, "mean_final_f64_v2");
+                                multi_stage_reduce_tail(
+                                    &device, &out_stream, out_size, elem_size, pp_ptr.expect("reduce partial buf").as_ptr(), tiles_per_output,
+                                    |src, dst, os, tiles| {
+                                        let shape = [os, tiles];
+                                        let strides = [tiles as isize, 1];
+                                        unsafe {
+                                            kernels::musapy_sum_partial_f64_v2(
+                                                src as *const f64, dst as *mut f64, 2,
+                                                shape.as_ptr(), strides.as_ptr(), 1, tiles, os,
+                                                (tiles + 1023) / 1024, stream_raw,
+                                            );
+                                        }
+                                        musa_ffi::check_last_kernel_launch("sum_partial_f64_v2_mid")
+                                    },
+                                    |pp, np| {
+                                        if let Some(op) = out_ptr {
+                                            unsafe {
+                                                kernels::musapy_mean_final_f64_v2(
+                                                    pp as *const f64, op.as_ptr() as *mut f64,
+                                                    np, out_size, axis_len, stream_raw,
+                                                );
+                                            }
+                                            musa_ffi::check_last_kernel_launch("mean_final_f64_v2")
+                                        } else {
+                                            Ok(())
+                                        }
+                                    },
+                                )?;
                             }
                             _ => unreachable!("mean only supports float compute dtype"),
                         }
@@ -2151,54 +2337,144 @@ pub(crate) fn reduction_axis(
                         let partial_buf = Buffer::alloc(partial_nbytes, device.clone(), &out_stream)?;
                         let pp_ptr = partial_buf.ptr();
 
+                        // 中间级 partial launch（partials 以 [out_size, tiles] 布局递归）
+                        macro_rules! launch_partial_mid {
+                            ($fn:ident, $src:expr, $dst:expr, $os:expr, $tiles:expr, $label:expr) => {{
+                                let shape = [$os, $tiles];
+                                let strides = [$tiles as isize, 1];
+                                unsafe {
+                                    kernels::$fn(
+                                        $src as *const _,
+                                        $dst as *mut _,
+                                        2,
+                                        shape.as_ptr(),
+                                        strides.as_ptr(),
+                                        1,
+                                        $tiles,
+                                        $os,
+                                        ($tiles + 1023) / 1024,
+                                        stream_raw,
+                                    );
+                                }
+                                musa_ffi::check_last_kernel_launch($label)
+                            }};
+                        }
+                        // final（num_partials ≤ FINAL_TILES_THRESHOLD）
+                        macro_rules! launch_final_tail {
+                            ($fn:ident, $pp:expr, $np:expr, $label:expr) => {{
+                                if let Some(op) = out_ptr {
+                                    unsafe {
+                                        kernels::$fn(
+                                            $pp as *const _,
+                                            op.as_ptr() as _,
+                                            $np,
+                                            out_size,
+                                            stream_raw,
+                                        );
+                                    }
+                                    musa_ffi::check_last_kernel_launch($label)
+                                } else {
+                                    Ok(())
+                                }
+                            }};
+                        }
+
                         match (&kernel, compute_dtype) {
                             (ReduceKernel::Sum, Dtype::Int64) => {
                                 launch_reduce_partial!(musapy_sum_partial_i64_v2, a_ptr, pp_ptr, kernel_ndim, kernel_shape, in_strides, kernel_axis, axis_len, out_size, tiles_per_output, stream_raw, "sum_partial_i64_v2");
-                                launch_reduce_final!(musapy_sum_final_i64_v2, pp_ptr, out_ptr, num_partials, out_size, stream_raw, "sum_final_i64_v2");
+                                multi_stage_reduce_tail(
+                                    &device, &out_stream, out_size, elem_size, pp_ptr.expect("reduce partial buf").as_ptr(), tiles_per_output,
+                                    |src, dst, os, tiles| launch_partial_mid!(musapy_sum_partial_i64_v2, src, dst, os, tiles, "sum_partial_i64_v2_mid"),
+                                    |pp, np| launch_final_tail!(musapy_sum_final_i64_v2, pp, np, "sum_final_i64_v2"),
+                                )?;
                             }
                             (ReduceKernel::Sum, Dtype::Float32) => {
                                 launch_reduce_partial!(musapy_sum_partial_f32_v2, a_ptr, pp_ptr, kernel_ndim, kernel_shape, in_strides, kernel_axis, axis_len, out_size, tiles_per_output, stream_raw, "sum_partial_f32_v2");
-                                launch_reduce_final!(musapy_sum_final_f32_v2, pp_ptr, out_ptr, num_partials, out_size, stream_raw, "sum_final_f32_v2");
+                                multi_stage_reduce_tail(
+                                    &device, &out_stream, out_size, elem_size, pp_ptr.expect("reduce partial buf").as_ptr(), tiles_per_output,
+                                    |src, dst, os, tiles| launch_partial_mid!(musapy_sum_partial_f32_v2, src, dst, os, tiles, "sum_partial_f32_v2_mid"),
+                                    |pp, np| launch_final_tail!(musapy_sum_final_f32_v2, pp, np, "sum_final_f32_v2"),
+                                )?;
                             }
                             (ReduceKernel::Sum, Dtype::Float64) => {
                                 launch_reduce_partial!(musapy_sum_partial_f64_v2, a_ptr, pp_ptr, kernel_ndim, kernel_shape, in_strides, kernel_axis, axis_len, out_size, tiles_per_output, stream_raw, "sum_partial_f64_v2");
-                                launch_reduce_final!(musapy_sum_final_f64_v2, pp_ptr, out_ptr, num_partials, out_size, stream_raw, "sum_final_f64_v2");
+                                multi_stage_reduce_tail(
+                                    &device, &out_stream, out_size, elem_size, pp_ptr.expect("reduce partial buf").as_ptr(), tiles_per_output,
+                                    |src, dst, os, tiles| launch_partial_mid!(musapy_sum_partial_f64_v2, src, dst, os, tiles, "sum_partial_f64_v2_mid"),
+                                    |pp, np| launch_final_tail!(musapy_sum_final_f64_v2, pp, np, "sum_final_f64_v2"),
+                                )?;
                             }
                             (ReduceKernel::Prod, Dtype::Int64) => {
                                 launch_reduce_partial!(musapy_prod_partial_i64_v2, a_ptr, pp_ptr, kernel_ndim, kernel_shape, in_strides, kernel_axis, axis_len, out_size, tiles_per_output, stream_raw, "prod_partial_i64_v2");
-                                launch_reduce_final!(musapy_prod_final_i64_v2, pp_ptr, out_ptr, num_partials, out_size, stream_raw, "prod_final_i64_v2");
+                                multi_stage_reduce_tail(
+                                    &device, &out_stream, out_size, elem_size, pp_ptr.expect("reduce partial buf").as_ptr(), tiles_per_output,
+                                    |src, dst, os, tiles| launch_partial_mid!(musapy_prod_partial_i64_v2, src, dst, os, tiles, "prod_partial_i64_v2_mid"),
+                                    |pp, np| launch_final_tail!(musapy_prod_final_i64_v2, pp, np, "prod_final_i64_v2"),
+                                )?;
                             }
                             (ReduceKernel::Prod, Dtype::Float32) => {
                                 launch_reduce_partial!(musapy_prod_partial_f32_v2, a_ptr, pp_ptr, kernel_ndim, kernel_shape, in_strides, kernel_axis, axis_len, out_size, tiles_per_output, stream_raw, "prod_partial_f32_v2");
-                                launch_reduce_final!(musapy_prod_final_f32_v2, pp_ptr, out_ptr, num_partials, out_size, stream_raw, "prod_final_f32_v2");
+                                multi_stage_reduce_tail(
+                                    &device, &out_stream, out_size, elem_size, pp_ptr.expect("reduce partial buf").as_ptr(), tiles_per_output,
+                                    |src, dst, os, tiles| launch_partial_mid!(musapy_prod_partial_f32_v2, src, dst, os, tiles, "prod_partial_f32_v2_mid"),
+                                    |pp, np| launch_final_tail!(musapy_prod_final_f32_v2, pp, np, "prod_final_f32_v2"),
+                                )?;
                             }
                             (ReduceKernel::Prod, Dtype::Float64) => {
                                 launch_reduce_partial!(musapy_prod_partial_f64_v2, a_ptr, pp_ptr, kernel_ndim, kernel_shape, in_strides, kernel_axis, axis_len, out_size, tiles_per_output, stream_raw, "prod_partial_f64_v2");
-                                launch_reduce_final!(musapy_prod_final_f64_v2, pp_ptr, out_ptr, num_partials, out_size, stream_raw, "prod_final_f64_v2");
+                                multi_stage_reduce_tail(
+                                    &device, &out_stream, out_size, elem_size, pp_ptr.expect("reduce partial buf").as_ptr(), tiles_per_output,
+                                    |src, dst, os, tiles| launch_partial_mid!(musapy_prod_partial_f64_v2, src, dst, os, tiles, "prod_partial_f64_v2_mid"),
+                                    |pp, np| launch_final_tail!(musapy_prod_final_f64_v2, pp, np, "prod_final_f64_v2"),
+                                )?;
                             }
                             (ReduceKernel::Max, Dtype::Int64) => {
                                 launch_reduce_partial!(musapy_max_partial_i64_v2, a_ptr, pp_ptr, kernel_ndim, kernel_shape, in_strides, kernel_axis, axis_len, out_size, tiles_per_output, stream_raw, "max_partial_i64_v2");
-                                launch_reduce_final!(musapy_max_final_i64_v2, pp_ptr, out_ptr, num_partials, out_size, stream_raw, "max_final_i64_v2");
+                                multi_stage_reduce_tail(
+                                    &device, &out_stream, out_size, elem_size, pp_ptr.expect("reduce partial buf").as_ptr(), tiles_per_output,
+                                    |src, dst, os, tiles| launch_partial_mid!(musapy_max_partial_i64_v2, src, dst, os, tiles, "max_partial_i64_v2_mid"),
+                                    |pp, np| launch_final_tail!(musapy_max_final_i64_v2, pp, np, "max_final_i64_v2"),
+                                )?;
                             }
                             (ReduceKernel::Max, Dtype::Float32) => {
                                 launch_reduce_partial!(musapy_max_partial_f32_v2, a_ptr, pp_ptr, kernel_ndim, kernel_shape, in_strides, kernel_axis, axis_len, out_size, tiles_per_output, stream_raw, "max_partial_f32_v2");
-                                launch_reduce_final!(musapy_max_final_f32_v2, pp_ptr, out_ptr, num_partials, out_size, stream_raw, "max_final_f32_v2");
+                                multi_stage_reduce_tail(
+                                    &device, &out_stream, out_size, elem_size, pp_ptr.expect("reduce partial buf").as_ptr(), tiles_per_output,
+                                    |src, dst, os, tiles| launch_partial_mid!(musapy_max_partial_f32_v2, src, dst, os, tiles, "max_partial_f32_v2_mid"),
+                                    |pp, np| launch_final_tail!(musapy_max_final_f32_v2, pp, np, "max_final_f32_v2"),
+                                )?;
                             }
                             (ReduceKernel::Max, Dtype::Float64) => {
                                 launch_reduce_partial!(musapy_max_partial_f64_v2, a_ptr, pp_ptr, kernel_ndim, kernel_shape, in_strides, kernel_axis, axis_len, out_size, tiles_per_output, stream_raw, "max_partial_f64_v2");
-                                launch_reduce_final!(musapy_max_final_f64_v2, pp_ptr, out_ptr, num_partials, out_size, stream_raw, "max_final_f64_v2");
+                                multi_stage_reduce_tail(
+                                    &device, &out_stream, out_size, elem_size, pp_ptr.expect("reduce partial buf").as_ptr(), tiles_per_output,
+                                    |src, dst, os, tiles| launch_partial_mid!(musapy_max_partial_f64_v2, src, dst, os, tiles, "max_partial_f64_v2_mid"),
+                                    |pp, np| launch_final_tail!(musapy_max_final_f64_v2, pp, np, "max_final_f64_v2"),
+                                )?;
                             }
                             (ReduceKernel::Min, Dtype::Int64) => {
                                 launch_reduce_partial!(musapy_min_partial_i64_v2, a_ptr, pp_ptr, kernel_ndim, kernel_shape, in_strides, kernel_axis, axis_len, out_size, tiles_per_output, stream_raw, "min_partial_i64_v2");
-                                launch_reduce_final!(musapy_min_final_i64_v2, pp_ptr, out_ptr, num_partials, out_size, stream_raw, "min_final_i64_v2");
+                                multi_stage_reduce_tail(
+                                    &device, &out_stream, out_size, elem_size, pp_ptr.expect("reduce partial buf").as_ptr(), tiles_per_output,
+                                    |src, dst, os, tiles| launch_partial_mid!(musapy_min_partial_i64_v2, src, dst, os, tiles, "min_partial_i64_v2_mid"),
+                                    |pp, np| launch_final_tail!(musapy_min_final_i64_v2, pp, np, "min_final_i64_v2"),
+                                )?;
                             }
                             (ReduceKernel::Min, Dtype::Float32) => {
                                 launch_reduce_partial!(musapy_min_partial_f32_v2, a_ptr, pp_ptr, kernel_ndim, kernel_shape, in_strides, kernel_axis, axis_len, out_size, tiles_per_output, stream_raw, "min_partial_f32_v2");
-                                launch_reduce_final!(musapy_min_final_f32_v2, pp_ptr, out_ptr, num_partials, out_size, stream_raw, "min_final_f32_v2");
+                                multi_stage_reduce_tail(
+                                    &device, &out_stream, out_size, elem_size, pp_ptr.expect("reduce partial buf").as_ptr(), tiles_per_output,
+                                    |src, dst, os, tiles| launch_partial_mid!(musapy_min_partial_f32_v2, src, dst, os, tiles, "min_partial_f32_v2_mid"),
+                                    |pp, np| launch_final_tail!(musapy_min_final_f32_v2, pp, np, "min_final_f32_v2"),
+                                )?;
                             }
                             (ReduceKernel::Min, Dtype::Float64) => {
                                 launch_reduce_partial!(musapy_min_partial_f64_v2, a_ptr, pp_ptr, kernel_ndim, kernel_shape, in_strides, kernel_axis, axis_len, out_size, tiles_per_output, stream_raw, "min_partial_f64_v2");
-                                launch_reduce_final!(musapy_min_final_f64_v2, pp_ptr, out_ptr, num_partials, out_size, stream_raw, "min_final_f64_v2");
+                                multi_stage_reduce_tail(
+                                    &device, &out_stream, out_size, elem_size, pp_ptr.expect("reduce partial buf").as_ptr(), tiles_per_output,
+                                    |src, dst, os, tiles| launch_partial_mid!(musapy_min_partial_f64_v2, src, dst, os, tiles, "min_partial_f64_v2_mid"),
+                                    |pp, np| launch_final_tail!(musapy_min_final_f64_v2, pp, np, "min_final_f64_v2"),
+                                )?;
                             }
                             _ => unreachable!(),
                         }

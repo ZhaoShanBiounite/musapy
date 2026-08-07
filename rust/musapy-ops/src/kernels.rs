@@ -221,6 +221,16 @@ unsafe extern "C" {
     pub fn musapy_argmin_final_f32_v2(partials_val: *const f32, partials_idx: *const i64, c: *mut i64, num_partials: usize, out_size: usize, stream: musaStream_t);
     pub fn musapy_argmin_final_f64_v2(partials_val: *const f64, partials_idx: *const i64, c: *mut i64, num_partials: usize, out_size: usize, stream: musaStream_t);
 
+    // ── Argmax/Argmin parallel: mid（P2b 多级 partial 中间级）──
+    // 签名：(partials_val, partials_idx, out_val, out_idx, out_size, tiles_per_output, axis_len, stream)
+    // 输入为上一级 (val, idx) partials 对，输出缩小后的对（idx 沿袭输入）
+    pub fn musapy_argmax_mid_i64_v2(partials_val: *const i64, partials_idx: *const i64, out_val: *mut i64, out_idx: *mut i64, out_size: usize, tiles_per_output: usize, axis_len: usize, stream: musaStream_t);
+    pub fn musapy_argmax_mid_f32_v2(partials_val: *const f32, partials_idx: *const i64, out_val: *mut f32, out_idx: *mut i64, out_size: usize, tiles_per_output: usize, axis_len: usize, stream: musaStream_t);
+    pub fn musapy_argmax_mid_f64_v2(partials_val: *const f64, partials_idx: *const i64, out_val: *mut f64, out_idx: *mut i64, out_size: usize, tiles_per_output: usize, axis_len: usize, stream: musaStream_t);
+    pub fn musapy_argmin_mid_i64_v2(partials_val: *const i64, partials_idx: *const i64, out_val: *mut i64, out_idx: *mut i64, out_size: usize, tiles_per_output: usize, axis_len: usize, stream: musaStream_t);
+    pub fn musapy_argmin_mid_f32_v2(partials_val: *const f32, partials_idx: *const i64, out_val: *mut f32, out_idx: *mut i64, out_size: usize, tiles_per_output: usize, axis_len: usize, stream: musaStream_t);
+    pub fn musapy_argmin_mid_f64_v2(partials_val: *const f64, partials_idx: *const i64, out_val: *mut f64, out_idx: *mut i64, out_size: usize, tiles_per_output: usize, axis_len: usize, stream: musaStream_t);
+
     // ── Phase 6 indexing: gather / scatter / copy ──
     // gather v2（P1）：device 侧越界检查，err_flag/err_pos/err_val 为 16B
     // 错误槽（flag i32 + pos i32 + val i64），由 Stream index_checks 提供。
@@ -976,6 +986,48 @@ mod mock {
     mock_argreduce_final_v2!(musapy_argmin_final_i64_v2, i64, |v, best| v < best);
     mock_argreduce_final_v2!(musapy_argmin_final_f32_v2, f32, |v, best| v < best);
     mock_argreduce_final_v2!(musapy_argmin_final_f64_v2, f64, |v, best| v < best);
+
+    // Argmax/Argmin mid mock（P2b）：输入上一级 (val, idx) 对，输出缩小后的对
+    macro_rules! mock_argreduce_mid_v2 {
+        ($name:ident, $t:ty, $is_better:expr) => {
+            pub unsafe fn $name(
+                partials_val: *const $t, partials_idx: *const i64,
+                out_val: *mut $t, out_idx: *mut i64,
+                out_size: usize, tiles_per_output: usize, axis_len: usize,
+                _stream: musaStream_t,
+            ) {
+                if partials_val.is_null() || partials_idx.is_null() || out_val.is_null() || out_idx.is_null() || out_size == 0 || axis_len == 0 { return; }
+                let is_better: fn($t, $t) -> bool = $is_better;
+                let tiles = tiles_per_output.max(1);
+                for out in 0..out_size {
+                    let base = out * axis_len;
+                    for tile in 0..tiles {
+                        let start = tile * 256;
+                        let end = ((tile + 1) * 256).min(axis_len);
+                        if start >= axis_len { continue; }
+                        let mut best_val = *partials_val.add(base + start);
+                        let mut best_idx = *partials_idx.add(base + start);
+                        for i in (start + 1)..end {
+                            let val = *partials_val.add(base + i);
+                            if is_better(val, best_val) {
+                                best_val = val;
+                                best_idx = *partials_idx.add(base + i);
+                            }
+                        }
+                        *out_val.add(out * tiles + tile) = best_val;
+                        *out_idx.add(out * tiles + tile) = best_idx;
+                    }
+                }
+            }
+        };
+    }
+
+    mock_argreduce_mid_v2!(musapy_argmax_mid_i64_v2, i64, |v, best| v > best);
+    mock_argreduce_mid_v2!(musapy_argmax_mid_f32_v2, f32, |v, best| v > best);
+    mock_argreduce_mid_v2!(musapy_argmax_mid_f64_v2, f64, |v, best| v > best);
+    mock_argreduce_mid_v2!(musapy_argmin_mid_i64_v2, i64, |v, best| v < best);
+    mock_argreduce_mid_v2!(musapy_argmin_mid_f32_v2, f32, |v, best| v < best);
+    mock_argreduce_mid_v2!(musapy_argmin_mid_f64_v2, f64, |v, best| v < best);
 
     // ── Init/Creation kernel mock（Phase 5）──
 

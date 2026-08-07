@@ -915,6 +915,66 @@ __global__ void musapy_argmin_partial_kernel_v2(
     }
 }
 
+// ── Argmid（P2b，2026-08-08）：中间级 arg 归约 ────────────────
+// argreduce_partial 的 idx 是「轴内 k」，中间级必须沿袭输入 (val, idx)
+// 对的 idx 而非重新计算——故不能复用 argreduce_partial（其输入只有
+// 值数组）。本 kernel 读 (partials_val, partials_idx) 对，写缩小后的
+// (out_val, out_idx) 对；配合 host 侧多级 partial 流水（P2b），把
+// final 阶段每输出单 block 串行扫 partials 的瓶颈（64M sum 65536
+// partials → 200 GB/s）改为逐级 ÷1024。
+
+#define ARGMID_KERNEL(OP, CMP)                                                 \
+template <typename T>                                                          \
+__global__ void musapy_##OP##_mid_kernel_v2(                                   \
+    const T* __restrict__ partials_val, const int64_t* __restrict__ partials_idx, \
+    T* __restrict__ out_val, int64_t* __restrict__ out_idx,                    \
+    size_t out_size, size_t tiles_per_output, size_t axis_len                  \
+) {                                                                            \
+    extern __shared__ char smem[];                                             \
+    T* sval = (T*)smem;                                                        \
+    int64_t* sidx = (int64_t*)(sval + blockDim.x);                             \
+                                                                               \
+    size_t out_idx_ = blockIdx.x / tiles_per_output;                           \
+    size_t tile_idx = blockIdx.x % tiles_per_output;                           \
+    if (out_idx_ >= out_size) return;                                          \
+                                                                               \
+    const T* vsrc = partials_val + out_idx_ * axis_len;                        \
+    const int64_t* isrc = partials_idx + out_idx_ * axis_len;                  \
+    size_t total_threads = tiles_per_output * blockDim.x;                      \
+    size_t global_tid = tile_idx * blockDim.x + threadIdx.x;                   \
+                                                                               \
+    T best_val = vsrc[0];                                                      \
+    int64_t best_idx = isrc[0];                                                \
+    for (size_t k = global_tid; k < axis_len; k += total_threads) {            \
+        T val = vsrc[k];                                                       \
+        if (val CMP best_val) {                                                \
+            best_val = val;                                                    \
+            best_idx = isrc[k];                                                \
+        }                                                                      \
+    }                                                                          \
+    sval[threadIdx.x] = best_val;                                              \
+    sidx[threadIdx.x] = best_idx;                                              \
+    __syncthreads();                                                           \
+    for (int s = blockDim.x / 2; s > 0; s >>= 1) {                             \
+        if (threadIdx.x < s) {                                                 \
+            if (sval[threadIdx.x + s] CMP sval[threadIdx.x]) {                 \
+                sval[threadIdx.x] = sval[threadIdx.x + s];                     \
+                sidx[threadIdx.x] = sidx[threadIdx.x + s];                     \
+            }                                                                  \
+        }                                                                      \
+        __syncthreads();                                                       \
+    }                                                                          \
+    if (threadIdx.x == 0) {                                                    \
+        out_val[out_idx_ * tiles_per_output + tile_idx] = sval[0];             \
+        out_idx[out_idx_ * tiles_per_output + tile_idx] = sidx[0];             \
+    }                                                                          \
+}
+
+ARGMID_KERNEL(argmax, >)
+ARGMID_KERNEL(argmin, <)
+
+#undef ARGMID_KERNEL
+
 // Phase 2: argmax/argmin final — 从 partials 中选最终 index
 template <typename T>
 __global__ void musapy_argmax_final_kernel_v2(
@@ -1505,6 +1565,41 @@ void musapy_##OP##_partial_f64_v2(                                            \
 ARGREDUCE_PARTIAL_V2(argmax)
 ARGREDUCE_PARTIAL_V2(argmin)
 #undef ARGREDUCE_PARTIAL_V2
+
+// ── Argmid（P2b）：中间级 (val, idx) 对归约 wrapper ──
+// 签名：(partials_val, partials_idx, out_val, out_idx, out_size,
+//        tiles_per_output, axis_len, stream)
+#define ARGMID_WRAPPER(T, SUFFIX)                                              \
+void musapy_argmax_mid_##SUFFIX##_v2(                                          \
+    const T* __restrict__ partials_val, const int64_t* __restrict__ partials_idx, \
+    T* __restrict__ out_val, int64_t* __restrict__ out_idx,                    \
+    size_t out_size, size_t tiles_per_output, size_t axis_len,                 \
+    musaStream_t stream                                                         \
+) {                                                                            \
+    size_t grid = out_size * tiles_per_output;                                 \
+    size_t smem = 256 * (sizeof(T) + sizeof(int64_t));                         \
+    musapy_argmax_mid_kernel_v2<T>                                             \
+        <<<grid, 256, smem, stream>>>(partials_val, partials_idx,              \
+        out_val, out_idx, out_size, tiles_per_output, axis_len);               \
+}                                                                              \
+void musapy_argmin_mid_##SUFFIX##_v2(                                          \
+    const T* __restrict__ partials_val, const int64_t* __restrict__ partials_idx, \
+    T* __restrict__ out_val, int64_t* __restrict__ out_idx,                    \
+    size_t out_size, size_t tiles_per_output, size_t axis_len,                 \
+    musaStream_t stream                                                         \
+) {                                                                            \
+    size_t grid = out_size * tiles_per_output;                                 \
+    size_t smem = 256 * (sizeof(T) + sizeof(int64_t));                         \
+    musapy_argmin_mid_kernel_v2<T>                                             \
+        <<<grid, 256, smem, stream>>>(partials_val, partials_idx,              \
+        out_val, out_idx, out_size, tiles_per_output, axis_len);               \
+}
+
+ARGMID_WRAPPER(int64_t, i64)
+ARGMID_WRAPPER(float, f32)
+ARGMID_WRAPPER(double, f64)
+
+#undef ARGMID_WRAPPER
 
 // Phase 2 签名：(partials_val, partials_idx, c, num_partials, out_size, stream)
 #define ARGREDUCE_FINAL_V2(OP)                                                 \
