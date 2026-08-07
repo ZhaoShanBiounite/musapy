@@ -93,4 +93,6 @@ cufft 同构 API:
   v0.3 风险登记表「muSOLVER 运行期符号与头文件不一致」一栏维持**低**概率评级。
 - 已知边界(非缺口,设计已吸收):`gesdd` 不存在(svd 用 gesvd);`orgqr` 仅 S/D
   (复数 `cungqr`);`syevd` 仅 S/D(eigh 本就推迟 v0.4);musolver 共享句柄。
+- **行为缺陷/运行期依赖**(getrf 不写 info、gesvd SINGULAR 模式 U 损坏、V 输出即 Vᵀ、
+  libomp 依赖等)汇总见 **[sdk-3.1.0-limitations.md](./sdk-3.1.0-limitations.md)**。
 - 复测命令:`./tools/check_musax_symbols.sh [SDK路径]`(退出码非 0 即有 MISS)。

@@ -269,7 +269,8 @@ OpenBLAS + 纯 Rust 朴素降级；fft/random/sparse 纯 Rust 实现）。废弃
   + 跨步视图输出（见 003-D3 实施注记）。
 
 **影响**：linalg.rs `svd` 的实现约束；文档注明 SDK 3.1.0 SINGULAR 模式不可用
-（升级 SDK 后可评估改回 SINGULAR 以省显存）。
+（升级 SDK 后可评估改回 SINGULAR 以省显存）。全部 SDK 3.1.0 限制/缺陷汇总见
+[sdk-3.1.0-limitations.md](./sdk-3.1.0-limitations.md)。
 
 ---
 
