@@ -19,6 +19,17 @@ static inline int is_contiguous_strides(const size_t* shape, const ssize_t* stri
     return 1;
 }
 
+/// 检测 strides 是否全 0（广播标量操作数：0-dim 或全 1 shape，元素数 1）。
+/// 用于 wrapper 选择 scalar fast-path（P1，2026-08-08）：绕开 offset_nd 的
+/// 64 位 div/mod——mp_22 上整数 div/mod 为软件仿真，标量广播实测比
+/// contiguous 慢 2-4×（mul f32×标量 96 vs add f32 447 GB/s）。
+static inline int is_scalar_strides(const ssize_t* strides, int ndim) {
+    for (int i = 0; i < ndim; i++) {
+        if (strides[i] != 0) return 0;
+    }
+    return 1;
+}
+
 /// 将输出线性索引（row-major contiguous）转换为指定 stride 操作数的元素偏移。
 ///
 /// - `linear_idx`：输出（连续）的线性索引 [0, product(shape))

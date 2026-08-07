@@ -494,6 +494,84 @@ __global__ void musapy_unary_vec4_kernel(
     }
 }
 
+// ── 标量广播 fast-path（P1）───────────────────────────────────
+// 广播标量操作数（全 0 strides：0-dim 或全 1 shape）不再走 offset_nd
+// 双操作数路径——mp_22 上 64 位 div/mod 为软件仿真，实测标量广播比
+// contiguous 慢 2-4×（mul f32×标量 96 vs add f32 447 GB/s，2026-08-07
+// 基准）。标量读入寄存器一次（同地址广播读，L2 命中），另一操作数
+// 连续访问。只启用「标量 + C-contiguous」组合；其余仍走 nd 路径。
+// AEXPR/BEXPR 为 c[i] 表达式（分别对应 a 标量 / b 标量），
+// 可用变量：av/bv（标量值）、a[i]/b[i]（连续操作数）。
+
+#define SCALAR_BINARY_KERNELS(OP, AEXPR, BEXPR)                                \
+template <typename T>                                                          \
+__global__ void musapy_##OP##_scalar_a_kernel(                                 \
+    const T* __restrict__ a, const T* __restrict__ b, T* __restrict__ c,       \
+    size_t n                                                                    \
+) {                                                                            \
+    size_t i = blockIdx.x * blockDim.x + threadIdx.x;                          \
+    if (i < n) {                                                               \
+        T av = a[0];                                                           \
+        c[i] = AEXPR;                                                          \
+    }                                                                          \
+}                                                                              \
+template <typename T>                                                          \
+__global__ void musapy_##OP##_scalar_b_kernel(                                 \
+    const T* __restrict__ a, const T* __restrict__ b, T* __restrict__ c,       \
+    size_t n                                                                    \
+) {                                                                            \
+    size_t i = blockIdx.x * blockDim.x + threadIdx.x;                          \
+    if (i < n) {                                                               \
+        T bv = b[0];                                                           \
+        c[i] = BEXPR;                                                          \
+    }                                                                          \
+}
+
+SCALAR_BINARY_KERNELS(add, (av + b[i]), (a[i] + bv))
+SCALAR_BINARY_KERNELS(sub, (av - b[i]), (a[i] - bv))
+SCALAR_BINARY_KERNELS(mul, (av * b[i]), (a[i] * bv))
+SCALAR_BINARY_KERNELS(div, (av / b[i]), (a[i] / bv))
+SCALAR_BINARY_KERNELS(pow, pow(av, b[i]), pow(a[i], bv))
+
+#undef SCALAR_BINARY_KERNELS
+
+// ── 标量广播 fast-path（P1）——comparison 版（输出 uint8_t）──
+// 与 SCALAR_BINARY_KERNELS 同因：bernoulli（rand < p）等标量比较走
+// offset_nd 双操作数路径受 64 位 div/mod 仿真拖累。
+
+#define SCALAR_COMPARE_KERNELS(OP, AEXPR, BEXPR)                              \
+template <typename T>                                                          \
+__global__ void musapy_##OP##_scalar_a_kernel(                                 \
+    const T* __restrict__ a, const T* __restrict__ b, uint8_t* __restrict__ c, \
+    size_t n                                                                    \
+) {                                                                            \
+    size_t i = blockIdx.x * blockDim.x + threadIdx.x;                          \
+    if (i < n) {                                                               \
+        T av = a[0];                                                           \
+        c[i] = (uint8_t)(AEXPR);                                               \
+    }                                                                          \
+}                                                                              \
+template <typename T>                                                          \
+__global__ void musapy_##OP##_scalar_b_kernel(                                 \
+    const T* __restrict__ a, const T* __restrict__ b, uint8_t* __restrict__ c, \
+    size_t n                                                                    \
+) {                                                                            \
+    size_t i = blockIdx.x * blockDim.x + threadIdx.x;                          \
+    if (i < n) {                                                               \
+        T bv = b[0];                                                           \
+        c[i] = (uint8_t)(BEXPR);                                               \
+    }                                                                          \
+}
+
+SCALAR_COMPARE_KERNELS(eq, (av == b[i]), (a[i] == bv))
+SCALAR_COMPARE_KERNELS(ne, (av != b[i]), (a[i] != bv))
+SCALAR_COMPARE_KERNELS(lt, (av < b[i]), (a[i] < bv))
+SCALAR_COMPARE_KERNELS(gt, (av > b[i]), (a[i] > bv))
+SCALAR_COMPARE_KERNELS(le, (av <= b[i]), (a[i] <= bv))
+SCALAR_COMPARE_KERNELS(ge, (av >= b[i]), (a[i] >= bv))
+
+#undef SCALAR_COMPARE_KERNELS
+
 // ── extern "C" 稳定 ABI ────────────────────────────────────────
 
 extern "C" {
@@ -508,7 +586,15 @@ void musapy_##OP##_f32_v2(                                                   \
 ) {                                                                          \
     size_t n = 1;                                                            \
     for (int i = 0; i < ndim; i++) n *= shape[i];                           \
-    if (is_contiguous_strides(shape, a_strides, ndim) &&                     \
+    if (is_scalar_strides(a_strides, ndim) &&                                \
+        is_contiguous_strides(shape, b_strides, ndim)) {                     \
+        musapy_##OP##_scalar_a_kernel<float><<<grid_size_1d(n), 256, 0,      \
+            stream>>>(a, b, c, n);                                           \
+    } else if (is_scalar_strides(b_strides, ndim) &&                         \
+        is_contiguous_strides(shape, a_strides, ndim)) {                     \
+        musapy_##OP##_scalar_b_kernel<float><<<grid_size_1d(n), 256, 0,      \
+            stream>>>(a, b, c, n);                                           \
+    } else if (is_contiguous_strides(shape, a_strides, ndim) &&              \
         is_contiguous_strides(shape, b_strides, ndim)) {                     \
         if (n >= VEC4_THRESHOLD && (n & 3) == 0 &&                           \
             (((uintptr_t)a & 15) == 0) && (((uintptr_t)b & 15) == 0) &&      \
@@ -539,7 +625,15 @@ void musapy_##OP##_f64_v2(                                                   \
 ) {                                                                          \
     size_t n = 1;                                                            \
     for (int i = 0; i < ndim; i++) n *= shape[i];                           \
-    if (is_contiguous_strides(shape, a_strides, ndim) &&                     \
+    if (is_scalar_strides(a_strides, ndim) &&                                \
+        is_contiguous_strides(shape, b_strides, ndim)) {                     \
+        musapy_##OP##_scalar_a_kernel<double><<<grid_size_1d(n), 256, 0,     \
+            stream>>>(a, b, c, n);                                           \
+    } else if (is_scalar_strides(b_strides, ndim) &&                         \
+        is_contiguous_strides(shape, a_strides, ndim)) {                     \
+        musapy_##OP##_scalar_b_kernel<double><<<grid_size_1d(n), 256, 0,     \
+            stream>>>(a, b, c, n);                                           \
+    } else if (is_contiguous_strides(shape, a_strides, ndim) &&              \
         is_contiguous_strides(shape, b_strides, ndim)) {                     \
         musapy_##OP##_flat_v2<double><<<grid_size_1d(n), 256, 0, stream>>>(  \
             a, b, c, n);                                                     \
@@ -551,7 +645,7 @@ void musapy_##OP##_f64_v2(                                                   \
             meta.a_strides[i] = a_strides[i];                                \
             meta.b_strides[i] = b_strides[i];                                \
         }                                                                    \
-        musapy_##OP##_kernel_v2<double><<<grid_size_1d(n), 256, 0, stream>>>(\
+        musapy_##OP##_kernel_v2<double><<<grid_size_1d(n), 256, 0, stream>>>( \
             a, b, c, meta, n);                                               \
     }                                                                        \
 }
@@ -742,7 +836,15 @@ void musapy_##OP##_f32_v2(                                                   \
 ) {                                                                          \
     size_t n = 1;                                                            \
     for (int i = 0; i < ndim; i++) n *= shape[i];                           \
-    if (is_contiguous_strides(shape, a_strides, ndim) &&                     \
+    if (is_scalar_strides(a_strides, ndim) &&                                \
+        is_contiguous_strides(shape, b_strides, ndim)) {                     \
+        musapy_##OP##_scalar_a_kernel<float><<<grid_size_1d(n), 256, 0,      \
+            stream>>>(a, b, c, n);                                           \
+    } else if (is_scalar_strides(b_strides, ndim) &&                         \
+        is_contiguous_strides(shape, a_strides, ndim)) {                     \
+        musapy_##OP##_scalar_b_kernel<float><<<grid_size_1d(n), 256, 0,      \
+            stream>>>(a, b, c, n);                                           \
+    } else if (is_contiguous_strides(shape, a_strides, ndim) &&              \
         is_contiguous_strides(shape, b_strides, ndim)) {                     \
         musapy_##OP##_flat_v2<float><<<grid_size_1d(n), 256, 0, stream>>>(   \
             a, b, c, n);                                                     \
@@ -767,7 +869,15 @@ void musapy_##OP##_f64_v2(                                                   \
 ) {                                                                          \
     size_t n = 1;                                                            \
     for (int i = 0; i < ndim; i++) n *= shape[i];                           \
-    if (is_contiguous_strides(shape, a_strides, ndim) &&                     \
+    if (is_scalar_strides(a_strides, ndim) &&                                \
+        is_contiguous_strides(shape, b_strides, ndim)) {                     \
+        musapy_##OP##_scalar_a_kernel<double><<<grid_size_1d(n), 256, 0,     \
+            stream>>>(a, b, c, n);                                           \
+    } else if (is_scalar_strides(b_strides, ndim) &&                         \
+        is_contiguous_strides(shape, a_strides, ndim)) {                     \
+        musapy_##OP##_scalar_b_kernel<double><<<grid_size_1d(n), 256, 0,     \
+            stream>>>(a, b, c, n);                                           \
+    } else if (is_contiguous_strides(shape, a_strides, ndim) &&              \
         is_contiguous_strides(shape, b_strides, ndim)) {                     \
         musapy_##OP##_flat_v2<double><<<grid_size_1d(n), 256, 0, stream>>>(  \
             a, b, c, n);                                                     \
