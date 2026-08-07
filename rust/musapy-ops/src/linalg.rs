@@ -12,9 +12,10 @@
 //!   - **pointer mode = HOST**（math_handle 句柄创建时一次性配置）：gemm 的
 //!     alpha/beta 用宿主栈标量；dot 的 result 写宿主临时变量后 musaMemcpy H2D
 //!     进输出 buffer。
-//!   - **solve 奇异检测含一次同步**：getrf 后 D2H 读回 LU 对角线判奇异
-//!     （musaMemcpy2D 单次拷贝；muSOLVER 3.1.0 不写 info 输出，见 gpu_solve
-//!     注释）——solve 独有的同步点（matmul/dot 无）。
+//!   - **solve 奇异检测含一次同步**：getrf 后设备端 extract_diag kernel 提取
+//!     LU 对角线为连续数组，单次连续 D2H 读回判奇异（P0，2026-08-08；原
+//!     musaMemcpy2D 跨步 D2H 26.5ms/8KB 且行为非确定，muSOLVER 3.1.0 不写
+//!     info 输出，见 gpu_solve 注释）——solve 独有的同步点（matmul/dot 无）。
 //!   - **输入连续性**：非连续输入（transpose 视图等）先经 `indexing::contiguous`
 //!     物化（不做 strided-gemm 优化，v0.4 评估）。
 //!   - **matmul 形状语义**（NumPy 对齐）：1D 侧补 1 → 2D gemm → 对应轴 squeeze
@@ -32,6 +33,8 @@ use musapy_core::{
 use std::ffi::c_int;
 use std::ptr::NonNull;
 use std::sync::Arc;
+
+use crate::kernels;
 
 // ============================================================
 // 公开 API
@@ -890,22 +893,52 @@ fn gpu_solve(
         // 故不能依赖 info 判奇异。改用 LAPACK 等价判据：info = 首个
         // U(k,k) == 0 的行号（LAPACK 正是 `IF A(K,K).EQ.ZERO → info=K`）。
         // U 的对角元素在 LU buffer（列主序 M=Aᵀ）偏移 k·(n+1) 处，跨步
-        // (n+1)·elem；用 musaMemcpy2D 单次读回（1 调用，n·elem 字节）。
+        // (n+1)·elem。P0（2026-08-08）：原 musaMemcpy2D 跨步 D2H 逐行
+        // ~26µs/行（8KB 对角实测 26.5ms，且该 API 小 pitch D2H 行为非确定
+        // 性，见 sdk-3.1.0-limitations.md）→ 改为设备端 extract_diag kernel
+        // 提取为连续数组 + 单次连续 D2H（0.18ms），host 扫描逻辑不变。
+        let diag_buf = alloc_buf_ref(n * elem, device, stream)?;
+        let diag_ptr = diag_buf.buffer().ptr().ok_or_else(|| {
+            MusapyError::Device(DeviceError::MathLibCallFailed(
+                "solve: null diag buffer pointer".into(),
+            ))
+        })?;
+        unsafe {
+            match dtype {
+                Dtype::Float32 => {
+                    kernels::musapy_extract_diag_f32_v1(
+                        lu_ptr.as_ptr() as *const f32,
+                        diag_ptr.as_ptr() as *mut f32,
+                        n,
+                        n + 1,
+                        stream.raw(),
+                    );
+                }
+                Dtype::Float64 => {
+                    kernels::musapy_extract_diag_f64_v1(
+                        lu_ptr.as_ptr() as *const f64,
+                        diag_ptr.as_ptr() as *mut f64,
+                        n,
+                        n + 1,
+                        stream.raw(),
+                    );
+                }
+                _ => unreachable!("dtype already validated as float32/float64"),
+            }
+        }
+        musa_ffi::check_last_kernel_launch("extract_diag")?;
         stream.synchronize()?;
         let mut diag_host = vec![0u8; n * elem];
         musa_ffi::check_musa(
             unsafe {
-                musa_ffi::musaMemcpy2D(
+                musa_ffi::musaMemcpy(
                     diag_host.as_mut_ptr() as *mut std::ffi::c_void,
-                    elem,
-                    lu_ptr.as_ptr() as *const std::ffi::c_void,
-                    (n + 1) * elem,
-                    elem,
-                    n,
+                    diag_ptr.as_ptr() as *const std::ffi::c_void,
+                    n * elem,
                     musa_ffi::musaMemcpyKind::DeviceToHost,
                 )
             },
-            "musaMemcpy2D(D2H solve LU diagonal)",
+            "musaMemcpy(D2H solve LU diagonal)",
         )?;
         let first_zero = match dtype {
             Dtype::Float32 => diag_host

@@ -283,6 +283,21 @@ __global__ void musapy_copy_transpose2d_tiled_kernel(
     }
 }
 
+// ── extract_diag（P0：solve 奇异检测 LU 对角提取）───────────────
+// 绕开 musaMemcpy2D 跨步 D2H（SDK 3.1.0 逐行传输 ~26µs/行，8KB 对角
+// 实测 26.5ms；且该 API 小 pitch D2H 行为非确定性，见 sdk-3.1.0-
+// limitations.md）。本 kernel 把列主序 LU 缓冲的对角 U(k,k)（偏移
+// k·ldu 元素）提取为连续数组，host 侧一次连续 D2H（0.18ms）读回。
+// 语义：U(k,k) == 0.0 精确零（LAPACK 判据，与旧 host 扫描一致）。
+
+template <typename T>
+__global__ void musapy_extract_diag_kernel(
+    const T* __restrict__ lu, T* __restrict__ diag, size_t n, size_t ldu
+) {
+    size_t k = blockIdx.x * blockDim.x + threadIdx.x;
+    if (k < n) diag[k] = lu[k * ldu];
+}
+
 // ── extern "C" 稳定 ABI ────────────────────────────────────────
 
 extern "C" {
@@ -391,5 +406,20 @@ COPY_TRANSPOSE2D_WRAPPER(float, f32)
 COPY_TRANSPOSE2D_WRAPPER(double, f64)
 COPY_TRANSPOSE2D_WRAPPER(int32_t, i32)
 COPY_TRANSPOSE2D_WRAPPER(int64_t, i64)
+
+// ── extract_diag（P0）──
+
+#define EXTRACT_DIAG_WRAPPER(T, SUFFIX)                                        \
+void musapy_extract_diag_##SUFFIX##_v1(                                         \
+    const T* __restrict__ lu, T* __restrict__ diag,                            \
+    size_t n, size_t ldu, musaStream_t stream                                  \
+) {                                                                            \
+    if (n == 0) return;                                                        \
+    musapy_extract_diag_kernel<T><<<grid_size_1d(n), 256, 0, stream>>>(        \
+        lu, diag, n, ldu);                                                     \
+}
+
+EXTRACT_DIAG_WRAPPER(float, f32)
+EXTRACT_DIAG_WRAPPER(double, f64)
 
 } // extern "C"

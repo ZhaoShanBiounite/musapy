@@ -246,6 +246,11 @@ unsafe extern "C" {
     pub fn musapy_copy_transpose2d_f64(src: *const f64, dst: *mut f64, rows: usize, cols: usize, stream: musaStream_t);
     pub fn musapy_copy_transpose2d_i32(src: *const i32, dst: *mut i32, rows: usize, cols: usize, stream: musaStream_t);
     pub fn musapy_copy_transpose2d_i64(src: *const i64, dst: *mut i64, rows: usize, cols: usize, stream: musaStream_t);
+
+    // extract_diag（P0）：列主序 LU 对角提取（diag[k] = lu[k*ldu]），
+    // 供 solve 奇异检测绕开 memcpy2D 跨步 D2H（见 sdk-3.1.0-limitations.md）
+    pub fn musapy_extract_diag_f32_v1(lu: *const f32, diag: *mut f32, n: usize, ldu: usize, stream: musaStream_t);
+    pub fn musapy_extract_diag_f64_v1(lu: *const f64, diag: *mut f64, n: usize, ldu: usize, stream: musaStream_t);
 }
 
 // ── Mock 模式：CPU stub ─────────────────────────────────────
@@ -1176,6 +1181,24 @@ mod mock {
     mock_copy_transpose2d!(musapy_copy_transpose2d_f64, f64);
     mock_copy_transpose2d!(musapy_copy_transpose2d_i32, i32);
     mock_copy_transpose2d!(musapy_copy_transpose2d_i64, i64);
+
+    // extract_diag mock（P0）：diag[k] = lu[k*ldu]
+    macro_rules! mock_extract_diag {
+        ($name:ident, $t:ty) => {
+            pub unsafe fn $name(
+                lu: *const $t, diag: *mut $t,
+                n: usize, ldu: usize, _stream: musaStream_t,
+            ) {
+                if lu.is_null() || diag.is_null() || n == 0 { return; }
+                for k in 0..n {
+                    *diag.add(k) = *lu.add(k * ldu);
+                }
+            }
+        };
+    }
+
+    mock_extract_diag!(musapy_extract_diag_f32_v1, f32);
+    mock_extract_diag!(musapy_extract_diag_f64_v1, f64);
 }
 
 // Mock 模式 re-export
