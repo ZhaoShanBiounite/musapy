@@ -25,6 +25,13 @@ use std::sync::Arc;
 // 1. Buffer（ADR L1-10, L3-9, L3-10）
 // ============================================================
 
+/// 大块 buffer 立即释放阈值（≥ 该字节数跳过 pool/deferred 队列）。
+/// 依据：buffer pool 每设备缓存上限 512MB（buffer_pool.rs），≥512MB 的
+/// buffer 本就走 deferred；256MB 起即视为大块，wait events 后直接
+/// musaFree，避免大块在无 sync 的 timed loop 内驱动侧 VA churn 累积
+/// （2026-08-08 bench_random OOM 根因，见 buffer.rs Drop 注释）。
+const LARGE_FREE_THRESHOLD: usize = 256 * 1024 * 1024;
+
 /// GPU/CPU 内存块（ADR L1-10）。
 ///
 /// **所有权语义**：
@@ -375,16 +382,42 @@ impl Drop for Buffer {
                     {
                         // Phase C-lite：先尝试归还 buffer pool 复用
                         crate::mem_stats::record_dealloc(self.size);
-                        let stream_id = stream.id();
-                        if !crate::buffer_pool::return_to_pool(
-                            ptr,
-                            self.size,
-                            self.device.clone(),
-                            stream_id,
-                            write_event,
-                        ) {
-                            // 池满：fallback 到 deferred-free 队列（ADR L3-11）
-                            crate::deferred_free::enqueue(ptr, self.device.clone(), self.size);
+                        if self.size >= LARGE_FREE_THRESHOLD {
+                            // 大块 buffer 立即 musaFree（跳过 pool 与 deferred 队列）：
+                            // pool 每设备上限 512MB，≥512MB 的 buffer 本就进不了池；
+                            // 且大块（400-800MB）走 deferred 会在 timed loop（无 sync）
+                            // 内于驱动侧虚拟占用/VA 碎片累积——2026-08-08 实测
+                            // bench_random 40+ 次 800MB churn 后 musaMalloc 在 free
+                            // 47.8GB 时仍报 error 2（驱动分配器 VA 碎片）。大块数量
+                            // 少，wait events 后立即 free 的开销可忽略。
+                            if let Device::Musa(id) = &self.device {
+                                if let Err(e) = musa_ffi::set_device(*id as i32) {
+                                    eprintln!("warn: set_device for large free failed: {}", e);
+                                } else {
+                                    unsafe {
+                                        if let Err(e) = musa_ffi::check_musa(
+                                            musa_ffi::musaFree(
+                                                ptr.as_ptr() as *mut std::ffi::c_void,
+                                            ),
+                                            "musaFree(large)",
+                                        ) {
+                                            eprintln!("warn: large buffer musaFree failed: {}", e);
+                                        }
+                                    }
+                                }
+                            }
+                        } else {
+                            let stream_id = stream.id();
+                            if !crate::buffer_pool::return_to_pool(
+                                ptr,
+                                self.size,
+                                self.device.clone(),
+                                stream_id,
+                                write_event,
+                            ) {
+                                // 池满：fallback 到 deferred-free 队列（ADR L3-11）
+                                crate::deferred_free::enqueue(ptr, self.device.clone(), self.size);
+                            }
                         }
                     }
                 } else {
