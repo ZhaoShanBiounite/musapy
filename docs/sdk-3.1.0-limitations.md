@@ -1,13 +1,14 @@
 # SDK 3.1.0 MUSA-X 已知限制与实测行为汇总
 
-> **日期**:2026-08-07（随 v0.3 Phase 3 实施更新）
+> **日期**:2026-08-08（随 v0.3 P0-P2 性能优化更新；§1.8-1.11 为 2026-08-07 benchmark 段级探针新增）
 > **SDK**:MUSA 3.1.0（`/usr/local/musa` → `/usr/local/musa-3.1.0`,mp_21/mp_22,与 MTT S4000 匹配）
 > **目的**:把散落在 ADR-003（003-D2/D3/D8）、v0.3 计划 §2/§16 风险表、
 > sdk-3.1.0-musax-coverage.md、linalg.rs 注释中的 SDK 限制/怪异行为集中到本文件,
 > 作为实现与部署的单一查询入口。
 > **相关文档**:[sdk-3.1.0-musax-coverage.md](./sdk-3.1.0-musax-coverage.md)（符号覆盖清单）、
 > [ADR-003-zh.md](./ADR-003-zh.md)（003-D2 句柄模型 / 003-D3 错误模型 / 003-D8 探针修正）、
-> [v0.3-alpha-plan-zh.md](./v0.3-alpha-plan-zh.md) §16 风险登记表。
+> [v0.3-alpha-plan-zh.md](./v0.3-alpha-plan-zh.md) §16 风险登记表、
+> [benchmark/analysis-2026-08-07.md](../benchmark/analysis-2026-08-07.md)（性能归因与实测数据）。
 
 ---
 
@@ -15,13 +16,17 @@
 
 | # | 缺陷 | 实测证据 | 影响 | musapy 处置 | 升级 SDK 后 |
 |---|---|---|---|---|---|
-| 1.1 | **`musolver?getrf` 从不写 info 输出** | 2026-08-07 真机 C 探针:非奇异与奇异矩阵 info 均保持预填值,status=0、ipiv 正常 | 无法用 LAPACK 标准 `info>0` 判奇异 | solve 走 **LU 对角 D2H 检查**(musaMemcpy2D 单次读回,U(k,k)==0 → `LinAlgError::Singular`,见 linalg.rs gpu_solve) | 可改回 info 判断(对角检查保留亦无害) |
+| 1.1 | **`musolver?getrf` 从不写 info 输出** | 2026-08-07 真机 C 探针:非奇异与奇异矩阵 info 均保持预填值,status=0、ipiv 正常 | 无法用 LAPACK 标准 `info>0` 判奇异 | solve 走 **LU 对角 D2H 检查**(P0,2026-08-08 起为 `musapy_extract_diag` kernel 提取对角 + 单次连续 D2H,U(k,k)==0 → `LinAlgError::Singular`,见 linalg.rs gpu_solve) | 可改回 info 判断(对角检查保留亦无害) |
 | 1.2 | **`musolver?gesvd` 的 V 输出缓冲即 Vᵀ**(非 V) | 头文件 "stored as rows (transposed)";探针 2:按 V' 列主序重建误差 1e-15,按 V 解释 4.1 | vh 视图 strides 必须按 Vᵀ 设计 | `vh` = strides `(1, ldv)` 视图(003-D8;初始假设「V 输出就是 V」为误读,已修正) | 语义不变,沿用即可 |
 | 1.3 | **`gesvd` SINGULAR 模式 U 输出损坏**(m>n 时) | 探针 3:6×4 下 UᵀU−I=4.5,status=0 无报错;OUTOFPLACE/INPLACE 均复现;同矩阵 ALL 模式误差 1e-15 | SINGULAR 模式不可用(尤其 tall 矩阵) | svd 一律 **ALL/ALL + 薄视图切片**(thin = 全尺寸缓冲前 k 列/行跨步视图,零额外拷贝,003-D8) | 验证修复后可评估改回 SINGULAR(省显存) |
 | 1.4 | **`gesvd` SINGULAR 模式 V 按 `min(m,n)` 紧凑写入** | 探针 2:wide 3×5 传 ldv=n 输出错乱;ldv=k 时重建 1e-15 | 传大 ldv 会写出错乱 | 随 1.3 一并规避(不再使用 SINGULAR) | 同 1.3 |
 | 1.5 | **`gesvd` info 语义弱**:正常返回 info=0(与 getrf 不同),但收敛失败时 info 可靠性存疑 | 探针:gesvd info 正常写 0 | 收敛失败不可直接检测 | **S 合理性校验兜底**(S 全部 ≥0 且有限,否则抛 `DeviceError`);局限:S 层面可观测 | 可加 info>0 → 收敛错误映射 |
 | 1.6 | **randn f64 生成吞吐 ~3 GB/s**(比 f32 慢约 50×) | bench_random.py 实测:10M 元素 randn f64 29.7ms vs f32 0.19ms;100M 260ms vs 2.7ms | f64 Normal 生成是性能瓶颈(Box-Muller 类实现) | 文档注明;f64 大批量 randn 需评估(如混用 f32 + 精度折衷);Uniform f64 无此问题(142 GB/s) | 升级 SDK 后重测 |
 | 1.7 | **共享 generator 跨流并发破坏 seed 复现性**(f64 Normal 可复现性) | 真机探针 2026-08-07:每 op 新建流时 f64 Normal 同 seed 两次不等;同流异步序列完全可复现 | 与 musapy 的「每 op 新建流」惯例冲突 | random 算子走 per-device 缓存单一流(ADR-003 003-D9);多流并发调 random 由调用方保证 | 语义不随 SDK 变化 |
+| 1.8 | **`musaMemcpy2D` 小 pitch D2H 非确定性**(同参数不同上下文随机出现) | 2026-08-07 C 探针:dpitch=8/width=8/D2H 同一调用实测随机出现 error 1 / 进程段错误 / 2.2s stall / 26ms / 正常;连续 8KB `musaMemcpy` 稳定 0.18ms(145× 差距) | 跨步小行 D2H 不可依赖;8KB 对角读回曾 26.5ms(逐行 ~26µs 驱动开销) | solve 奇异检测 P0(2026-08-08)改为设备端 `extract_diag` kernel + 连续 D2H,已绕开;新增跨步 D2H 场景须用 kernel 提取 | 验证修复后可评估直接跨步读回 |
+| 1.9 | **`mublas?gemm` f64 封顶 ~160 GFLOPS**(f32 的 1/86) | 2026-08-08 探针:dgemm 512/1024/2048 = 97/156/159 GFLOPS;f32/f64 延迟比随规模恶化 14×→48×→88×(mp_22 无原生 FP64,软件仿真 + DGEMM kernel 调优不足) | 所有 f64 分解类算子(lu/qr/svd/solve 的 getrf/getrs)性能预期上限 ≈160 GFLOPS | 文档注明性能预期;f64 大批量计算需评估精度折衷走 f32 | 升级 SDK 后重测 |
+| 1.10 | **`gesvd` NONE/NONE 仅省 ~25% 耗时**(compute_uv=False 收益有限) | 2026-08-08 探针:1024² f64 ALL 2695ms vs NONE 2016ms(0.75×);256² 同样 0.76× | svd(compute_uv=False)逃生通道收益有限——NONE 模式仍做大部分迭代工作 | svd 已支持 compute_uv=False;文档注明预期收益;eigh 等其他分解不依赖此路径 | 升级 SDK 后重测 |
+| 1.11 | **`geqrf`/`orgqr` 实现低效**(f64 亦非仿真问题) | 2026-08-08 探针:geqrf 1024² f64 259ms vs getrf 17ms(同量级 O(n³) 工作量慢 15×);f32 qr(1024) 365ms 仅比 f64 快 1.2× | qr 算子延迟天花板 ≈ geqrf+orgqr 组合(~438ms@1024²) | qr 走 geqrf+orgqr(无替代);文档注明;大批量 qr 需评估 | 升级 SDK 后重测 |
 
 ---
 
@@ -56,10 +61,10 @@
 
 | musapy 算子 | 相关限制 | 当前处置（代码位置） |
 |---|---|---|
-| `solve` | 1.1(getrf 不写 info) | LU 对角 D2H 奇异检测(linalg.rs `gpu_solve`) |
+| `solve` | 1.1/1.8(getrf 不写 info;memcpy2D 不可靠) | extract_diag kernel + 连续 D2H 奇异检测(linalg.rs `gpu_solve`,P0) |
 | `lu` | 1.1 | 不做奇异检测(与 torch 一致:返回 LU/piv,奇异由用户判);共享 `gpu_getrf` |
-| `qr` | 2.2(复数 orgqr) | 实数 S/D 直接可用;复数等 Phase 5 走 cungqr |
-| `svd` | 1.2/1.3/1.4/1.5 | ALL 模式 + 薄视图切片 + S 合理性校验(linalg.rs `svd`) |
+| `qr` | 1.11(geqrf/orgqr 低效)、2.2(复数 orgqr) | 实数 S/D 直接可用;性能预期见 1.11;复数等 Phase 5 走 cungqr |
+| `svd` | 1.2/1.3/1.4/1.5/1.10 | ALL 模式 + 薄视图切片 + S 合理性校验(linalg.rs `svd`);compute_uv=False 仅省 ~25% |
 | `eigh`(v0.4) | 2.3(syevd 仅 S/D) | 推迟;复数另行评估 |
 | random 套件(Phase 4) | 2.8 | 无实质影响 |
 | fft 套件(Phase 5) | 3.1(libmtfft-device) | 部署环境预检 |
@@ -76,7 +81,9 @@
   复现思路见 ADR-003 003-D8 的表项(现象 + 判据)。升级 SDK 后建议重跑:
   - getrf info 是否开始写入(1.1 → 可改回 info 判奇异);
   - SINGULAR 模式 U 是否修复(1.3 → 可评估改回 SINGULAR 省显存);
-  - `musaMallocAsync`/`musaFreeAsync` 是否导出(2.4 → 可切 stream-ordered 默认路径)。
+  - `musaMallocAsync`/`musaFreeAsync` 是否导出(2.4 → 可切 stream-ordered 默认路径);
+  - `musaMemcpy2D` 小 pitch D2H 是否稳定(1.8 → 可评估去掉 extract_diag kernel 中转);
+  - dgemm f64 / gesvd NONE / geqrf+orgqr 性能是否改善(1.9/1.10/1.11 → 更新性能预期文档)。
 - **升级目标**:MUSA SDK ≥5.1.0(stream-ordered 完整)或至少修复 SINGULAR 的 4.x 版本。
 
 ---
