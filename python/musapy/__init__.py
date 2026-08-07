@@ -104,6 +104,9 @@ from ._core import (
     LinAlgError,
 )
 
+# 命名空间子模块（ADR-003 003-D7）：ms.random（Phase 4）
+from . import random
+
 __all__ = [
     # version + startup
     "__version__",

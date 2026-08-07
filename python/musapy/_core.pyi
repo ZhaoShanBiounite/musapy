@@ -256,6 +256,47 @@ def svd(
     compute_uv: builtins.bool = True,
 ) -> Array | tuple[Array | None, Array, Array | None]: ...
 
+# Random (v0.3 Phase 4; 由 python/musapy/random.py 包装为 ms.random.* 命名空间)
+def rand(
+    shape: int | Sequence[int],
+    *,
+    dtype: Dtype | None = None,
+    device: str | Device | None = None,
+    seed: int | None = None,
+) -> Array: ...
+def randn(
+    shape: int | Sequence[int],
+    *,
+    dtype: Dtype | None = None,
+    device: str | Device | None = None,
+    seed: int | None = None,
+) -> Array: ...
+def uniform(
+    low: float = 0.0,
+    high: float = 1.0,
+    shape: int | Sequence[int] | None = None,
+    *,
+    dtype: Dtype | None = None,
+    device: str | Device | None = None,
+    seed: int | None = None,
+) -> Array: ...
+def normal(
+    loc: float = 0.0,
+    scale: float = 1.0,
+    shape: int | Sequence[int] | None = None,
+    *,
+    dtype: Dtype | None = None,
+    device: str | Device | None = None,
+    seed: int | None = None,
+) -> Array: ...
+def bernoulli(
+    p: float = 0.5,
+    shape: int | Sequence[int] | None = None,
+    *,
+    device: str | Device | None = None,
+    seed: int | None = None,
+) -> Array: ...
+
 # Creation (Phase 5)
 def zeros(shape: int | Sequence[int], *, dtype: Dtype | None = None, device: str | Device | None = None) -> Array: ...
 def ones(shape: int | Sequence[int], *, dtype: Dtype | None = None, device: str | Device | None = None) -> Array: ...

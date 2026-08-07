@@ -274,7 +274,7 @@ py_argreduce_op!(cumsum, "ms.cumsum(a, axis=None, out=None) — 沿轴累积求�
 /// 从 Python 调用栈提取调用者帧信息（debug 模式用，ADR L3-26）。
 ///
 /// 使用 `sys._getframe(0)`：C 扩展内调用时，frame(0) = 调用本扩展的 Python 代码。
-fn extract_caller_frame(py: Python<'_>) -> Option<PythonFrame> {
+pub(crate) fn extract_caller_frame(py: Python<'_>) -> Option<PythonFrame> {
     let sys = py.import("sys").ok()?;
     let frame = sys.call_method1("_getframe", (0,)).ok()?;
     let code = frame.getattr("f_code").ok()?;
@@ -483,7 +483,7 @@ fn copy_to_buffer(data_ref: &BufferRef, bytes: &[u8], device: &Device) -> PyResu
 // ============================================================
 
 /// 从 Python 参数解析 Device（复用 lib.rs 的逻辑）。
-fn parse_device_opt(py: Python<'_>, device: &Option<PyObject>) -> PyResult<Option<Device>> {
+pub(crate) fn parse_device_opt(py: Python<'_>, device: &Option<PyObject>) -> PyResult<Option<Device>> {
     match device {
         None => Ok(None),
         Some(obj) => {
@@ -503,7 +503,7 @@ fn parse_device_opt(py: Python<'_>, device: &Option<PyObject>) -> PyResult<Optio
 }
 
 /// 从 Python 参数解析 shape（接受 int 或 tuple/list of ints）。
-fn parse_shape(shape: &Bound<'_, PyAny>) -> PyResult<Vec<usize>> {
+pub(crate) fn parse_shape(shape: &Bound<'_, PyAny>) -> PyResult<Vec<usize>> {
     if let Ok(n) = shape.extract::<usize>() {
         Ok(vec![n])
     } else if let Ok(v) = shape.extract::<Vec<usize>>() {

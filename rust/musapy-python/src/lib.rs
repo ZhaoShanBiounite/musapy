@@ -9,6 +9,7 @@ pub mod dtype;
 pub mod error;
 pub mod math_handles;
 pub mod ops;
+pub mod random;
 pub mod stream;
 
 use musapy_core::{Device, debug, mem_stats, resolution};
@@ -337,6 +338,12 @@ fn _core(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(ops::lu, m)?)?;
     m.add_function(wrap_pyfunction!(ops::qr, m)?)?;
     m.add_function(wrap_pyfunction!(ops::svd, m)?)?;
+    // Phase 4 (v0.3): random 生成 ops（_core 平铺，random.py 包装为 ms.random.*）
+    m.add_function(wrap_pyfunction!(random::rand, m)?)?;
+    m.add_function(wrap_pyfunction!(random::randn, m)?)?;
+    m.add_function(wrap_pyfunction!(random::uniform, m)?)?;
+    m.add_function(wrap_pyfunction!(random::normal, m)?)?;
+    m.add_function(wrap_pyfunction!(random::bernoulli, m)?)?;
     // Phase 5: creation ops
     m.add_function(wrap_pyfunction!(ops::zeros, m)?)?;
     m.add_function(wrap_pyfunction!(ops::ones, m)?)?;

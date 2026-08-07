@@ -474,7 +474,7 @@ pub fn solve(a: &Array, b: &Array) -> Result<Array> {
 ///
 /// CPU 设备上调用 matmul/dot/solve 一律拒绝——与 `math_handle::musa_id`
 /// 对 CPU 的既有报错风格一致（"MUSA-X math libraries require a musa device"）。
-fn require_musa(op_name: &str, device: &Device) -> Result<()> {
+pub(crate) fn require_musa(op_name: &str, device: &Device) -> Result<()> {
     match device {
         Device::Musa(_) => Ok(()),
         Device::Cpu => Err(DeviceError::Mismatch(format!(
@@ -486,7 +486,7 @@ fn require_musa(op_name: &str, device: &Device) -> Result<()> {
 }
 
 /// f32/f64 计算白名单（complex 声明就位，Phase 5 放开）。
-fn check_float_whitelist(op_name: &str, dtype: Dtype) -> Result<()> {
+pub(crate) fn check_float_whitelist(op_name: &str, dtype: Dtype) -> Result<()> {
     match dtype {
         Dtype::Float32 | Dtype::Float64 => Ok(()),
         _ => Err(DtypeError::Unsupported(format!(

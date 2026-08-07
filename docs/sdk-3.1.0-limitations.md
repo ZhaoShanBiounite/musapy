@@ -20,6 +20,8 @@
 | 1.3 | **`gesvd` SINGULAR 模式 U 输出损坏**(m>n 时) | 探针 3:6×4 下 UᵀU−I=4.5,status=0 无报错;OUTOFPLACE/INPLACE 均复现;同矩阵 ALL 模式误差 1e-15 | SINGULAR 模式不可用(尤其 tall 矩阵) | svd 一律 **ALL/ALL + 薄视图切片**(thin = 全尺寸缓冲前 k 列/行跨步视图,零额外拷贝,003-D8) | 验证修复后可评估改回 SINGULAR(省显存) |
 | 1.4 | **`gesvd` SINGULAR 模式 V 按 `min(m,n)` 紧凑写入** | 探针 2:wide 3×5 传 ldv=n 输出错乱;ldv=k 时重建 1e-15 | 传大 ldv 会写出错乱 | 随 1.3 一并规避(不再使用 SINGULAR) | 同 1.3 |
 | 1.5 | **`gesvd` info 语义弱**:正常返回 info=0(与 getrf 不同),但收敛失败时 info 可靠性存疑 | 探针:gesvd info 正常写 0 | 收敛失败不可直接检测 | **S 合理性校验兜底**(S 全部 ≥0 且有限,否则抛 `DeviceError`);局限:S 层面可观测 | 可加 info>0 → 收敛错误映射 |
+| 1.6 | **randn f64 生成吞吐 ~3 GB/s**(比 f32 慢约 50×) | bench_random.py 实测:10M 元素 randn f64 29.7ms vs f32 0.19ms;100M 260ms vs 2.7ms | f64 Normal 生成是性能瓶颈(Box-Muller 类实现) | 文档注明;f64 大批量 randn 需评估(如混用 f32 + 精度折衷);Uniform f64 无此问题(142 GB/s) | 升级 SDK 后重测 |
+| 1.7 | **共享 generator 跨流并发破坏 seed 复现性**(f64 Normal 可复现性) | 真机探针 2026-08-07:每 op 新建流时 f64 Normal 同 seed 两次不等;同流异步序列完全可复现 | 与 musapy 的「每 op 新建流」惯例冲突 | random 算子走 per-device 缓存单一流(ADR-003 003-D9);多流并发调 random 由调用方保证 | 语义不随 SDK 变化 |
 
 ---
 

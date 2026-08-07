@@ -645,6 +645,41 @@ mod real {
         ) -> murandStatus_t;
         // 注意:无句柄参数(murand.h:527)
         pub fn murandGetVersion(version: *mut c_int) -> murandStatus_t;
+        // Phase 4:计算/配置（murand.h;2026-08-07 头文件核对）
+        // 注意:Generate* 的 n 为元素个数(size_t);Normal 原生带 mean/stddev
+        // 参数——normal(loc,scale) 可一步生成,uniform(low,high) 仍需仿射。
+        pub fn murandSetPseudoRandomGeneratorSeed(
+            generator: murandGenerator_t,
+            seed: u64,
+        ) -> murandStatus_t;
+        pub fn murandSetGeneratorOffset(
+            generator: murandGenerator_t,
+            offset: u64,
+        ) -> murandStatus_t;
+        pub fn murandGenerateUniform(
+            generator: murandGenerator_t,
+            output_data: *mut f32,
+            n: usize,
+        ) -> murandStatus_t;
+        pub fn murandGenerateUniformDouble(
+            generator: murandGenerator_t,
+            output_data: *mut f64,
+            n: usize,
+        ) -> murandStatus_t;
+        pub fn murandGenerateNormal(
+            generator: murandGenerator_t,
+            output_data: *mut f32,
+            n: usize,
+            mean: f32,
+            stddev: f32,
+        ) -> murandStatus_t;
+        pub fn murandGenerateNormalDouble(
+            generator: murandGenerator_t,
+            output_data: *mut f64,
+            n: usize,
+            mean: f64,
+            stddev: f64,
+        ) -> murandStatus_t;
 
         // ── muFFT(mufft.h;生命周期 + plan 创建)──
         pub fn mufftCreate(plan: *mut mufftHandle) -> mufftResult;
@@ -1789,6 +1824,142 @@ mod mock {
         MURAND_STATUS_SUCCESS
     }
 
+    // Phase 4:计算/配置 stub——状态化确定性伪随机(seed 重置/计数器推进),
+    // 统计保真(uniform = splitmix64 归一化;normal = mean + stddev·(Σ12u − 6)),
+    // 使 mock 模式下 pytest 的形状/复现性/分布统计用例均可运行(无 GPU CI)。
+    static MOCK_RNG_STATE: std::sync::Mutex<MockRngState> =
+        std::sync::Mutex::new(MockRngState { seed: 0, counter: 0 });
+
+    struct MockRngState {
+        seed: u64,
+        counter: u64,
+    }
+
+    /// splitmix64 风格确定性混合 → [0,1)（与 seed/counter/序号 均相关）。
+    fn mock_rng_uniform(state: &MockRngState, i: usize) -> f64 {
+        let mut x = state
+            .seed
+            .wrapping_add(state.counter.wrapping_mul(0x9E37_79B9_7F4A_7C15))
+            .wrapping_add((i as u64).wrapping_mul(0xBF58_476D_1CE4_E5B9));
+        x = (x ^ (x >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+        x = (x ^ (x >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
+        x ^= x >> 31;
+        (x >> 11) as f64 / ((1u64 << 53) as f64) // [0, 1)
+    }
+
+    /// Σ12 均匀 − 6 近似 N(0,1)（中心极限定理,均值 0 方差 1）。
+    fn mock_rng_normal(state: &MockRngState, i: usize) -> f64 {
+        let mut s = 0.0;
+        for k in 0..12 {
+            s += mock_rng_uniform(state, i * 12 + k);
+        }
+        s - 6.0
+    }
+
+    pub unsafe fn murandSetPseudoRandomGeneratorSeed(
+        generator: murandGenerator_t,
+        seed: u64,
+    ) -> murandStatus_t {
+        if generator.is_null() {
+            return 1;
+        }
+        let mut st = MOCK_RNG_STATE.lock().unwrap();
+        st.seed = seed;
+        st.counter = 0;
+        MURAND_STATUS_SUCCESS
+    }
+
+    pub unsafe fn murandSetGeneratorOffset(
+        generator: murandGenerator_t,
+        offset: u64,
+    ) -> murandStatus_t {
+        if generator.is_null() {
+            return 1;
+        }
+        MOCK_RNG_STATE.lock().unwrap().counter = offset;
+        MURAND_STATUS_SUCCESS
+    }
+
+    pub unsafe fn murandGenerateUniform(
+        generator: murandGenerator_t,
+        output_data: *mut f32,
+        n: usize,
+    ) -> murandStatus_t {
+        if generator.is_null() || output_data.is_null() {
+            return 1;
+        }
+        let mut st = MOCK_RNG_STATE.lock().unwrap();
+        let base = st.counter;
+        unsafe {
+            for i in 0..n {
+                *output_data.add(i) = mock_rng_uniform(&st, i) as f32;
+            }
+        }
+        st.counter = base.wrapping_add(1);
+        MURAND_STATUS_SUCCESS
+    }
+
+    pub unsafe fn murandGenerateUniformDouble(
+        generator: murandGenerator_t,
+        output_data: *mut f64,
+        n: usize,
+    ) -> murandStatus_t {
+        if generator.is_null() || output_data.is_null() {
+            return 1;
+        }
+        let mut st = MOCK_RNG_STATE.lock().unwrap();
+        let base = st.counter;
+        unsafe {
+            for i in 0..n {
+                *output_data.add(i) = mock_rng_uniform(&st, i);
+            }
+        }
+        st.counter = base.wrapping_add(1);
+        MURAND_STATUS_SUCCESS
+    }
+
+    pub unsafe fn murandGenerateNormal(
+        generator: murandGenerator_t,
+        output_data: *mut f32,
+        n: usize,
+        mean: f32,
+        stddev: f32,
+    ) -> murandStatus_t {
+        if generator.is_null() || output_data.is_null() {
+            return 1;
+        }
+        let mut st = MOCK_RNG_STATE.lock().unwrap();
+        let base = st.counter;
+        unsafe {
+            for i in 0..n {
+                *output_data.add(i) = (mean as f64 + stddev as f64 * mock_rng_normal(&st, i)) as f32;
+            }
+        }
+        st.counter = base.wrapping_add(1);
+        MURAND_STATUS_SUCCESS
+    }
+
+    pub unsafe fn murandGenerateNormalDouble(
+        generator: murandGenerator_t,
+        output_data: *mut f64,
+        n: usize,
+        mean: f64,
+        stddev: f64,
+    ) -> murandStatus_t {
+        if generator.is_null() || output_data.is_null() {
+            return 1;
+        }
+        let mut st = MOCK_RNG_STATE.lock().unwrap();
+        let base = st.counter;
+        unsafe {
+            for i in 0..n {
+                *output_data.add(i) = mean + stddev * mock_rng_normal(&st, i);
+            }
+        }
+        st.counter = base.wrapping_add(1);
+        MURAND_STATUS_SUCCESS
+    }
+
     // ── muFFT ──
 
     pub unsafe fn mufftCreate(plan: *mut mufftHandle) -> mufftResult {
@@ -2212,6 +2383,90 @@ mod tests {
         assert_eq!(unsafe { murandGetVersion(&mut v) }, MURAND_STATUS_SUCCESS); // 无句柄参数
         assert_eq!(
             unsafe { murandSetStream(g, std::ptr::null_mut()) },
+            MURAND_STATUS_SUCCESS
+        );
+        assert_eq!(unsafe { murandDestroyGenerator(g) }, MURAND_STATUS_SUCCESS);
+    }
+
+    #[test]
+    fn test_murand_generate_and_seed() {
+        // Phase 4 stub：seed 重置 → 同 seed 两次生成逐元素相等；
+        // uniform 值域 [0,1)；normal 的 mean/stddev 传递生效。
+        let mut g: murandGenerator_t = std::ptr::null_mut();
+        assert_eq!(
+            unsafe { murandCreateGenerator(&mut g, MURAND_RNG_PSEUDO_DEFAULT) },
+            MURAND_STATUS_SUCCESS
+        );
+        assert_eq!(
+            unsafe { murandSetPseudoRandomGeneratorSeed(g, 42) },
+            MURAND_STATUS_SUCCESS
+        );
+        assert_eq!(unsafe { murandSetGeneratorOffset(g, 7) }, MURAND_STATUS_SUCCESS);
+
+        // seed 重置 + 计数器推进：同 seed 紧邻两次调用逐元素相等
+        let mut d1 = [0.0f32; 4];
+        let mut d2 = [0.0f32; 4];
+        assert_eq!(
+            unsafe { murandSetPseudoRandomGeneratorSeed(g, 42) },
+            MURAND_STATUS_SUCCESS
+        );
+        assert_eq!(
+            unsafe { murandGenerateUniform(g, d1.as_mut_ptr(), d1.len()) },
+            MURAND_STATUS_SUCCESS
+        );
+        assert_eq!(
+            unsafe { murandSetPseudoRandomGeneratorSeed(g, 42) },
+            MURAND_STATUS_SUCCESS
+        );
+        assert_eq!(
+            unsafe { murandGenerateUniform(g, d2.as_mut_ptr(), d2.len()) },
+            MURAND_STATUS_SUCCESS
+        );
+        assert_eq!(d1, d2, "same seed must reproduce the same sequence");
+        assert!(d1.iter().all(|&v| (0.0..1.0).contains(&v)));
+
+        // 不同 seed → 不同序列
+        let mut d3 = [0.0f32; 4];
+        assert_eq!(
+            unsafe { murandSetPseudoRandomGeneratorSeed(g, 43) },
+            MURAND_STATUS_SUCCESS
+        );
+        assert_eq!(
+            unsafe { murandGenerateUniform(g, d3.as_mut_ptr(), d3.len()) },
+            MURAND_STATUS_SUCCESS
+        );
+        assert_ne!(d1, d3, "different seeds must differ");
+
+        let mut d64 = [0.0f64; 3];
+        assert_eq!(
+            unsafe { murandGenerateUniformDouble(g, d64.as_mut_ptr(), d64.len()) },
+            MURAND_STATUS_SUCCESS
+        );
+        assert!(d64.iter().all(|&v| (0.0..1.0).contains(&v)));
+
+        // normal：mean/stddev 传递（mean=3,stddev=2 的样本应围绕 3 分布）
+        let mut norm = [0.0f32; 64];
+        assert_eq!(
+            unsafe { murandGenerateNormal(g, norm.as_mut_ptr(), norm.len(), 3.0, 2.0) },
+            MURAND_STATUS_SUCCESS
+        );
+        let mean: f32 = norm.iter().sum::<f32>() / norm.len() as f32;
+        assert!((mean - 3.0).abs() < 0.5, "normal mean drift: {mean}");
+        let mut norm64 = [0.0f64; 64];
+        assert_eq!(
+            unsafe { murandGenerateNormalDouble(g, norm64.as_mut_ptr(), norm64.len(), -1.0, 0.5) },
+            MURAND_STATUS_SUCCESS
+        );
+        let mean64: f64 = norm64.iter().sum::<f64>() / norm64.len() as f64;
+        assert!((mean64 - (-1.0)).abs() < 0.2, "normal mean drift: {mean64}");
+
+        // 空指针守卫
+        assert_ne!(
+            unsafe { murandGenerateUniform(g, std::ptr::null_mut(), 4) },
+            MURAND_STATUS_SUCCESS
+        );
+        assert_ne!(
+            unsafe { murandSetPseudoRandomGeneratorSeed(std::ptr::null_mut(), 1) },
             MURAND_STATUS_SUCCESS
         );
         assert_eq!(unsafe { murandDestroyGenerator(g) }, MURAND_STATUS_SUCCESS);

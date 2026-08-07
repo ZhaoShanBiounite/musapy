@@ -16,6 +16,7 @@ pub mod elementwise;
 pub mod indexing;
 pub mod kernels;
 pub mod linalg;
+pub mod random;
 pub mod op_builder;
 pub mod reduction;
 
@@ -28,3 +29,4 @@ pub use indexing::{
     contiguous, flip, gather, index_select, permute, scatter, slice, transpose, SliceSpec,
 };
 pub use linalg::{dot, lu, matmul, qr, solve, svd};
+pub use random::{bernoulli, normal, rand, randn, uniform};

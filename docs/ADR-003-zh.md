@@ -274,12 +274,43 @@ OpenBLAS + 纯 Rust 朴素降级；fft/random/sparse 纯 Rust 实现）。废弃
 
 ---
 
+## 003-D9：random 套件语义（seed / 生成串行化 / shape=None）
+
+**扩展**：003-D7（`ms.random` 命名空间）、003-D4（GPU-only）
+
+**决策**：
+
+1. **seed 语义**：`seed=` 给定 → 每次调用前 `murandSetPseudoRandomGeneratorSeed`
+   重置生成器，**同 seed 紧邻两次调用逐元素可复现**（验收标准）；无 seed →
+   不重置（共享 generator 自然推进，连续调用产生不同序列）。`offset` 仅声明
+   FFI（P4.1 交付物），v0.3 不暴露公开参数。
+2. **生成串行化（真机探针 2026-08-07 实锤）**：generator 为按 device 缓存的
+   共享资源。若每个 op 新建 MUSA 流（creation 骨架惯例），生成 kernel 跨流
+   并发会与 seed 重置交错，**破坏 f64 Normal 的 seed 复现性**（f32/f64
+   Uniform 因生成快未触发）；同流异步序列完全可复现（无需中间同步）。
+   → random 算子无显式 stream context 时走 **per-device 缓存单一流**
+   （random.rs `generation_stream`）；有用户 stream context 时仍遵循
+   「每 op 显式传 stream」惯例，多流并发调用 random 的复现性由调用方保证。
+3. **shape=None → 0-dim 标量数组**（NumPy 对齐；用户确认，plan-phase4）。
+4. **实现路径**：`normal(loc, scale)` 用 `murandGenerateNormal` **原生
+   mean/stddev 参数一步生成**（头文件核对发现，非仿射组合）；`uniform(low,
+   high)` = rand·(high−low)+low 复用既有 elementwise（mul/add + 0-dim full
+   标量广播，**零新增 kernel**）；`bernoulli(p)` = rand < p → **bool**
+   （复用 comparison::lt）。GPU-only（003-D4，CPU 调用抛 DeviceError）。
+
+**影响**：random.rs 的流管理；mock stub 状态化（seed 重置 + 计数器推进 +
+Σ12u−6 近似正态），使无 GPU CI 可跑形状/复现性/分布统计用例；bench 记录
+SDK 特征：randn f64 吞吐 ~3 GB/s（比 f32 慢 ~50×，见 sdk-3.1.0-limitations）。
+
+---
+
 ## 变更记录
 
 | 日期 | 变更 | 影响的决策 ID |
 |---|---|---|
 | 2026-08-06 | 初始草案，7 个 v0.3 补充决策（基于 SDK 3.1.0 头文件实测核对） | 003-D1 至 003-D7 |
 | 2026-08-07 | Phase 3 实施：lu/qr/svd 落地，探针修正 gesvd V 输出 = Vᵀ、SINGULAR 模式 U 损坏 → ALL 模式切片（003-D8） | 003-D7、003-D8 |
+| 2026-08-07 | Phase 4 实施：random 套件，seed/生成串行化/shape=None 语义 + Normal 原生 mean/stddev（003-D9） | 003-D7、003-D9 |
 
 ---
 
