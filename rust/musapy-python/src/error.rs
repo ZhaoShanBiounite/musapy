@@ -67,6 +67,9 @@ pub fn to_pyerr(e: musapy_core::MusapyError) -> PyErr {
         musapy_core::MusapyError::Kernel(_) => KernelError::new_err(msg),
         musapy_core::MusapyError::Interop(_) => InteropError::new_err(msg),
         musapy_core::MusapyError::LinAlg(_) => LinAlgError::new_err(msg),
+        // 高级索引越界（Phase 8，ADR-003 003-D3 扩展）：抛 Python 内置
+        // IndexError（NumPy 兼容，L3-6 单继承限制下不继承 MusapyError）
+        musapy_core::MusapyError::Index(_) => pyo3::exceptions::PyIndexError::new_err(msg),
     }
 }
 

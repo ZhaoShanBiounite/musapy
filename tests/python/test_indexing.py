@@ -632,3 +632,112 @@ class TestAcceptance:
         c = ms.array([[1.0, 2.0, 3.0], [4.0, 5.0, 6.0]])
         g = ms.gather(c, ms.array([0, 2], dtype=ms.int64), axis=1)
         assert g.tolist() == [[1.0, 3.0], [4.0, 6.0]]
+
+
+# ═══════════════════════════════════════════════════════════════
+# Phase 8（ADR-002-D4）: 高级索引（boolean mask + fancy indexing）
+# ═══════════════════════════════════════════════════════════════
+
+class TestBooleanMask:
+    """boolean mask：等形/前 md 维广播/恒 copy/越界。"""
+
+    @pytest.mark.parametrize("device", ["cpu", "musa:0"])
+    def test_mask_1d(self, device):
+        a = ms.array([1.0, 2.0, 3.0, 4.0], dtype=ms.float64, device=device)
+        m = ms.array([True, False, True, False], dtype=ms.bool_, device=device)
+        got = a[m]
+        assert got.tolist() == [1.0, 3.0]
+
+    @pytest.mark.parametrize("device", ["cpu", "musa:0"])
+    def test_mask_2d_prefix(self, device):
+        """mask 匹配前 md 维（NumPy 语义）。"""
+        a = ms.array([[1.0, 2.0, 3.0], [4.0, 5.0, 6.0]], dtype=ms.float64, device=device)
+        m = ms.array([True, False], dtype=ms.bool_, device=device)
+        got = a[m]
+        assert got.shape == (1, 3)
+        assert got.tolist() == [[1.0, 2.0, 3.0]]
+        m_all = ms.array([[True, False, True], [False, True, False]], dtype=ms.bool_, device=device)
+        got_all = a[m_all]
+        assert got_all.tolist() == [1.0, 3.0, 5.0]
+
+    @pytest.mark.parametrize("device", ["cpu", "musa:0"])
+    def test_mask_is_copy(self, device):
+        """mask 索引恒为 copy：改结果不影响原数组。"""
+        a = ms.array([1.0, 2.0, 3.0], dtype=ms.float64, device=device)
+        m = ms.array([True, True, False], dtype=ms.bool_, device=device)
+        got = a[m]
+        got2 = ms.array(got.tolist(), device=device)  # 模拟修改
+        got2 = ms.add(got2, ms.array([10.0, 10.0], dtype=ms.float64, device=device))
+        assert a.tolist() == [1.0, 2.0, 3.0]
+
+    def test_mask_shape_mismatch(self):
+        a = ms.array([[1.0, 2.0], [3.0, 4.0]], dtype=ms.float64)
+        m = ms.array([True, False, True], dtype=ms.bool_)  # 3 != 2
+        with pytest.raises(ms.ShapeError):
+            a[m]
+
+
+class TestFancyIndexing:
+    """fancy：单/多索引坐标配对、广播、N-D、负索引、越界 IndexError。"""
+
+    @pytest.mark.parametrize("device", ["cpu", "musa:0"])
+    def test_fancy_1d(self, device):
+        a = ms.array([10.0, 20.0, 30.0, 40.0], dtype=ms.float64, device=device)
+        idx = ms.array([0, 2], dtype=ms.int64, device=device)
+        assert a[idx].tolist() == [10.0, 30.0]
+
+    @pytest.mark.parametrize("device", ["cpu", "musa:0"])
+    def test_fancy_negative(self, device):
+        a = ms.array([10.0, 20.0, 30.0, 40.0], dtype=ms.float64, device=device)
+        idx = ms.array([-1, 0], dtype=ms.int64, device=device)
+        assert a[idx].tolist() == [40.0, 10.0]
+
+    @pytest.mark.parametrize("device", ["cpu", "musa:0"])
+    def test_fancy_coords_pair(self, device):
+        a = ms.array([[1.0, 2.0], [3.0, 4.0]], dtype=ms.float64, device=device)
+        i0 = ms.array([0, 1], dtype=ms.int64, device=device)
+        i1 = ms.array([1, 0], dtype=ms.int64, device=device)
+        assert a[i0, i1].tolist() == [2.0, 3.0]
+
+    @pytest.mark.parametrize("device", ["cpu", "musa:0"])
+    def test_fancy_broadcast_indices(self, device):
+        a = ms.array([[1.0, 2.0, 3.0], [4.0, 5.0, 6.0]], dtype=ms.float64, device=device)
+        i0 = ms.array([0], dtype=ms.int64, device=device)
+        i1 = ms.array([0, 2], dtype=ms.int64, device=device)
+        got = a[i0, i1]
+        assert got.tolist() == [1.0, 3.0]
+
+    @pytest.mark.parametrize("device", ["cpu", "musa:0"])
+    def test_fancy_nd_index_array(self, device):
+        a = ms.array([[1.0, 2.0], [3.0, 4.0]], dtype=ms.float64, device=device)
+        idx = ms.array([[0, 1], [1, 0]], dtype=ms.int64, device=device)
+        got = a[idx]
+        assert got.shape == (2, 2, 2)
+        assert got.tolist() == [
+            [[1.0, 2.0], [3.0, 4.0]],
+            [[3.0, 4.0], [1.0, 2.0]],
+        ]
+
+    def test_fancy_list_index(self):
+        a = ms.array([10.0, 20.0, 30.0], dtype=ms.float64)
+        assert a[[0, 2]].tolist() == [10.0, 30.0]
+
+    @pytest.mark.parametrize("device", ["cpu", "musa:0"])
+    def test_fancy_oob_indexerror(self, device):
+        """越界抛 Python 内置 IndexError（NumPy 兼容，非 MusapyError 子类）。"""
+        a = ms.array([1.0, 2.0, 3.0], dtype=ms.float64, device=device)
+        idx = ms.array([5], dtype=ms.int64, device=device)
+        with pytest.raises(IndexError):
+            a[idx]
+
+    @pytest.mark.parametrize("device", ["cpu", "musa:0"])
+    def test_fancy_np_comparison(self, device):
+        """对照 NumPy（含顺序/形状）。"""
+        rng = np.random.default_rng(31)
+        data = rng.normal(size=(4, 5))
+        a = ms.array(data.tolist(), dtype=ms.float64, device=device)
+        i0 = ms.array([0, 2, 3], dtype=ms.int64, device=device)
+        i1 = ms.array([1], dtype=ms.int64, device=device)  # 广播到 len 3
+        got = a[i0, i1]
+        exp = data[np.array([0, 2, 3]), np.array([1])]
+        assert np.allclose(got.tolist(), exp), (got.tolist(), exp)

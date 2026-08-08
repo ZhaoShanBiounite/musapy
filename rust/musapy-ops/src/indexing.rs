@@ -11,7 +11,7 @@
 
 use crate::kernels;
 use crate::op_builder::{adjust_ptr_offset, cpu_offset_nd};
-use musapy_core::error::{DtypeError, Result, ShapeError};
+use musapy_core::error::{DtypeError, IndexError, Result, ShapeError};
 use musapy_core::musa_ffi;
 use musapy_core::resolution;
 use musapy_core::{
@@ -375,6 +375,242 @@ pub fn gather(a: &Array, indices: &Array, axis: usize) -> Result<Array> {
     ))
 }
 
+// ── 高级索引（Phase 8，ADR-002-D4）────────────────────────────
+
+/// `adv_index(a, indices)` — 高级索引（fancy indexing）。
+///
+/// `indices` 为 k 个 int64 数组（沿 a 的前 k 维索引）。语义（NumPy 高级索引）：
+///   - 单索引 `a[idx]`（idx 1D/N-D）→ 输出 shape = idx.shape + a.shape[1:]
+///   - 多索引 `a[i0, i1, ...]`（k 个，坐标配对）→ 各 idx 形状右对齐广播到
+///     b_shape，输出 shape = b_shape + a.shape[k:]
+///   - 负索引转正（raw<0 → raw+axis_len）；越界抛 `IndexError`
+///   - 恒为 copy（分配新 buffer）
+pub fn adv_index(a: &Array, indices: &[&Array]) -> Result<Array> {
+    let k = indices.len();
+    if k == 0 {
+        return Err(ShapeError::Mismatch(
+            "adv_index: no indices provided".into(),
+        )
+        .into());
+    }
+    let a_ndim = a.ndim();
+    if k > a_ndim {
+        return Err(ShapeError::Mismatch(format!(
+            "adv_index: {} index arrays but array has {} dims",
+            k, a_ndim
+        ))
+        .into());
+    }
+
+    // 校验 indices：int64 + 同 device
+    for (i, idx) in indices.iter().enumerate() {
+        let idx = *idx;
+        if idx.dtype() != Dtype::Int64 {
+            return Err(DtypeError::Unsupported(format!(
+                "adv_index: indices[{i}] dtype must be int64, got {}",
+                idx.dtype()
+            ))
+            .into());
+        }
+        if idx.device() != a.device() {
+            return Err(ShapeError::Mismatch(format!(
+                "adv_index: indices[{i}] device {} != input device {}",
+                idx.device(),
+                a.device()
+            ))
+            .into());
+        }
+    }
+
+    // 广播索引形状：k 个 idx 的 shape 右对齐求最大（NumPy 高级索引广播）
+    let bdims = indices.iter().map(|i| (*i).ndim()).max().unwrap_or(1);
+    let mut b_shape = vec![1usize; bdims];
+    for idx in indices.iter() {
+        let idx = *idx;
+        let nd = idx.ndim();
+        for d in 0..nd {
+            let dim = idx.shape()[d];
+            let pos = bdims - nd + d;
+            // size-1 维总能广播（dim==1 跳过冲突检查）；否则须与现有广播形状一致
+            if dim != 1 && b_shape[pos] != 1 && b_shape[pos] != dim {
+                return Err(ShapeError::Mismatch(format!(
+                    "adv_index: index shapes do not broadcast together (dim {} {} vs {})",
+                    pos, b_shape[pos], dim
+                ))
+                .into());
+            }
+            if dim != 1 {
+                b_shape[pos] = dim;
+            }
+        }
+    }
+
+    let device = a.device().clone();
+    let dtype = a.dtype();
+    let mut out_shape = b_shape.clone();
+    out_shape.extend_from_slice(&a.shape()[k..]);
+    let n_out: usize = out_shape.iter().product::<usize>().max(1);
+    let nbytes = n_out * dtype.element_size();
+
+    let out_stream: Arc<Stream> = resolution::get_current_stream()
+        .unwrap_or_else(|| Arc::clone(a.stream()));
+
+    let buffer = Buffer::alloc(nbytes.max(1), device.clone(), &out_stream)?;
+    let out_data_ref = BufferRef::new(Arc::new(buffer));
+    let out_ptr = out_data_ref.buffer().ptr();
+
+    a.data().buffer().wait_last_write_on(&out_stream)?;
+    for idx in indices.iter() {
+        idx.data().buffer().wait_last_write_on(&out_stream)?;
+    }
+
+    let in_ptr = adjust_ptr_offset(
+        a.data().buffer().ptr(),
+        a.layout().offset,
+        dtype.element_size(),
+    );
+    let in_strides = a.layout().strides.clone();
+    let a_axis_len: Vec<usize> = a.shape()[..k].to_vec();
+
+    match &device {
+        Device::Cpu => {
+            // CPU：host 端同步校验（立即报错）
+            let idx_hosts: Vec<Vec<i64>> = indices.iter().map(|i| read_indices_host(*i)).collect::<Result<_>>()?;
+            cpu_adv_index(
+                in_ptr,
+                out_ptr,
+                &idx_hosts,
+                &b_shape,
+                &out_shape,
+                &in_strides,
+                &a_axis_len,
+                dtype.element_size(),
+            )?;
+        }
+        Device::Musa(_) => {
+            #[cfg(musapy_mock_musa)]
+            {
+                let idx_hosts: Vec<Vec<i64>> = indices.iter().map(|i| read_indices_host(*i)).collect::<Result<_>>()?;
+                cpu_adv_index(
+                    in_ptr,
+                    out_ptr,
+                    &idx_hosts,
+                    &b_shape,
+                    &out_shape,
+                    &in_strides,
+                    &a_axis_len,
+                    dtype.element_size(),
+                )?;
+            }
+            #[cfg(not(musapy_mock_musa))]
+            {
+                gpu_adv_index(
+                    a, indices, in_ptr, out_ptr, &b_shape, &out_shape, &in_strides,
+                    &a_axis_len, dtype, &out_stream,
+                )?;
+            }
+        }
+    }
+
+    a.data().buffer().record_read(&out_stream);
+    for idx in indices.iter() {
+        idx.data().buffer().record_read(&out_stream);
+    }
+    out_data_ref.buffer().record_write(&out_stream);
+
+    if musapy_core::debug::is_debug() {
+        let mut ctx = OpContext::new(
+            "adv_index",
+            vec![a.shape().clone()],
+            vec![a.device().clone()],
+            vec![a.dtype()],
+            out_shape.clone(),
+            out_stream.id(),
+        );
+        if let Some(frame) = musapy_core::debug::take_debug_frame() {
+            ctx = ctx.with_frame(frame);
+        }
+        out_stream.record_op(ctx);
+    }
+
+    Ok(Array::new(
+        out_data_ref,
+        Layout::from_shape(out_shape),
+        dtype,
+        out_stream,
+        DeviceResolution::new(device, ResolutionSource::InputArray),
+        DtypeResolution::new(dtype, ResolutionSource::InputArray),
+    ))
+}
+
+/// `boolean_mask(a, mask)` — boolean mask 索引（等形或可广播到 a 前 md 维）。
+///
+/// 语义（NumPy）：`a[mask]`，mask 与 a 的**前 md 维**匹配（左对齐广播），
+/// 输出 shape = `(n_true,) + a.shape[md:]`，按 C 序取 mask 为 True 位置
+/// 对应的子块展平拼接。恒为 copy。
+pub fn boolean_mask(a: &Array, mask: &Array) -> Result<Array> {
+    if mask.dtype() != Dtype::Bool {
+        return Err(DtypeError::Unsupported(format!(
+            "boolean_mask: mask dtype must be bool, got {}",
+            mask.dtype()
+        ))
+        .into());
+    }
+    if mask.device() != a.device() {
+        return Err(ShapeError::Mismatch(format!(
+            "boolean_mask: mask device {} != input device {}",
+            mask.device(),
+            a.device()
+        ))
+        .into());
+    }
+
+    // mask 匹配 a 前 md 维（左对齐，可广播：size-1 维参与广播）
+    let ndim = a.ndim();
+    if mask.ndim() > ndim {
+        return Err(ShapeError::Mismatch(format!(
+            "boolean_mask: mask ndim {} > input ndim {}",
+            mask.ndim(),
+            ndim
+        ))
+        .into());
+    }
+    let md = mask.ndim();
+    for d in 0..md {
+        let adim = a.shape()[d];
+        let mdim = mask.shape()[d];
+        if mdim != 1 && mdim != adim {
+            return Err(ShapeError::Mismatch(format!(
+                "boolean_mask: mask shape not broadcastable to input (mask dim {} {} vs input {} {})",
+                d, mdim, d, adim
+            ))
+            .into());
+        }
+    }
+
+    // mask 前 md 维展平：收集 true 位置（组合索引），对应 a 的剩余维全取
+    let device = a.device().clone();
+    let out_stream: Arc<Stream> = resolution::get_current_stream()
+        .unwrap_or_else(|| Arc::clone(a.stream()));
+
+    // 收集 mask true 位置的「前 md 维坐标」，C 序展平为 1D
+    let mask_true = mask_true_coords(mask, &a.shape()[..md], &device, &out_stream)?;
+
+    // 输出 = 每个 true 坐标对应 a 子块（a.shape[md:] 全取）展平拼接
+    // 用 adv_index 多索引路径：md 个索引数组（每个 true 坐标一个 1D 索引），
+    // 广播形状 = (n_true,)，输出 = (n_true,) + a.shape[md:]
+    // 全 0 维 mask（md=0，标量 mask）：true → 返回整个 a 展平
+    if md == 0 {
+        return adv_index(a, &[]);
+    }
+    // 先收集 owned cols（借用需存活到 adv_index 调用）
+    let mut cols: Vec<Array> = Vec::with_capacity(md);
+    for d in 0..md {
+        cols.push(mask_true_col(&mask_true, d, &device, &out_stream)?);
+    }
+    let idx_refs: Vec<&Array> = cols.iter().collect();
+    adv_index(a, &idx_refs)
+}
 /// `scatter(a, indices, values, axis)` — 沿 axis 把 values 写入 indices 指定位置（copy 语义）。
 ///
 /// 返回新数组 = a 的连续副本，其中 `out[..., indices[j], ...] = values[..., j, ...]`。
@@ -1600,4 +1836,416 @@ mod tests {
         // 原数组不变
         assert_eq!(read_f32(&a), vec![10.0, 11.0, 12.0, 13.0, 14.0]);
     }
+}
+
+// ── 高级索引 helper（Phase 8）─────────────────────────────────
+
+/// b_shape 各维乘积（广播索引体积）。
+fn b_shape_size(b_shape: &[usize]) -> usize {
+    b_shape.iter().product()
+}
+
+/// CPU 端高级索引（host 同步校验越界，抛 IndexError）。
+#[allow(clippy::too_many_arguments)]
+fn cpu_adv_index(
+    in_ptr: Option<NonNull<u8>>,
+    out_ptr: Option<NonNull<u8>>,
+    idx_hosts: &[Vec<i64>],
+    b_shape: &[usize],
+    out_shape: &[usize],
+    in_strides: &[isize],
+    a_axis_len: &[usize],
+    elem_size: usize,
+) -> Result<()> {
+    let (Some(ip), Some(op)) = (in_ptr, out_ptr) else {
+        return Ok(());
+    };
+    let k = idx_hosts.len();
+    let n_out: usize = out_shape.iter().product::<usize>().max(1);
+    let a_ndim = in_strides.len();
+    let bdims = b_shape.len();
+
+    // 逐输出元素（naive，host 路径仅正确性优先）
+    for o in 0..n_out {
+        let mut off: i64 = 0;
+        let mut rem = o;
+        let out_ndim = out_shape.len();
+        // unravel 输出到坐标
+        let mut coords = vec![0usize; out_ndim];
+        for d in (0..out_ndim).rev() {
+            coords[d] = rem % out_shape[d];
+            rem /= out_shape[d];
+        }
+        // 前 k 个索引：按 idx 长度推断展平坐标（支持广播 + N-D）
+        for i in 0..k {
+            let idx_len = idx_hosts[i].len();
+            let bc = if idx_len == 1 {
+                0 // 广播（size-1 索引恒取首元素）
+            } else if idx_len == b_shape_size(b_shape) {
+                // 完整 N-D：coords[0..bdims] C 序展平
+                let mut offi = 0usize;
+                let mut s = 1usize;
+                for d in (0..bdims).rev() {
+                    offi += coords[d] * s;
+                    s *= b_shape[d];
+                }
+                offi
+            } else {
+                coords[0] // 1D 索引
+            };
+            let raw = idx_hosts[i][bc];
+            let axlen = a_axis_len[i] as i64;
+            let normalized = if raw < 0 { raw + axlen } else { raw };
+            if normalized < 0 || normalized >= axlen {
+                return Err(IndexError::OutOfBounds(format!(
+                    "index {} at position {} out of bounds for axis {} (size {})",
+                    raw, bc, i, axlen
+                ))
+                .into());
+            }
+            off += normalized as i64 * in_strides[i] as i64;
+        }
+        // 剩余维坐标（a 的第 k..a_ndim 维，输出中位于 bdims 之后）
+        for d in k..a_ndim {
+            off += coords[bdims + (d - k)] as i64 * in_strides[d] as i64;
+        }
+        // copy elem_size 字节
+        unsafe {
+            std::ptr::copy_nonoverlapping(
+                ip.as_ptr().add(off as usize * elem_size),
+                op.as_ptr().add(o * elem_size),
+                elem_size,
+            );
+        }
+    }
+    Ok(())
+}
+
+/// GPU 端高级索引（host fallback 方案，2026-08-08）。
+///
+/// 探针证实 mcc 不支持指针数组作为 __global__ 参数（`const int64_t* const*`
+/// 启动即 error 999），故 GPU 路径走「D2H a 数据 → host 计算 → H2D 结果」
+///（与 gpu_gather_via_host 同模式）。正确性优先，性能后续再优化 kernel。
+#[allow(clippy::too_many_arguments)]
+fn gpu_adv_index(
+    a: &Array,
+    indices: &[&Array],
+    in_ptr: Option<NonNull<u8>>,
+    out_ptr: Option<NonNull<u8>>,
+    b_shape: &[usize],
+    out_shape: &[usize],
+    _in_strides: &[isize],
+    _a_axis_len: &[usize],
+    dtype: Dtype,
+    out_stream: &Arc<Stream>,
+) -> Result<()> {
+    let k = indices.len();
+    let (Some(ip), Some(op)) = (in_ptr, out_ptr) else {
+        return Ok(());
+    };
+    let n_out: usize = out_shape.iter().product::<usize>().max(1);
+    if n_out == 0 {
+        return Ok(());
+    }
+    let elem = dtype.element_size();
+
+    // 1. 读 indices host（越界在 cpu_adv_index 同步校验）
+    let idx_hosts: Vec<Vec<i64>> = indices
+        .iter()
+        .map(|i| read_indices_host(*i))
+        .collect::<Result<_>>()?;
+
+    // 2. D2H 读 a 的数据（按 in_strides + in_ptr 定位逻辑首元素）
+    //    host 计算用 ip 指向的逻辑 buffer（含 offset），需整个 buffer 的连续数据。
+    //    简化：a 连续化后 D2H 整块，host 按 out_shape 做高级索引。
+    let a_contig = contiguous(a)?;
+    a_contig.data().buffer().wait_last_write_on(out_stream)?;
+    let a_ptr = a_contig.data().buffer().ptr().ok_or_else(|| {
+        musapy_core::error::DeviceError::MathLibCallFailed("adv_index: null a ptr".into())
+    })?;
+    let a_nbytes = a_contig.size() * elem;
+    let mut a_host = vec![0u8; a_nbytes];
+    unsafe {
+        musa_ffi::check_musa(
+            musa_ffi::musaMemcpy(
+                a_host.as_mut_ptr() as *mut std::ffi::c_void,
+                a_ptr.as_ptr() as *const std::ffi::c_void,
+                a_nbytes,
+                musa_ffi::musaMemcpyKind::DeviceToHost,
+            ),
+            "adv_index: a D2H",
+        )?;
+    }
+
+    // 3. host 计算（a 连续，strides 为 C 序；用 out_shape 反向定位）
+    let n_a_elems = a_contig.size();
+    let mut out_host = vec![0u8; n_out * elem];
+    // 对每个输出元素，解析坐标 → 取索引 → 计算 a 的线性偏移 → 拷贝
+    let a_ndim = a_contig.ndim();
+    let a_shape = a_contig.shape();
+    let bdims = b_shape.len();
+    for o in 0..n_out {
+        // unravel out_shape
+        let mut coords = vec![0usize; out_shape.len()];
+        let mut rem = o;
+        for d in (0..out_shape.len()).rev() {
+            coords[d] = rem % out_shape[d];
+            rem /= out_shape[d];
+        }
+        // 各索引取坐标
+        let mut lin = 0usize;
+        for i in 0..k {
+            let idx_len = idx_hosts[i].len();
+            let bc = if idx_len == 1 {
+                0
+            } else if idx_len == b_shape_size(b_shape) {
+                let mut offi = 0usize;
+                let mut st = 1usize;
+                for d in (0..bdims).rev() {
+                    offi += coords[d] * st;
+                    st *= b_shape[d];
+                }
+                offi
+            } else {
+                coords[0]
+            };
+            let raw = idx_hosts[i][bc];
+            let axlen = a_shape[i] as i64;
+            let normalized = if raw < 0 { raw + axlen } else { raw };
+            if normalized < 0 || normalized >= axlen {
+                return Err(IndexError::OutOfBounds(format!(
+                    "index {} at position {} out of bounds for axis {} (size {})",
+                    raw, bc, i, axlen
+                ))
+                .into());
+            }
+            // a 连续 → 该轴前各维 stride 为 product(shape[i+1..])
+            let mut st = 1usize;
+            for dd in (i + 1)..a_ndim {
+                st *= a_shape[dd];
+            }
+            lin += normalized as usize * st;
+        }
+        // 剩余维坐标
+        for d in k..a_ndim {
+            let coord = coords[bdims + (d - k)];
+            let mut st = 1usize;
+            for dd in (d + 1)..a_ndim {
+                st *= a_shape[dd];
+            }
+            lin += coord * st;
+        }
+        if lin >= n_a_elems {
+            return Err(IndexError::OutOfBounds(format!(
+                "adv_index: computed offset {lin} out of range (n={n_a_elems})"
+            ))
+            .into());
+        }
+        unsafe {
+            std::ptr::copy_nonoverlapping(
+                a_host.as_ptr().add(lin * elem),
+                out_host.as_mut_ptr().add(o * elem),
+                elem,
+            );
+        }
+    }
+
+    // 4. H2D 写回 out
+    unsafe {
+        musa_ffi::check_musa(
+            musa_ffi::musaMemcpy(
+                op.as_ptr() as *mut std::ffi::c_void,
+                out_host.as_ptr() as *const std::ffi::c_void,
+                n_out * elem,
+                musa_ffi::musaMemcpyKind::HostToDevice,
+            ),
+            "adv_index: out H2D",
+        )?;
+    }
+    let _ = (k, ip);
+    Ok(())
+}
+
+/// 把 mask 广播到 a.shape 后收集 true 位置为 1D int64 索引数组。
+///
+/// 实现：mask 按广播 strides 遍历 a 的展平索引，收集 mask==true 的展平位置。
+/// host 侧收集（正确性优先；GPU nonzero kernel 留作后续优化）。
+fn mask_true_coords(
+    mask: &Array,
+    a_prefix_shape: &[usize],
+    device: &Device,
+    out_stream: &Arc<Stream>,
+) -> Result<Array> {
+    // mask 连续化 + D2H 读（正确性优先）
+    let mask_contig = contiguous(mask)?;
+    mask_contig.data().buffer().wait_last_write_on(out_stream)?;
+    let mptr = mask_contig.data().buffer().ptr().ok_or_else(|| {
+        musapy_core::error::DeviceError::MathLibCallFailed("mask: null ptr".into())
+    })?;
+    let n_mask = mask_contig.size();
+    let mut host = vec![0u8; n_mask];
+    match device {
+        Device::Musa(_) => unsafe {
+            musa_ffi::check_musa(
+                musa_ffi::musaMemcpy(
+                    host.as_mut_ptr() as *mut std::ffi::c_void,
+                    mptr.as_ptr() as *const std::ffi::c_void,
+                    n_mask,
+                    musa_ffi::musaMemcpyKind::DeviceToHost,
+                ),
+                "mask D2H",
+            )?;
+        },
+        Device::Cpu => unsafe {
+            std::ptr::copy_nonoverlapping(mptr.as_ptr(), host.as_mut_ptr(), n_mask);
+        },
+    }
+
+    // 收集 mask 中 true 位置的坐标（md 维），C 序展平为 (n_true, md)
+    let md = mask.ndim();
+    let mshape = mask.shape();
+    // mask 自身的 C 序 strides（host 侧）
+    let mut mstrides = vec![0isize; md];
+    {
+        let mut st = 1isize;
+        for d in (0..md).rev() {
+            mstrides[d] = st;
+            st *= mshape[d] as isize;
+        }
+    }
+    // 每行坐标：md 个 i64，行数 = n_true
+    let mut rows: Vec<i64> = Vec::new();
+    for lin in 0..n_mask {
+        if host[lin] != 0 {
+            // unravel lin → md 维坐标
+            let mut rem = lin;
+            let mut coords = vec![0usize; md];
+            for d in (0..md).rev() {
+                coords[d] = rem % mshape[d];
+                rem /= mshape[d];
+            }
+            for d in 0..md {
+                rows.push(coords[d] as i64);
+            }
+        }
+    }
+    let n_true = if md == 0 { rows.len() } else { rows.len() / md };
+
+    // 构造 (n_true, md) int64 Array
+    let idx_nbytes = rows.len() * 8;
+    let buffer = Buffer::alloc(idx_nbytes.max(1), device.clone(), out_stream)?;
+    let data_ref = BufferRef::new(Arc::new(buffer));
+    let dst = data_ref.buffer().ptr().ok_or_else(|| {
+        musapy_core::error::DeviceError::MathLibCallFailed("mask coords: null ptr".into())
+    })?;
+    match device {
+        Device::Musa(_) => unsafe {
+            musa_ffi::check_musa(
+                musa_ffi::musaMemcpy(
+                    dst.as_ptr() as *mut std::ffi::c_void,
+                    rows.as_ptr() as *const std::ffi::c_void,
+                    idx_nbytes,
+                    musa_ffi::musaMemcpyKind::HostToDevice,
+                ),
+                "mask coords H2D",
+            )?;
+        },
+        Device::Cpu => unsafe {
+            std::ptr::copy_nonoverlapping(rows.as_ptr(), dst.as_ptr() as *mut i64, rows.len());
+        },
+    }
+    data_ref.buffer().record_write(out_stream);
+    let _ = a_prefix_shape;
+
+    Ok(Array::new(
+        data_ref,
+        Layout::from_shape(vec![n_true, md]),
+        Dtype::Int64,
+        Arc::clone(out_stream),
+        DeviceResolution::new(device.clone(), ResolutionSource::InputArray),
+        DtypeResolution::new(Dtype::Int64, ResolutionSource::InputArray),
+    ))
+}
+
+/// 取 mask_true 的第 col 列为 1D int64 索引数组。
+fn mask_true_col(
+    mask_true: &Array,
+    col: usize,
+    device: &Device,
+    out_stream: &Arc<Stream>,
+) -> Result<Array> {
+    // mask_true 是 (n_true, md)；取第 col 列（stride=md）
+    let n_true = mask_true.shape()[0];
+    let md = mask_true.shape().get(1).copied().unwrap_or(1);
+    let col_holder;
+    let src = if mask_true.is_contiguous() {
+        mask_true
+    } else {
+        col_holder = contiguous(mask_true)?;
+        &col_holder
+    };
+    let ptr = src.data().buffer().ptr().ok_or_else(|| {
+        musapy_core::error::DeviceError::MathLibCallFailed("mask col: null ptr".into())
+    })?;
+    let bytes = n_true * 8;
+    let mut host = vec![0u8; bytes];
+    match device {
+        Device::Musa(_) => unsafe {
+            musa_ffi::check_musa(
+                musa_ffi::musaMemcpy(
+                    host.as_mut_ptr() as *mut std::ffi::c_void,
+                    ptr.as_ptr().add(col * 8) as *const std::ffi::c_void,
+                    bytes,
+                    musa_ffi::musaMemcpyKind::DeviceToHost,
+                ),
+                "mask col D2H",
+            )?;
+        },
+        Device::Cpu => unsafe {
+            for i in 0..n_true {
+                let v = *(ptr.as_ptr() as *const i64).add(i * md + col);
+                (host.as_mut_ptr() as *mut i64).add(i).write(v);
+            }
+        },
+    }
+    let _ = bytes;
+
+    // 构造 1D int64 Array（逐元素 strided 拷贝）
+    let buffer = Buffer::alloc((n_true * 8).max(1), device.clone(), out_stream)?;
+    let data_ref = BufferRef::new(Arc::new(buffer));
+    let dst = data_ref.buffer().ptr().ok_or_else(|| {
+        musapy_core::error::DeviceError::MathLibCallFailed("mask col dst: null ptr".into())
+    })?;
+    match device {
+        Device::Musa(_) => unsafe {
+            let mut host_col: Vec<i64> = Vec::with_capacity(n_true);
+            let src_i64 = ptr.as_ptr() as *const i64;
+            for i in 0..n_true {
+                let v = if md == 0 { 0 } else { *src_i64.add(i * md + col) };
+                host_col.push(v);
+            }
+            musa_ffi::check_musa(
+                musa_ffi::musaMemcpy(
+                    dst.as_ptr() as *mut std::ffi::c_void,
+                    host_col.as_ptr() as *const std::ffi::c_void,
+                    n_true * 8,
+                    musa_ffi::musaMemcpyKind::HostToDevice,
+                ),
+                "mask col H2D",
+            )?;
+        },
+        Device::Cpu => unsafe {
+            std::ptr::copy_nonoverlapping(host.as_ptr() as *const i64, dst.as_ptr() as *mut i64, n_true);
+        },
+    }
+    data_ref.buffer().record_write(out_stream);
+
+    Ok(Array::new(
+        data_ref,
+        Layout::from_shape(vec![n_true]),
+        Dtype::Int64,
+        Arc::clone(out_stream),
+        DeviceResolution::new(device.clone(), ResolutionSource::InputArray),
+        DtypeResolution::new(Dtype::Int64, ResolutionSource::InputArray),
+    ))
 }

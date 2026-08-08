@@ -298,6 +298,126 @@ __global__ void musapy_extract_diag_kernel(
     if (k < n) diag[k] = lu[k * ldu];
 }
 
+// ── 高级索引（Phase 8, ADR-002-D4）────────────────────────────
+//
+// 1) adv_gather：完整高级索引（单/多索引数组坐标配对 + 广播）。
+//    out[b_coords + a_coords] = a[idx0(b_coords), ..., idx{k-1}(b_coords), a_coords]
+//    索引数组 shape 右对齐广播到 b_shape（size-1 维 stride=0 实现广播读）。
+//    负索引转正（raw<0 → raw+axis_len），越界经 musapy_report_index_oob 上报。
+// 2) nonzero：boolean mask（contiguous）→ 展平索引 1D int64（C 序保序）。
+//    两阶段：逐 block 计数 → 单 block 前缀 → 写展平位置。
+
+struct AdvGatherMeta {
+    int bdims;              // 广播索引 shape 维数
+    int k;                  // 索引数组个数（≤ 8）
+    int a_ndim;             // 输入 a 维数
+    size_t b_shape[8];      // 广播索引 shape
+    size_t out_shape[16];   // 输出 shape = b_shape + a.shape[k:]
+    ssize_t a_strides[16];  // a 的 strides（全部维）
+    size_t a_axis_len[8];   // a 前 k 维的轴长（越界检查）
+    ssize_t idx_strides[8][8]; // 各索引数组相对 b_shape 的 strides（广播后）
+};
+
+template <typename T>
+__global__ void musapy_adv_gather_kernel(
+    const T* __restrict__ input, T* __restrict__ output,
+    const int64_t* const* __restrict__ idx_ptrs,  // k 个索引数组指针（device）
+    AdvGatherMeta meta, size_t n_out,
+    int* err_flag, int* err_pos, long long* err_val
+) {
+    size_t idx = blockIdx.x * blockDim.x + threadIdx.x;
+    if (idx >= n_out) return;
+
+    int bdims = meta.bdims;
+    int k = meta.k;
+    int a_ndim = meta.a_ndim;
+    int out_ndim = bdims + (a_ndim - k);
+
+    // unravel 输出 idx → 先 b_coords（低维序），再 a_coords
+    size_t b_coords[8];
+    size_t a_coords[8];
+    size_t rem = idx;
+    // 从最低维 unravel：输出 shape = b_shape + a.shape[k:]，C 序低维在后
+    for (int i = out_ndim - 1; i >= 0; i--) {
+        size_t coord = rem % meta.out_shape[i];
+        rem /= meta.out_shape[i];
+        if (i < bdims) {
+            b_coords[i] = coord;
+        } else {
+            a_coords[i - bdims] = coord;
+        }
+    }
+
+    // 各索引数组读取坐标（广播：stride=0 维恒读首元素）
+    ssize_t off = 0;
+    for (int i = 0; i < k; i++) {
+        size_t ilin = 0;
+        for (int d = 0; d < bdims; d++) {
+            ilin += b_coords[d] * (size_t)meta.idx_strides[i][d];
+        }
+        long long raw = (long long)((const int64_t*)idx_ptrs[i])[ilin];
+        if (raw < 0) raw += (long long)meta.a_axis_len[i];
+        if (raw < 0 || raw >= (long long)meta.a_axis_len[i]) {
+            musapy_report_index_oob(err_flag, err_pos, err_val, idx, raw);
+            return;
+        }
+        off += (ssize_t)raw * meta.a_strides[i];
+    }
+    // 剩余维坐标（a 的第 k.. 维）
+    for (int i = k; i < a_ndim; i++) {
+        off += (ssize_t)a_coords[i - k] * meta.a_strides[i];
+    }
+    output[idx] = input[(size_t)off];
+}
+
+/// 逐 block 统计 mask 中 true 数（Phase A；mask contiguous uint8）。
+__global__ void musapy_nonzero_count_kernel(
+    const uint8_t* __restrict__ mask, size_t n,
+    size_t* __restrict__ counts
+) {
+    size_t start = blockIdx.x * (size_t)blockDim.x;
+    size_t end = start + (size_t)blockDim.x;
+    if (end > n) end = n;
+    size_t cnt = 0;
+    for (size_t i = start; i < end; i++) {
+        cnt += (mask[i] != 0) ? 1 : 0;
+    }
+    counts[blockIdx.x] = cnt;
+}
+
+/// 单 block 前缀（Phase B：exclusive prefix of counts → out[0]=0）。
+/// nblocks 较小时单 block 256 线程循环累加；正确性优先（mask 规模一般 ≤ 1M）。
+__global__ void musapy_nonzero_scan_kernel(
+    const size_t* __restrict__ counts, size_t nblocks,
+    size_t* __restrict__ prefix
+) {
+    // 串行 exclusive prefix（单线程），nblocks ≤ 1M/256 ≈ 4096 时开销可忽略
+    if (threadIdx.x != 0) return;
+    size_t acc = 0;
+    for (size_t b = 0; b < nblocks; b++) {
+        prefix[b] = acc;
+        acc += counts[b];
+    }
+}
+
+/// 写展平位置（Phase C：out[prefix[block] + intra] = linear_idx，C 序保序）。
+__global__ void musapy_nonzero_write_kernel(
+    const uint8_t* __restrict__ mask, size_t n,
+    const size_t* __restrict__ prefix,
+    int64_t* __restrict__ out, size_t n_out
+) {
+    size_t start = blockIdx.x * (size_t)blockDim.x;
+    size_t end = start + (size_t)blockDim.x;
+    if (end > n) end = n;
+    size_t pos = prefix[blockIdx.x];
+    for (size_t i = start; i < end; i++) {
+        if (mask[i] != 0) {
+            if (pos < n_out) out[pos] = (int64_t)i;
+            pos++;
+        }
+    }
+}
+
 // ── extern "C" 稳定 ABI ────────────────────────────────────────
 
 extern "C" {
@@ -421,5 +541,67 @@ void musapy_extract_diag_##SUFFIX##_v1(                                         
 
 EXTRACT_DIAG_WRAPPER(float, f32)
 EXTRACT_DIAG_WRAPPER(double, f64)
+
+// ── extern "C" wrappers ──
+
+#define ADV_GATHER_WRAPPER(T, SUFFIX)                                          \
+void musapy_adv_gather_##SUFFIX##_v2(                                          \
+    const T* __restrict__ input, T* __restrict__ output,                       \
+    const int64_t* const* idx_ptrs,                                            \
+    int bdims, int k, int a_ndim, const size_t* b_shape,                       \
+    const size_t* out_shape, const ssize_t* a_strides,                         \
+    const size_t* a_axis_len, const ssize_t* idx_strides,                      \
+    size_t n_out, int* err_flag, int* err_pos, long long* err_val,             \
+    musaStream_t stream                                                        \
+) {                                                                            \
+    AdvGatherMeta meta;                                                        \
+    meta.bdims = bdims;                                                        \
+    meta.k = k;                                                                \
+    meta.a_ndim = a_ndim;                                                      \
+    for (int i = 0; i < 8; i++) {                                              \
+        meta.b_shape[i] = (i < bdims) ? b_shape[i] : 0;                        \
+        meta.idx_strides[i][0] = 0;                                            \
+    }                                                                          \
+    for (int i = 0; i < 16; i++) {                                             \
+        meta.out_shape[i] = (i < bdims + (a_ndim - k)) ? out_shape[i] : 0;     \
+        meta.a_strides[i] = (i < a_ndim) ? a_strides[i] : 0;                   \
+    }                                                                          \
+    for (int i = 0; i < 8; i++) {                                              \
+        meta.a_axis_len[i] = (i < k) ? a_axis_len[i] : 0;                      \
+    }                                                                          \
+    for (int i = 0; i < k; i++) {                                              \
+        for (int d = 0; d < bdims; d++) {                                      \
+            meta.idx_strides[i][d] = idx_strides[i * bdims + d];               \
+        }                                                                      \
+    }                                                                          \
+    if (n_out > 0) {                                                           \
+        musapy_adv_gather_kernel<T><<<grid_size_1d(n_out), 256, 0, stream>>>(  \
+            input, output, idx_ptrs, meta, n_out,                              \
+            err_flag, err_pos, err_val);                                       \
+    }                                                                          \
+}
+
+ADV_GATHER_WRAPPER(float, f32)
+ADV_GATHER_WRAPPER(double, f64)
+ADV_GATHER_WRAPPER(int32_t, i32)
+ADV_GATHER_WRAPPER(int64_t, i64)
+
+#define NONZERO_WRAPPER(SUFFIX)                                                \
+void musapy_nonzero_##SUFFIX##_v2(                                             \
+    const uint8_t* __restrict__ mask, size_t n,                                \
+    size_t* __restrict__ counts, size_t* __restrict__ prefix,                  \
+    int64_t* __restrict__ out, size_t n_out, musaStream_t stream               \
+) {                                                                            \
+    size_t nblocks = (n + 255) / 256;                                          \
+    if (nblocks == 0) return;                                                  \
+    musapy_nonzero_count_kernel<<<nblocks, 256, 0, stream>>>(                  \
+        mask, n, counts);                                                      \
+    musapy_nonzero_scan_kernel<<<1, 1, 0, stream>>>(                           \
+        counts, nblocks, prefix);                                              \
+    musapy_nonzero_write_kernel<<<nblocks, 256, 0, stream>>>(                  \
+        mask, n, prefix, out, n_out);                                          \
+}
+
+NONZERO_WRAPPER(bool)
 
 } // extern "C"

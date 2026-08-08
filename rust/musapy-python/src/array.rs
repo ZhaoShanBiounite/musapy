@@ -214,18 +214,124 @@ impl PyArray {
         Ok(PyArray::from_array(result))
     }
 
-    /// `a[key]` — 索引/切片（零拷贝视图）。
+    /// `a[key]` — 索引/切片（零拷贝视图）+ 高级索引（Phase 8）。
     ///
     /// 支持：
     /// - `a[0]` — 整数索引（降维）
     /// - `a[1:3]` — 切片
     /// - `a[0, 1]` — 多维索引（tuple）
-    fn __getitem__(&self, key: &Bound<'_, pyo3::PyAny>) -> PyResult<PyArray> {
+    /// - `a[mask]` — boolean mask（等形/广播）→ 1D copy
+    /// - `a[idx]` / `a[i0, i1]` — fancy 数组索引（坐标配对 + 广播）→ copy
+    fn __getitem__(&self, py: Python<'_>, key: &Bound<'_, pyo3::PyAny>) -> PyResult<PyArray> {
         use pyo3::types::{PySlice, PyTuple};
 
         let ndim = self.inner.ndim();
         let shape = self.inner.shape();
 
+        // ═══ 高级索引检测（Phase 8，ADR-002-D4）═══
+        // 收集 key 中的数组索引（PyArray / ndarray / list），返回 owned Py<PyArray>
+        fn as_index_array(
+            py: Python<'_>,
+            item: &Bound<'_, pyo3::PyAny>,
+        ) -> PyResult<Option<Py<PyArray>>> {
+            // PyArray 直通（owned）
+            if let Ok(arr) = item.extract::<Py<PyArray>>() {
+                return Ok(Some(arr));
+            }
+            // ndarray / list：提取为 ms.array（bool → bool dtype，int → int64）
+            let list = item.call_method0("tolist");
+            let data = match list {
+                Ok(l) => l,
+                Err(_) => {
+                    // 纯 Python list/tuple：直接可用
+                    if item.downcast::<pyo3::types::PyList>().is_ok()
+                        || item.downcast::<pyo3::types::PyTuple>().is_ok()
+                    {
+                        item.clone()
+                    } else {
+                        return Ok(None);
+                    }
+                }
+            };
+            let arr = crate::ops::array(py, &data, None, None)?;
+            // Python list 索引默认落 float32（musapy 默认），fancy 需要 int64：
+            // 若元素全是整数则 astype int64
+            if arr.inner.dtype() == Dtype::Float32 {
+                // 检查是否整数 list（非 ndarray float）
+                let mut all_int = true;
+                let n = data.len().unwrap_or(0);
+                for i in 0..n {
+                    if let Ok(item) = data.get_item(i) {
+                        if item.extract::<i64>().is_err() {
+                            all_int = false;
+                            break;
+                        }
+                    }
+                }
+                if all_int {
+                    let cast = musapy_ops::astype(&arr.inner, Dtype::Int64, None)
+                        .map_err(error::to_pyerr)?;
+                    return Ok(Some(Py::new(py, PyArray::from_array(cast))?));
+                }
+            }
+            Ok(Some(Py::new(py, arr)?))
+        }
+
+        // 判断 key 是否含数组索引；若是，收集到 Vec<Py<PyArray>>
+        let mut adv_items: Vec<Py<PyArray>> = Vec::new();
+        let mut is_adv = false;
+
+        if key.downcast::<PyTuple>().is_ok() {
+            let tuple = key.downcast::<PyTuple>().unwrap();
+            let n = tuple.len();
+            // 全为数组（无 int/slice）→ 坐标配对高级索引
+            let mut all_arrays = n > 0;
+            for i in 0..n {
+                let item = tuple.get_item(i)?;
+                if item.downcast::<PySlice>().is_ok() || item.extract::<isize>().is_ok() {
+                    all_arrays = false;
+                    break;
+                }
+                if let Some(arr) = as_index_array(py, &item)? {
+                    adv_items.push(arr);
+                } else {
+                    all_arrays = false;
+                    break;
+                }
+            }
+            if all_arrays {
+                is_adv = true;
+            }
+        } else if !key.downcast::<PySlice>().is_ok() && key.extract::<isize>().is_err() {
+            // 单个非 int/slice → 数组索引（mask 或 fancy）
+            if let Some(arr) = as_index_array(py, key)? {
+                adv_items.push(arr);
+                is_adv = true;
+            }
+        }
+
+        if is_adv {
+            // 混合 basic+fancy（tuple 里 int/slice 与数组混用）已在上面 all_arrays=false
+            // 排除；此处仅剩全数组路径
+            // bool mask（单数组且 dtype bool）→ boolean_mask
+            if adv_items.len() == 1 {
+                let arr = adv_items[0].borrow(py);
+                if arr.inner.dtype() == Dtype::Bool {
+                    let result = musapy_ops::boolean_mask(&self.inner, &arr.inner)
+                        .map_err(error::to_pyerr)?;
+                    return Ok(PyArray::from_array(result));
+                }
+            }
+            // fancy：把 int 数组引用传给 adv_index（多数组坐标配对 / 单数组）
+            let guards: Vec<pyo3::PyRef<'_, PyArray>> =
+                adv_items.iter().map(|a| a.borrow(py)).collect();
+            let idx_refs: Vec<&musapy_core::Array> = guards.iter().map(|g| &g.inner).collect();
+            let result = musapy_ops::adv_index(&self.inner, &idx_refs)
+                .map_err(error::to_pyerr)?;
+            return Ok(PyArray::from_array(result));
+        }
+
+        // ═══ 既有 view 路径 ═══
         // 辅助：解析单个索引项
         fn parse_index_item(
             item: &Bound<'_, pyo3::PyAny>,

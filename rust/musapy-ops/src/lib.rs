@@ -28,7 +28,8 @@ pub use comparison::*;
 pub use reduction::*;
 pub use creation::{zeros, ones, full, eye, arange, linspace, zeros_like, ones_like};
 pub use indexing::{
-    contiguous, flip, gather, index_select, permute, scatter, slice, transpose, SliceSpec,
+    adv_index, boolean_mask, contiguous, flip, gather, index_select, permute, scatter, slice,
+    transpose, SliceSpec,
 };
 pub use linalg::{dot, lu, matmul, qr, solve, svd};
 pub use random::{bernoulli, normal, rand, randn, uniform};

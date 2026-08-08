@@ -44,8 +44,8 @@ pub use debug::{is_debug, set_debug};
 pub use device::{Device, DeviceResolution, ResolutionSource, SourceLocation};
 pub use dtype::{Dtype, promote};
 pub use error::{
-    DeviceError, DtypeError, InteropError, KernelError, LinAlgError, MemoryError, MusapyError,
-    Result, ShapeError, StreamError,
+    DeviceError, DtypeError, IndexError, InteropError, KernelError, LinAlgError, MemoryError,
+    MusapyError, Result, ShapeError, StreamError,
 };
 pub use layout::{Layout, Shape};
 pub use stream::{Event, OpContext, PythonFrame, Stream};

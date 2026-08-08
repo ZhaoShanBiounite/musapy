@@ -81,6 +81,16 @@ pub enum LinAlgError {
     Singular(String),
 }
 
+// ── Index errors（v0.3 Phase 8，ADR-003 003-D3 扩展）──
+// 高级索引（fancy/boolean mask）越界抛 Python 内置 IndexError（NumPy 兼容，
+// L3-6 单继承限制下不继承 MusapyError，Python 侧映射到 pyo3::PyIndexError）。
+
+#[derive(Error, Clone, Debug, PartialEq, Eq)]
+pub enum IndexError {
+    #[error("{0}")]
+    OutOfBounds(String),
+}
+
 // ── Top-level error (ADR L3-5: two-level shallow hierarchy) ──
 
 #[derive(Error, Clone, Debug, PartialEq, Eq)]
@@ -101,6 +111,8 @@ pub enum MusapyError {
     Interop(InteropError),
     #[error("{0}")]
     LinAlg(LinAlgError),
+    #[error("{0}")]
+    Index(IndexError),
 }
 
 // ── From impls for ergonomic conversions ──
@@ -150,6 +162,12 @@ impl From<InteropError> for MusapyError {
 impl From<LinAlgError> for MusapyError {
     fn from(e: LinAlgError) -> Self {
         MusapyError::LinAlg(e)
+    }
+}
+
+impl From<IndexError> for MusapyError {
+    fn from(e: IndexError) -> Self {
+        MusapyError::Index(e)
     }
 }
 
@@ -210,5 +228,6 @@ mod tests {
         let _ = MusapyError::Interop(InteropError::DlpackExport("x".into()));
         let _ = MusapyError::Interop(InteropError::UnsupportedProtocol("x".into()));
         let _ = MusapyError::LinAlg(LinAlgError::Singular("x".into()));
+        let _ = MusapyError::Index(IndexError::OutOfBounds("x".into()));
     }
 }

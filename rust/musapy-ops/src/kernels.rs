@@ -331,6 +331,16 @@ unsafe extern "C" {
     // 供 solve 奇异检测绕开 memcpy2D 跨步 D2H（见 sdk-3.1.0-limitations.md）
     pub fn musapy_extract_diag_f32_v1(lu: *const f32, diag: *mut f32, n: usize, ldu: usize, stream: musaStream_t);
     pub fn musapy_extract_diag_f64_v1(lu: *const f64, diag: *mut f64, n: usize, ldu: usize, stream: musaStream_t);
+
+    // 高级索引（Phase 8，ADR-002-D4）：
+    // adv_gather：完整高级索引（多索引坐标配对 + 广播），idx_ptrs 为 device
+    //   指针数组（k 个 int64 数组指针）；负索引 kernel 内转正，越界经 err 槽上报。
+    // nonzero：boolean mask（contiguous uint8）→ 展平位置 1D int64（C 序保序）。
+    pub fn musapy_adv_gather_f32_v2(input: *const f32, output: *mut f32, idx_ptrs: *const *const i64, bdims: i32, k: i32, a_ndim: i32, b_shape: *const usize, out_shape: *const usize, a_strides: *const isize, a_axis_len: *const usize, idx_strides: *const isize, n_out: usize, err_flag: *mut i32, err_pos: *mut i32, err_val: *mut i64, stream: musaStream_t);
+    pub fn musapy_adv_gather_f64_v2(input: *const f64, output: *mut f64, idx_ptrs: *const *const i64, bdims: i32, k: i32, a_ndim: i32, b_shape: *const usize, out_shape: *const usize, a_strides: *const isize, a_axis_len: *const usize, idx_strides: *const isize, n_out: usize, err_flag: *mut i32, err_pos: *mut i32, err_val: *mut i64, stream: musaStream_t);
+    pub fn musapy_adv_gather_i32_v2(input: *const i32, output: *mut i32, idx_ptrs: *const *const i64, bdims: i32, k: i32, a_ndim: i32, b_shape: *const usize, out_shape: *const usize, a_strides: *const isize, a_axis_len: *const usize, idx_strides: *const isize, n_out: usize, err_flag: *mut i32, err_pos: *mut i32, err_val: *mut i64, stream: musaStream_t);
+    pub fn musapy_adv_gather_i64_v2(input: *const i64, output: *mut i64, idx_ptrs: *const *const i64, bdims: i32, k: i32, a_ndim: i32, b_shape: *const usize, out_shape: *const usize, a_strides: *const isize, a_axis_len: *const usize, idx_strides: *const isize, n_out: usize, err_flag: *mut i32, err_pos: *mut i32, err_val: *mut i64, stream: musaStream_t);
+    pub fn musapy_nonzero_bool_v2(mask: *const u8, n: usize, counts: *mut usize, prefix: *mut usize, out: *mut i64, n_out: usize, stream: musaStream_t);
 }
 
 // ── Mock 模式：CPU stub ─────────────────────────────────────
@@ -1698,6 +1708,43 @@ mod mock {
     mock_copy!(musapy_copy_f64, f64);
     mock_copy!(musapy_copy_i32, i32);
     mock_copy!(musapy_copy_i64, i64);
+
+    // 高级索引（Phase 8）：adv_index 的 ops 层 mock 分支直接走 host（cpu_adv_index），
+    // 故 adv_gather stub 仅需占位（不被调用）；nonzero 实现 host 语义供测试。
+    macro_rules! mock_adv_gather_v2 {
+        ($name:ident, $t:ty) => {
+            pub unsafe fn $name(
+                _input: *const $t, _output: *mut $t, _idx_ptrs: *const *const i64,
+                _bdims: i32, _k: i32, _a_ndim: i32, _b_shape: *const usize,
+                _out_shape: *const usize, _a_strides: *const isize,
+                _a_axis_len: *const usize, _idx_strides: *const isize,
+                _n_out: usize, _err_flag: *mut i32, _err_pos: *mut i32,
+                _err_val: *mut i64, _stream: musaStream_t,
+            ) {
+                // mock 路径不调用（ops 层走 cpu_adv_index）
+            }
+        };
+    }
+
+    mock_adv_gather_v2!(musapy_adv_gather_f32_v2, f32);
+    mock_adv_gather_v2!(musapy_adv_gather_f64_v2, f64);
+    mock_adv_gather_v2!(musapy_adv_gather_i32_v2, i32);
+    mock_adv_gather_v2!(musapy_adv_gather_i64_v2, i64);
+
+    // nonzero mock：host 计数（mask 为 contiguous uint8，直接扫）
+    pub unsafe fn musapy_nonzero_bool_v2(
+        mask: *const u8, n: usize, _counts: *mut usize, _prefix: *mut usize,
+        out: *mut i64, n_out: usize, _stream: musaStream_t,
+    ) {
+        if mask.is_null() { return; }
+        let mut pos = 0usize;
+        for i in 0..n {
+            if *mask.add(i) != 0 {
+                if pos < n_out { *out.add(pos) = i as i64; }
+                pos += 1;
+            }
+        }
+    }
 
     // 2D 转置 tiled copy mock（P4）：dst[r*cols + c] = src[c*rows + r]
     macro_rules! mock_copy_transpose2d {
