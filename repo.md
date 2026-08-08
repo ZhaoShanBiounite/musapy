@@ -222,7 +222,30 @@ max/min/argmax/argmin 复数**正确抛 DtypeError**（无全序）。
 
 ---
 
-## 7. 健康状态
+## 7. 高级索引（boolean mask + fancy indexing，Phase 8；2026-08-08 真机新增）
+
+### 7.1 延迟（当前 host fallback 实现，1M 上限）
+
+| 算子 | 延迟(ms) | 说明 |
+|---|---|---|
+| mask(a>0.5) 1M | 498.9 | host fallback：D2H 全量 + host 遍历 1M + H2D |
+| fancy a[idx] 1M | 28.6 | 读源 + host 索引 + 写输出 |
+| fancy 2D a[i0,i1]（128 对，256² mat） | 0.58 | 小规模地板主导 |
+
+**现状**：mcc 不支持指针数组 kernel 参数（`const int64_t* const*` 启动 error 999，
+探针证实）→ GPU 走 host fallback（D2H→host→H2D），遍历 O(size) 致 1M mask
+~500ms。`musapy_adv_gather_*_v2`/`musapy_nonzero_*_v2` kernel 已声明，
+后续优化接入后移除降级。
+
+### 7.2 数值
+
+mask（等形/前 md 维左对齐广播）+ fancy（坐标配对/索引形状广播/N-D/负索引）
+对照 NumPy 全绿（CPU+MUSA 双路径）；越界抛 Python 内置 IndexError；
+恒为 copy（test_indexing.py +22 用例）。
+
+---
+
+## 8. 健康状态
 
 - Stream：pending=0，is_poisoned=False（全部 benchmark）
 - 显存：linalg 最终 Allocated 45.3 MB（7 buffers）· Peak 160.4 MB · 无 deferred-free 残留
@@ -230,7 +253,7 @@ max/min/argmax/argmin 复数**正确抛 DtypeError**（无全序）。
 
 ---
 
-## 8. 关键数字速查
+## 9. 关键数字速查
 
 | 指标 | 数值 |
 |---|---|
@@ -247,12 +270,13 @@ max/min/argmax/argmin 复数**正确抛 DtypeError**（无全序）。
 | fft 2D 64×4096（batched） | 0.262 ms（逐行对比 6.43 ms，P-FFT-1 24.5×） |
 | fft f64（10M） | 16.6 ms（mp_22 FP64 仿真，慢 4×） |
 | spmv 2000² d=0.5 | ~1.0 ms / ~21 GB/s（CSR 随机访存） |
+| mask 1M / fancy 1M | 499 / 29 ms（host fallback，Phase 8；kernel 优化后移除降级） |
 | 复数 sum（c64 1M） | 0.11 ms（分量并行，优化前 214ms，~1900×） |
 | 多轴 sum axis=(0,1)（256²） | 0.11-0.13 ms（逐轴迭代，Phase 7） |
 
 ---
 
-## 9. 最终全量复测注记（2026-08-08）
+## 10. 最终全量复测注记（2026-08-08）
 
 除 `bench_math_handles.py` 外的全部 benchmark 于 2026-08-08 重跑
 （`bench_linalg.py` + `bench_musa_utilization.py` 1M/10M/64M 三档 +

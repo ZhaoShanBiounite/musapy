@@ -397,6 +397,44 @@ def run_benchmark(size: int, iters: int, device_id: int):
         results.append(r)
         print(f"  {name:<16} {r.latency_ms:<11.3f} {r.gelem_per_sec:<13.3f} {r.effective_bw_gb_s:<11.3f}")
 
+    # ═══ Phase 8 专项 — 高级索引（boolean mask + fancy indexing）═══
+    print("\n" + "-" * 72)
+    print("  [Phase 8 专项 — boolean mask + fancy indexing]")
+    print("-" * 72)
+    # 当前走 host fallback（D2H→host→H2D）：遍历成本 O(size)，大数组极慢，
+    # 降级到 1M（同 cumsum 模式：性能特征由 host fallback 决定）
+    adv_cap = min(size, 1_000_000)
+    if adv_cap < size:
+        print(f"  注: 高级索引按上限 {adv_cap:,} 运行（host fallback 遍历 O(size)，"
+              f"{size:,} 会过慢；kernel 优化后移除降级）")
+    print(f"  主数组: {adv_cap:,} elements × f32；mask/fancy 输出 ~size/2 元素")
+    print("  注: 当前走 host fallback（D2H→host→H2D，mcc 不支持指针数组 kernel）；")
+    print("      延迟反映实现现状，kernel 优化后复测")
+    # mask：约一半 true（data_a ∈ [0,1)）
+    adv_a = ms.array(data_a[:adv_cap], dtype=ms.float32, device=device_str)
+    mask = ms.array([v > 0.5 for v in data_a[:adv_cap]], dtype=ms.bool_, device=device_str)
+    # fancy：前 size/2 个索引（顺序，输出 size/2 元素）
+    idx_half = ms.arange(adv_cap // 2, dtype=ms.int64, device=device_str)
+    # 2D fancy（坐标配对，用前面定义的 256×256 mat）：128 个索引对
+    i2d_0 = ms.array([i % 128 for i in range(128)], dtype=ms.int64, device=device_str)
+    i2d_1 = ms.array([i % 128 for i in range(128)], dtype=ms.int64, device=device_str)
+
+    adv_ops = [
+        # (name, fn, flops_per_elem, read_bytes_per_elem, write_bytes_per_elem, n_elems)
+        # mask/fancy：读源 size 元素 + 写输出 size/2 元素（带宽按 size 计，读为主）
+        ("mask(a>0.5)",       lambda: adv_a[mask],      0.0, 4, 0, adv_cap),
+        ("fancy a[idx]",      lambda: adv_a[idx_half],  0.0, 4, 0, adv_cap),
+        ("fancy 2D a[i0,i1]", lambda: mat[i2d_0, i2d_1], 0.0, 4, 0, 128),
+    ]
+    print(f"\n  {'算子':<20} {'延迟(ms)':<11} {'吞吐(GE/s)':<13} {'带宽(GB/s)':<11}")
+    print(f"  {'─'*20} {'─'*11} {'─'*13} {'─'*11}")
+    for name, fn, flops, r_bytes, w_bytes, n in adv_ops:
+        r = bench_op(fn, iters, n, flops, r_bytes, w_bytes)
+        r.name = name
+        r.category = "indexing"
+        results.append(r)
+        print(f"  {name:<20} {r.latency_ms:<11.3f} {r.gelem_per_sec:<13.3f} {r.effective_bw_gb_s:<11.3f}")
+
     # ═══ Stream 状态 ═══
     print("\n" + "-" * 72)
     print("  [Stream 状态]")
