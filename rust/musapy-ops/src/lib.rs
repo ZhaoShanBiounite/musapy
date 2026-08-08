@@ -18,8 +18,9 @@ pub mod indexing;
 pub mod kernels;
 pub mod linalg;
 pub mod random;
-pub mod op_builder;
 pub mod reduction;
+pub mod sparse;
+pub mod op_builder;
 
 // 公开 API 在 elementwise 模块；根级再导出保持 `musapy_ops::add` 兼容。
 pub use elementwise::*;
@@ -32,3 +33,4 @@ pub use indexing::{
 pub use linalg::{dot, lu, matmul, qr, solve, svd};
 pub use random::{bernoulli, normal, rand, randn, uniform};
 pub use fft::{FftNorm, fft, ifft, rfft};
+pub use sparse::{CsrMatrix, csr_from_arrays, csr_from_host, spmm, spmv, toarray};

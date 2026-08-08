@@ -302,6 +302,30 @@ ms.fft.rfft(a, n=None, axis=-1, norm=None, out=None) -> Array  # 实输入 → �
 - 2D+ 输入沿 axis=-1 逐行执行（Plan1d batch=1，逐行偏移指针）
 - mock 模式：mufft stub 用 naive O(N²) DFT 数值仿真（无 GPU CI 对照 np.fft）
 
+## Sparse 算子（v0.3 Phase 6，ADR-003 003-D4/D7）
+
+### 签名
+
+```python
+csr = ms.sparse.csr_matrix((data, indices, indptr), shape=None, dtype=None)  # CsrMatrix
+y = csr @ vec          # spmv（vec 可为 ms.Array / ndarray / list）
+C = csr @ dense        # spmm（dense 2D）
+A = csr.toarray()      # 物化稠密 Array
+ms.sparse.spmv(csr, vec) / ms.sparse.spmm(csr, dense)  # 显式函数形式
+```
+
+### 实现要点
+
+- 实现走 **muSPARSE 泛型 API**（`musparseCreateCsr` + `CreateDnVec/DnMat` +
+  `SpMV/SpMM`）；两段式（`temp_buffer=NULL` 查询 size → `get_workspace` → 计算）
+- **GPU-only**（003-D4）：CPU 设备上构造/运算抛 `DeviceError`
+- **本轮范围**：只做 `csr_matrix`（`coo_matrix`/coo→csr 推迟）；data dtype
+  f32/f64，indices/indptr 须 int32（`MUSPARSE_INDEX_32I`，0-based）
+- `@` 右侧：ms.Array 走 device 直连；ndarray/list 经 `tolist()` → `ms.array`
+  构造临时 device Array（dtype 沿用 mat）
+- `nnz==0` 空矩阵早退输出全零；`toarray()` 走 D2H→host 构建→H2D（正确性优先）
+- mock 模式：musparse stub 用 host CSR 循环数值仿真（无 GPU CI 对照 NumPy）
+
 ## 类型提升规则
 
 Binary 算子输入 dtype 不同时自动提升（两段式，见 ADR L1-14）：

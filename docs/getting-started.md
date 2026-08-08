@@ -166,7 +166,6 @@ print(row.tolist())                  # [104.0, 108.0, 112.0]
 | `contiguous` | `(a)` | 物化为连续布局；已连续时零拷贝 |
 
 ### 6.5 FFT（v0.3 Phase 5；`ms.fft.*` 命名空间）
-
 | 函数 | 签名 | 说明 |
 |---|---|---|
 | `fft` | `(a, n=None, axis=-1, norm=None, out=None)` | 复数 FFT；输入可 real/complex，输出 complex |
@@ -178,6 +177,18 @@ print(row.tolist())                  # [104.0, 108.0, 112.0]
 - complex 支持（Phase 5）：`ms.array([1+2j])` 推断 complex128；elementwise
   complex 全套（add/sub/mul/div/neg/abs + eq/ne；lt/gt/le/ge 与 pow 拒绝）；
   `abs(complex)` 输出 real
+
+### 6.6 Sparse（v0.3 Phase 6；`ms.sparse.*` 命名空间）
+
+```python
+csr = ms.sparse.csr_matrix((data, indices, indptr), shape=(rows, cols))
+y = csr @ vec          # spmv（vec 可为 ms.Array / ndarray / list）
+C = csr @ dense        # spmm（dense 2D）
+A = csr.toarray()      # 物化稠密 ms.Array
+```
+
+- **GPU-only**（003-D4）；`data` dtype f32/f64，`indices`/`indptr` 须 int32
+- 只做 `csr_matrix`（`coo_matrix` 推迟）；`nnz=0` 空矩阵输出全零
 
 ### 7. 运行时与上下文
 

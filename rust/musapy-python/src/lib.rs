@@ -11,6 +11,7 @@ pub mod fft;
 pub mod math_handles;
 pub mod ops;
 pub mod random;
+pub mod sparse;
 pub mod stream;
 
 use musapy_core::{Device, debug, mem_stats, resolution};
@@ -292,6 +293,8 @@ fn _core(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<dtype::PyDtype>()?;
     m.add_class::<stream::PyStream>()?;
     m.add_class::<array::PyArray>()?;
+    // Phase 6 (v0.3): sparse（ADR-003 003-D7；sparse.py 包装为 ms.sparse.*）
+    m.add_class::<sparse::PyCsrMatrix>()?;
 
     // context managers
     m.add_class::<DeviceContext>()?;
@@ -349,6 +352,10 @@ fn _core(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(fft::fft, m)?)?;
     m.add_function(wrap_pyfunction!(fft::ifft, m)?)?;
     m.add_function(wrap_pyfunction!(fft::rfft, m)?)?;
+    // Phase 6 (v0.3): sparse ops（_core 平铺，sparse.py 包装为 ms.sparse.*）
+    m.add_function(wrap_pyfunction!(sparse::csr_matrix, m)?)?;
+    m.add_function(wrap_pyfunction!(sparse::spmv, m)?)?;
+    m.add_function(wrap_pyfunction!(sparse::spmm, m)?)?;
     // Phase 5: creation ops
     m.add_function(wrap_pyfunction!(ops::zeros, m)?)?;
     m.add_function(wrap_pyfunction!(ops::ones, m)?)?;

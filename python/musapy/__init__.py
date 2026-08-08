@@ -104,9 +104,10 @@ from ._core import (
     LinAlgError,
 )
 
-# 命名空间子模块（ADR-003 003-D7）：ms.random（Phase 4）/ ms.fft（Phase 5）
+# 命名空间子模块（ADR-003 003-D7）：ms.random（Phase 4）/ ms.fft（Phase 5）/ ms.sparse（Phase 6）
 from . import random
 from . import fft
+from . import sparse
 
 __all__ = [
     # version + startup

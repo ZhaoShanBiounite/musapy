@@ -52,6 +52,15 @@ pub type mufftHandle = *mut c_void;
 /// muSPARSE 句柄(opaque 指针)。
 pub type musparseHandle_t = *mut c_void;
 
+/// muSPARSE 稀疏矩阵描述符(opaque 指针;musparse-types.h:113)。
+pub type musparseSpMatDescr_t = *mut c_void;
+
+/// muSPARSE 稠密向量描述符(opaque 指针;musparse-types.h:114)。
+pub type musparseDnVecDescr_t = *mut c_void;
+
+/// muSPARSE 稠密矩阵描述符(opaque 指针;musparse-types.h:115)。
+pub type musparseDnMatDescr_t = *mut c_void;
+
 // ============================================================
 // 标量/复数类型(Phase 2:gemm/dot 的 alpha/beta 与复数矩阵)
 // ============================================================
@@ -145,6 +154,40 @@ pub const MUFFT_Z2Z: mufftType = 0x69;
 /// FFT 方向(mufft.h:105/108,#define 常量)。
 pub const MUFFT_FORWARD: c_int = -1;
 pub const MUFFT_INVERSE: c_int = 1;
+
+/// muSPARSE 常量(musparse-types.h / library_types.h 实测,Phase 6)。
+pub type musparseIndexType_t = c_int;
+pub const MUSPARSE_INDEX_32I: musparseIndexType_t = 2;
+pub const MUSPARSE_INDEX_64I: musparseIndexType_t = 3;
+
+pub type musparseIndexBase_t = c_int;
+pub const MUSPARSE_INDEX_BASE_ZERO: musparseIndexBase_t = 0;
+
+pub type musparseMatrixType_t = c_int;
+pub const MUSPARSE_MATRIX_TYPE_GENERAL: musparseMatrixType_t = 0;
+
+/// 稠密数据类型(musparseDataType_t ≡ musaDataType_t,library_types.h:7)。
+pub type musparseDataType_t = c_int;
+pub const MUSA_R_32F: musparseDataType_t = 0;
+pub const MUSA_R_64F: musparseDataType_t = 1;
+
+pub type musparseOperation_t = c_int;
+pub const MUSPARSE_OPERATION_NON_TRANSPOSE: musparseOperation_t = 111;
+pub const MUSPARSE_OPERATION_TRANSPOSE: musparseOperation_t = 112;
+pub const MUSPARSE_OPERATION_CONJUGATE_TRANSPOSE: musparseOperation_t = 113;
+
+pub type musparseOrder_t = c_int;
+pub const MUSPARSE_ORDER_ROW: musparseOrder_t = 0;
+pub const MUSPARSE_ORDER_COLUMN: musparseOrder_t = 1;
+
+pub type musparseSpMVAlg_t = c_int;
+pub const MUSPARSE_SPMV_ALG_DEFAULT: musparseSpMVAlg_t = 0;
+
+pub type musparseSpMMAlg_t = c_int;
+pub const MUSPARSE_SPMM_ALG_DEFAULT: musparseSpMMAlg_t = 0;
+
+pub type musparseSpMMStage_t = c_int;
+pub const MUSPARSE_SPMM_STAGE_AUTO: musparseSpMMStage_t = 0;
 
 // ============================================================
 // FFI 声明(真实模式)
@@ -757,6 +800,70 @@ mod real {
         pub fn musparseGetVersion(
             handle: musparseHandle_t,
             version: *mut c_int,
+        ) -> musparseStatus_t;
+        // ── muSPARSE 泛型 API(Phase 6,musparse-auxiliary.h/functions.h 实测)──
+        // 所有 data/indices/values 均为 device 指针;alpha/beta 为 host 标量
+        // (默认 PointerMode HOST)。描述符销毁统一走 DestroySpMat/DestroyDnVec/DestroyDnMat。
+        pub fn musparseCreateCsr(
+            descr: *mut musparseSpMatDescr_t,
+            rows: i64,
+            cols: i64,
+            nnz: i64,
+            csr_row_ptr: *mut c_void,
+            csr_col_ind: *mut c_void,
+            csr_val: *mut c_void,
+            row_ptr_type: musparseIndexType_t,
+            col_ind_type: musparseIndexType_t,
+            idx_base: musparseIndexBase_t,
+            data_type: musparseDataType_t,
+        ) -> musparseStatus_t;
+        pub fn musparseDestroySpMat(descr: musparseSpMatDescr_t) -> musparseStatus_t;
+        pub fn musparseCreateDnVec(
+            descr: *mut musparseDnVecDescr_t,
+            size: i64,
+            values: *mut c_void,
+            data_type: musparseDataType_t,
+        ) -> musparseStatus_t;
+        pub fn musparseDestroyDnVec(descr: musparseDnVecDescr_t) -> musparseStatus_t;
+        pub fn musparseCreateDnMat(
+            descr: *mut musparseDnMatDescr_t,
+            rows: i64,
+            cols: i64,
+            ld: i64,
+            values: *mut c_void,
+            data_type: musparseDataType_t,
+            order: musparseOrder_t,
+        ) -> musparseStatus_t;
+        pub fn musparseDestroyDnMat(descr: musparseDnMatDescr_t) -> musparseStatus_t;
+        // 两段式在同一调用:temp_buffer=NULL 时写所需字节数到 buffer_size 并返回
+        // (无独立 _bufferSize 符号,SDK 限制 2.5);再用 buffer 调计算。
+        pub fn musparseSpMV(
+            handle: musparseHandle_t,
+            trans: musparseOperation_t,
+            alpha: *const c_void,
+            mat: musparseSpMatDescr_t,
+            x: musparseDnVecDescr_t,
+            beta: *const c_void,
+            y: musparseDnVecDescr_t,
+            compute_type: musparseDataType_t,
+            alg: musparseSpMVAlg_t,
+            buffer_size: *mut usize,
+            temp_buffer: *mut c_void,
+        ) -> musparseStatus_t;
+        pub fn musparseSpMM(
+            handle: musparseHandle_t,
+            trans_A: musparseOperation_t,
+            trans_B: musparseOperation_t,
+            alpha: *const c_void,
+            mat_A: musparseSpMatDescr_t,
+            mat_B: musparseDnMatDescr_t,
+            beta: *const c_void,
+            mat_C: musparseDnMatDescr_t,
+            compute_type: musparseDataType_t,
+            alg: musparseSpMMAlg_t,
+            stage: musparseSpMMStage_t,
+            buffer_size: *mut usize,
+            temp_buffer: *mut c_void,
         ) -> musparseStatus_t;
     }
 }
@@ -2344,6 +2451,347 @@ mod mock {
         }
         unsafe { *version = 30100 };
         MUSPARSE_STATUS_SUCCESS
+    }
+
+    // ── mock muSPARSE 泛型 API（host 端数值仿真，供无 GPU CI 对照 NumPy）──
+    // 描述符记录 device 指针（mock 下 buffer 是 host 内存，直接读指针做 CSR 计算）。
+    // 销毁统一走 DestroySpMat/DestroyDnVec/DestroyDnMat。
+
+    #[derive(Clone, Copy)]
+    struct MockSpMat {
+        rows: i64,
+        cols: i64,
+        nnz: i64,
+        row_ptr: *const c_void,
+        col_ind: *const c_void,
+        vals: *const c_void,
+        data_type: musparseDataType_t,
+    }
+
+    #[derive(Clone, Copy)]
+    struct MockDnVec {
+        size: i64,
+        vals: *const c_void,
+        data_type: musparseDataType_t,
+    }
+
+    #[derive(Clone, Copy)]
+    struct MockDnMat {
+        rows: i64,
+        cols: i64,
+        ld: i64,
+        vals: *const c_void,
+        data_type: musparseDataType_t,
+    }
+
+    static MOCK_SPMATS: Mutex<HashMap<musparseSpMatDescr_t, MockSpMat>> =
+        Mutex::new(HashMap::new());
+    static MOCK_DNVECS: Mutex<HashMap<musparseDnVecDescr_t, MockDnVec>> =
+        Mutex::new(HashMap::new());
+    static MOCK_DNMATS: Mutex<HashMap<musparseDnMatDescr_t, MockDnMat>> =
+        Mutex::new(HashMap::new());
+
+    pub unsafe fn musparseCreateCsr(
+        descr: *mut musparseSpMatDescr_t,
+        rows: i64,
+        cols: i64,
+        nnz: i64,
+        csr_row_ptr: *mut c_void,
+        csr_col_ind: *mut c_void,
+        csr_val: *mut c_void,
+        _row_ptr_type: musparseIndexType_t,
+        _col_ind_type: musparseIndexType_t,
+        _idx_base: musparseIndexBase_t,
+        data_type: musparseDataType_t,
+    ) -> musparseStatus_t {
+        if descr.is_null() {
+            return 1;
+        }
+        let h = next_handle();
+        unsafe {
+            *descr = h;
+        }
+        MOCK_SPMATS.lock().unwrap().insert(
+            h,
+            MockSpMat {
+                rows,
+                cols,
+                nnz,
+                row_ptr: csr_row_ptr as *const c_void,
+                col_ind: csr_col_ind as *const c_void,
+                vals: csr_val as *const c_void,
+                data_type,
+            },
+        );
+        MUSPARSE_STATUS_SUCCESS
+    }
+
+    pub unsafe fn musparseDestroySpMat(descr: musparseSpMatDescr_t) -> musparseStatus_t {
+        MOCK_SPMATS.lock().unwrap().remove(&descr);
+        MUSPARSE_STATUS_SUCCESS
+    }
+
+    pub unsafe fn musparseCreateDnVec(
+        descr: *mut musparseDnVecDescr_t,
+        size: i64,
+        values: *mut c_void,
+        data_type: musparseDataType_t,
+    ) -> musparseStatus_t {
+        if descr.is_null() {
+            return 1;
+        }
+        let h = next_handle();
+        unsafe {
+            *descr = h;
+        }
+        MOCK_DNVECS.lock().unwrap().insert(
+            h,
+            MockDnVec {
+                size,
+                vals: values as *const c_void,
+                data_type,
+            },
+        );
+        MUSPARSE_STATUS_SUCCESS
+    }
+
+    pub unsafe fn musparseDestroyDnVec(descr: musparseDnVecDescr_t) -> musparseStatus_t {
+        MOCK_DNVECS.lock().unwrap().remove(&descr);
+        MUSPARSE_STATUS_SUCCESS
+    }
+
+    pub unsafe fn musparseCreateDnMat(
+        descr: *mut musparseDnMatDescr_t,
+        rows: i64,
+        cols: i64,
+        ld: i64,
+        values: *mut c_void,
+        data_type: musparseDataType_t,
+        _order: musparseOrder_t,
+    ) -> musparseStatus_t {
+        if descr.is_null() {
+            return 1;
+        }
+        let h = next_handle();
+        unsafe {
+            *descr = h;
+        }
+        MOCK_DNMATS.lock().unwrap().insert(
+            h,
+            MockDnMat {
+                rows,
+                cols,
+                ld,
+                vals: values as *const c_void,
+                data_type,
+            },
+        );
+        MUSPARSE_STATUS_SUCCESS
+    }
+
+    pub unsafe fn musparseDestroyDnMat(descr: musparseDnMatDescr_t) -> musparseStatus_t {
+        MOCK_DNMATS.lock().unwrap().remove(&descr);
+        MUSPARSE_STATUS_SUCCESS
+    }
+
+    /// mock SpMV：y = alpha·A·x + beta·y（host CSR 计算，f32/f64）。
+    /// temp_buffer=NULL 时写 0 到 buffer_size 并返回（两段式查询阶段）。
+    pub unsafe fn musparseSpMV(
+        _handle: musparseHandle_t,
+        trans: musparseOperation_t,
+        alpha: *const c_void,
+        mat: musparseSpMatDescr_t,
+        x: musparseDnVecDescr_t,
+        beta: *const c_void,
+        y: musparseDnVecDescr_t,
+        compute_type: musparseDataType_t,
+        _alg: musparseSpMVAlg_t,
+        buffer_size: *mut usize,
+        temp_buffer: *mut c_void,
+    ) -> musparseStatus_t {
+        if buffer_size.is_null() {
+            return 1;
+        }
+        if temp_buffer.is_null() {
+            // 查询阶段：写所需字节数（mock 用 0，真实 SDK 可能非零）
+            unsafe { *buffer_size = 0 };
+            return MUSPARSE_STATUS_SUCCESS;
+        }
+        let (m, xv, yv) = {
+            let g = MOCK_SPMATS.lock().unwrap();
+            let s = match g.get(&mat) {
+                Some(s) => *s,
+                None => return 1,
+            };
+            let xv = match MOCK_DNVECS.lock().unwrap().get(&x) {
+                Some(v) => *v,
+                None => return 1,
+            };
+            let yv = match MOCK_DNVECS.lock().unwrap().get(&y) {
+                Some(v) => *v,
+                None => return 1,
+            };
+            (s, xv, yv)
+        };
+        if compute_type == MUSA_R_32F {
+            mock_spmv_f64::<f32>(&m, &xv, &yv, trans, alpha, beta);
+        } else {
+            mock_spmv_f64::<f64>(&m, &xv, &yv, trans, alpha, beta);
+        }
+        MUSPARSE_STATUS_SUCCESS
+    }
+
+    /// 泛型 host CSR spmv（T=f32/f64；alpha/beta 按 host f64 传入）。
+    fn mock_spmv_f64<T: CsrVal>(
+        m: &MockSpMat,
+        xv: &MockDnVec,
+        yv: &MockDnVec,
+        trans: musparseOperation_t,
+        alpha: *const c_void,
+        beta: *const c_void,
+    ) {
+        let rows = m.rows as usize;
+        let cols = m.cols as usize;
+        let row_ptr = m.row_ptr as *const i64;
+        let col_ind = m.col_ind as *const i32;
+        let vals = m.vals as *const T;
+        let x = xv.vals as *const T;
+        let y = yv.vals as *mut T;
+        let alpha_v = unsafe { *(alpha as *const f64) };
+        let beta_v = unsafe { *(beta as *const f64) };
+        if trans == MUSPARSE_OPERATION_NON_TRANSPOSE {
+            for i in 0..rows {
+                let mut acc: f64 = 0.0;
+                let start = unsafe { *row_ptr.add(i) } as usize;
+                let end = unsafe { *row_ptr.add(i + 1) } as usize;
+                for k in start..end {
+                    let j = unsafe { *col_ind.add(k) } as usize;
+                    let v = unsafe { *vals.add(k) };
+                    acc += v.to_f64() * unsafe { *x.add(j) }.to_f64();
+                }
+                let yi = unsafe { &mut *y.add(i) };
+                *yi = T::from_f64(alpha_v * acc + beta_v * yi.to_f64());
+            }
+        } else {
+            // 转置：x 长度 = rows，输出 cols
+            for j in 0..cols {
+                let mut acc: f64 = 0.0;
+                for i in 0..rows {
+                    let start = unsafe { *row_ptr.add(i) } as usize;
+                    let end = unsafe { *row_ptr.add(i + 1) } as usize;
+                    for k in start..end {
+                        if unsafe { *col_ind.add(k) } as usize == j {
+                            acc += unsafe { *vals.add(k) }.to_f64() * unsafe { *x.add(i) }.to_f64();
+                        }
+                    }
+                }
+                let yj = unsafe { &mut *y.add(j) };
+                *yj = T::from_f64(alpha_v * acc + beta_v * yj.to_f64());
+            }
+        }
+    }
+
+    /// mock SpMM：C = alpha·A·B + beta·C（host CSR × 稠密行主序）。
+    pub unsafe fn musparseSpMM(
+        _handle: musparseHandle_t,
+        _trans_A: musparseOperation_t,
+        _trans_B: musparseOperation_t,
+        alpha: *const c_void,
+        mat_A: musparseSpMatDescr_t,
+        mat_B: musparseDnMatDescr_t,
+        beta: *const c_void,
+        mat_C: musparseDnMatDescr_t,
+        compute_type: musparseDataType_t,
+        _alg: musparseSpMMAlg_t,
+        _stage: musparseSpMMStage_t,
+        buffer_size: *mut usize,
+        temp_buffer: *mut c_void,
+    ) -> musparseStatus_t {
+        if buffer_size.is_null() {
+            return 1;
+        }
+        if temp_buffer.is_null() {
+            unsafe { *buffer_size = 0 };
+            return MUSPARSE_STATUS_SUCCESS;
+        }
+        let (m, b, c) = {
+            let g = MOCK_SPMATS.lock().unwrap();
+            let s = match g.get(&mat_A) {
+                Some(s) => *s,
+                None => return 1,
+            };
+            let b = match MOCK_DNMATS.lock().unwrap().get(&mat_B) {
+                Some(b) => *b,
+                None => return 1,
+            };
+            let c = match MOCK_DNMATS.lock().unwrap().get(&mat_C) {
+                Some(c) => *c,
+                None => return 1,
+            };
+            (s, b, c)
+        };
+        if compute_type == MUSA_R_32F {
+            mock_spmm_host::<f32>(&m, &b, &c, alpha, beta);
+        } else {
+            mock_spmm_host::<f64>(&m, &b, &c, alpha, beta);
+        }
+        MUSPARSE_STATUS_SUCCESS
+    }
+
+    /// 泛型 host CSR × 稠密（T=f32/f64；B/C 行主序 ld=cols）。
+    fn mock_spmm_host<T: CsrVal>(
+        m: &MockSpMat,
+        b: &MockDnMat,
+        c: &MockDnMat,
+        alpha: *const c_void,
+        beta: *const c_void,
+    ) {
+        let rows = m.rows as usize;
+        let bcols = b.cols as usize;
+        let row_ptr = m.row_ptr as *const i64;
+        let col_ind = m.col_ind as *const i32;
+        let vals = m.vals as *const T;
+        let bv = b.vals as *const T;
+        let cv = c.vals as *mut T;
+        let alpha_v = unsafe { *(alpha as *const f64) };
+        let beta_v = unsafe { *(beta as *const f64) };
+        for i in 0..rows {
+            for jj in 0..bcols {
+                let mut acc: f64 = 0.0;
+                let start = unsafe { *row_ptr.add(i) } as usize;
+                let end = unsafe { *row_ptr.add(i + 1) } as usize;
+                for k in start..end {
+                    let j = unsafe { *col_ind.add(k) } as usize;
+                    acc += unsafe { *vals.add(k) }.to_f64() * unsafe { *bv.add(j * bcols + jj) }.to_f64();
+                }
+                let ci = unsafe { &mut *cv.add(i * bcols + jj) };
+                *ci = T::from_f64(alpha_v * acc + beta_v * ci.to_f64());
+            }
+        }
+    }
+
+    /// mock 标量转换 trait（f32/f64 复用）。
+    trait CsrVal: Copy {
+        fn to_f64(self) -> f64;
+        fn from_f64(x: f64) -> Self;
+    }
+
+    impl CsrVal for f32 {
+        fn to_f64(self) -> f64 {
+            self as f64
+        }
+        fn from_f64(x: f64) -> f32 {
+            x as f32
+        }
+    }
+
+    impl CsrVal for f64 {
+        fn to_f64(self) -> f64 {
+            self
+        }
+        fn from_f64(x: f64) -> f64 {
+            x
+        }
     }
 }
 
