@@ -206,12 +206,14 @@ b = ms.array([10.0, 20.0, 30.0, 40.0])
 print((a + b).shape)  # (3, 4)
 
 # 类型提升：int64 + float64 → float64
-i = ms.array([1, 2, 3], dtype=ms.int64)
-f = ms.array([0.1, 0.2, 0.3], dtype=ms.float64)
+i = ms.array([1, 2, 3], dtype='i64')
+f = ms.array([0.1, 0.2, 0.3], dtype='f64')
 c = ms.add(i, f)
 print(c.dtype)    # float64
 print(c.tolist()) # [1.1, 2.2, 3.3]
 ```
+
+> dtype 支持字符串语法：`'f32'`/`'f64'`/`'i64'` 等短别名或 `'float32'`/`'float64'` 全名（也兼容 `ms.float32` 常量）。
 
 ### Unary + Clamp
 

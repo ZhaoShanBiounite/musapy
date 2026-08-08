@@ -65,11 +65,11 @@ def run_rand_throughput(device_str: str, iters: int) -> None:
     print(f"    {'n':>8} {'op':>6} {'dtype':>5} {'延迟(ms)':>10} {'吞吐(GB/s)':>10}")
     print(f"    {'─'*8} {'─'*6} {'─'*5} {'─'*10} {'─'*10}")
     for n in (1_000_000, 10_000_000, 100_000_000):
-        for op, dtype in (("rand", ms.float32), ("rand", ms.float64),
-                          ("randn", ms.float32), ("randn", ms.float64)):
+        for op, dtype in (("rand", 'f32'), ("rand", 'f64'),
+                          ("randn", 'f32'), ("randn", 'f64')):
             fn = lambda op=op, dtype=dtype: getattr(ms.random, op)(n, dtype=dtype, device=device_str)
             lat = bench_latency_ms(fn, iters)
-            gbps = (n * dtype.element_size) / (lat / 1000.0) / 1e9
+            gbps = (n * ms.Dtype(dtype).element_size) / (lat / 1000.0) / 1e9
             print(f"    {n:>8} {op:>6} {str(dtype):>5} {lat:>10.3f} {gbps:>10.2f}")
 
 
@@ -84,9 +84,9 @@ def run_decomp_latency(device_str: str, iters: int) -> None:
     print(f"    {'─'*8} {'─'*12} {'─'*12} {'─'*14}")
     for n in (1_000_000, 10_000_000, 100_000_000):
         lat_u = bench_latency_ms(
-            lambda: ms.random.uniform(-1.0, 1.0, shape=(n,), dtype=ms.float64, device=device_str), iters)
+            lambda: ms.random.uniform(-1.0, 1.0, shape=(n,), dtype='f64', device=device_str), iters)
         lat_n = bench_latency_ms(
-            lambda: ms.random.normal(0.0, 1.0, shape=(n,), dtype=ms.float64, device=device_str), iters)
+            lambda: ms.random.normal(0.0, 1.0, shape=(n,), dtype='f64', device=device_str), iters)
         lat_b = bench_latency_ms(
             lambda: ms.random.bernoulli(0.5, shape=(n,), device=device_str), iters)
         print(f"    {n:>8} {lat_u:>12.3f} {lat_n:>12.3f} {lat_b:>14.3f}")

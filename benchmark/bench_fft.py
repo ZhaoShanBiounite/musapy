@@ -67,15 +67,15 @@ def run_fft_throughput(device_str: str, iters: int, sizes: tuple) -> None:
     print(f"    {'n':>9} {'op':>5} {'dtype':>5} {'延迟(ms)':>10} {'吞吐(GB/s)':>10}")
     print(f"    {'─'*9} {'─'*5} {'─'*5} {'─'*10} {'─'*10}")
     for n in sizes:
-        for dtype in (ms.float32, ms.float64):
+        for dtype in ('f32', 'f64'):
             x = ms.array(
-                np.linspace(0.0, 1.0, n).astype(np.float32 if dtype == ms.float32 else np.float64).tolist(),
+                np.linspace(0.0, 1.0, n).astype(np.float32 if dtype == 'f32' else np.float64).tolist(),
                 dtype=dtype,
                 device=device_str,
             )
-            out_dtype = ms.complex64 if dtype == ms.float32 else ms.complex128
-            elem_out = out_dtype.element_size
-            elem_in = dtype.element_size
+            out_dtype = 'c64' if dtype == 'f32' else 'c128'
+            elem_out = ms.Dtype(out_dtype).element_size
+            elem_in = ms.Dtype(dtype).element_size
 
             lat_f = bench_latency_ms(lambda: ms.fft.fft(x), iters)
             gbps_f = (n * elem_out) / (lat_f / 1000.0) / 1e9
@@ -99,12 +99,12 @@ def run_2d_rows(device_str: str, iters: int, rows: int, cols: int) -> None:
     print("-" * 72)
     x = ms.array(
         np.random.default_rng(7).normal(size=(rows, cols)).tolist(),
-        dtype=ms.float64,
+        dtype='f64',
         device=device_str,
     )
     lat = bench_latency_ms(lambda: ms.fft.fft(x), iters)
     # 与 1D 同规模对比：2D 额外开销来自逐行偏移
-    x1 = ms.array(x.tolist()[0], dtype=ms.float64, device=device_str)
+    x1 = ms.array(x.tolist()[0], dtype='f64', device=device_str)
     lat1 = bench_latency_ms(lambda: ms.fft.fft(x1), iters)
     print(f"    2D fft ({rows}×{cols}): {lat:>10.3f} ms   1D 单行({cols}): {lat1:>10.3f} ms")
 

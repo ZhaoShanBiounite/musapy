@@ -166,8 +166,8 @@ def run_benchmark(size: int, iters: int, device_id: int):
     data_a = [float(i % 1000) * 0.001 for i in range(size)]
     data_b = [float(i % 777) * 0.002 + 0.001 for i in range(size)]
 
-    a = ms.array(data_a, dtype=ms.float32, device=device_str)
-    b = ms.array(data_b, dtype=ms.float32, device=device_str)
+    a = ms.array(data_a, dtype='f32', device=device_str)
+    b = ms.array(data_b, dtype='f32', device=device_str)
 
     print(f"  分配后显存: {fmt_bytes(a.nbytes * 2)}")
     print("-" * 72)
@@ -285,7 +285,7 @@ def run_benchmark(size: int, iters: int, device_id: int):
     rows, cols = 256, 256
     flat = [float(i % 10000) * 0.01 for i in range(rows * cols)]
     nested = [flat[i * cols:(i + 1) * cols] for i in range(rows)]
-    mat = ms.array(nested, dtype=ms.float32, device=device_str)
+    mat = ms.array(nested, dtype='f32', device=device_str)
     total_2d = rows * cols
     print(f"  矩阵: {rows}×{cols} = {total_2d:,} elements ({fmt_bytes(total_2d * 4)})")
 
@@ -312,7 +312,7 @@ def run_benchmark(size: int, iters: int, device_id: int):
     # 复数（sum/prod/mean：分量 small_axis/partial/final 并行路径，2026-08-08 优化
     # 后 1M 已 0.1ms 量级；max/min/arg* 复数无全序拒绝）
     cplx_data = [complex(i % 1000 * 0.001, i % 500 * 0.002) for i in range(size)]
-    cplx = ms.array(cplx_data, dtype=ms.complex64, device=device_str)
+    cplx = ms.array(cplx_data, dtype='c64', device=device_str)
     print(f"  复数数组: {size:,} elements × complex64 = {fmt_bytes(size * 8)} / array")
     cplx_ops = [
         # (name, fn, flops_per_elem, read_bytes_per_elem, write_bytes_per_elem)
@@ -359,8 +359,8 @@ def run_benchmark(size: int, iters: int, device_id: int):
     print("      ≥2M 规模 220+ GB/s）。")
 
     # gather/scatter：全量索引（indices = 全排列），等效于整数组读写
-    idx_all = ms.arange(size, dtype=ms.int64, device=device_str)
-    vals = ms.array(data_b, dtype=ms.float32, device=device_str)
+    idx_all = ms.arange(size, dtype='i64', device=device_str)
+    vals = ms.array(data_b, dtype='f32', device=device_str)
 
     # contiguous：transpose/flip 视图物化（读 + 写全量）；flat 走零拷贝快路径
     cols_2d = 1024
@@ -368,7 +368,7 @@ def run_benchmark(size: int, iters: int, device_id: int):
     n_2d = rows_2d * cols_2d
     a_2d = ms.array(
         [data_a[i * cols_2d:(i + 1) * cols_2d] for i in range(rows_2d)],
-        dtype=ms.float32, device=device_str,
+        dtype='f32', device=device_str,
     )
     t_view = ms.transpose(a_2d)
     f_view = ms.flip(a_2d, axis=1)
@@ -411,13 +411,13 @@ def run_benchmark(size: int, iters: int, device_id: int):
     print("  注: 当前走 host fallback（D2H→host→H2D，mcc 不支持指针数组 kernel）；")
     print("      延迟反映实现现状，kernel 优化后复测")
     # mask：约一半 true（data_a ∈ [0,1)）
-    adv_a = ms.array(data_a[:adv_cap], dtype=ms.float32, device=device_str)
-    mask = ms.array([v > 0.5 for v in data_a[:adv_cap]], dtype=ms.bool_, device=device_str)
+    adv_a = ms.array(data_a[:adv_cap], dtype='f32', device=device_str)
+    mask = ms.array([v > 0.5 for v in data_a[:adv_cap]], dtype='b1', device=device_str)
     # fancy：前 size/2 个索引（顺序，输出 size/2 元素）
-    idx_half = ms.arange(adv_cap // 2, dtype=ms.int64, device=device_str)
+    idx_half = ms.arange(adv_cap // 2, dtype='i64', device=device_str)
     # 2D fancy（坐标配对，用前面定义的 256×256 mat）：128 个索引对
-    i2d_0 = ms.array([i % 128 for i in range(128)], dtype=ms.int64, device=device_str)
-    i2d_1 = ms.array([i % 128 for i in range(128)], dtype=ms.int64, device=device_str)
+    i2d_0 = ms.array([i % 128 for i in range(128)], dtype='i64', device=device_str)
+    i2d_1 = ms.array([i % 128 for i in range(128)], dtype='i64', device=device_str)
 
     adv_ops = [
         # (name, fn, flops_per_elem, read_bytes_per_elem, write_bytes_per_elem, n_elems)

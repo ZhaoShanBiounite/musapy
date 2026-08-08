@@ -97,7 +97,7 @@ def run_matmul(device_str: str, iters: int, max_n: int) -> None:
     # 正确性校准（仅小规模，防计时垃圾数据）
     import numpy as np
 
-    for dtype, name, atol in ((ms.float32, "f32", 1e-4), (ms.float64, "f64", 1e-9)):
+    for dtype, name, atol in (('f32', "f32", 1e-4), ('f64', "f64", 1e-9)):
         n = 128
         a = ms.array([[float((i + j) % 7) * 0.5 for j in range(n)] for i in range(n)],
                      dtype=dtype, device=device_str)
@@ -107,7 +107,7 @@ def run_matmul(device_str: str, iters: int, max_n: int) -> None:
         exp = np.matmul(np.array(a.tolist()), np.array(b.tolist()))
         assert np.allclose(got.tolist(), exp, atol=atol), f"matmul {name} 校准失败"
 
-    for dtype, name in ((ms.float32, "f32"), (ms.float64, "f64")):
+    for dtype, name in (('f32', "f32"), ('f64', "f64")):
         print(f"\n  {name}:")
         print(f"    {'n':>6} {'延迟(ms)':>12} {'GFLOPS':>10}")
         print(f"    {'─'*6} {'─'*12} {'─'*10}")
@@ -128,8 +128,8 @@ def run_dot(device_str: str, iters: int) -> None:
     print(f"    {'规模':>10} {'延迟(ms)':>12} {'吞吐(GE/s)':>13} {'带宽(GB/s)':>12}")
     print(f"    {'─'*10} {'─'*12} {'─'*13} {'─'*12}")
     for size in (1_000_000, 10_000_000):
-        a = ms.ones([size], dtype=ms.float32, device=device_str)
-        b = ms.ones([size], dtype=ms.float32, device=device_str)
+        a = ms.ones([size], dtype='f32', device=device_str)
+        b = ms.ones([size], dtype='f32', device=device_str)
         lat = bench_latency_ms(lambda: ms.dot(a, b), iters)
         gelem_s = size / (lat / 1000.0) / 1e9
         bw = gelem_s * 8.0  # 读 2 × f32
@@ -142,10 +142,10 @@ def run_dot(device_str: str, iters: int) -> None:
 def bench_solve(device_str: str, n: int, nrhs: int, iters: int) -> float:
     # A = ones + I：对角 2、非对角 1，严格对角占优 → 非奇异
     a = ms.add(
-        ms.full([n, n], 1.0, dtype=ms.float64, device=device_str),
-        ms.eye(n, dtype=ms.float64, device=device_str),
+        ms.full([n, n], 1.0, dtype='f64', device=device_str),
+        ms.eye(n, dtype='f64', device=device_str),
     )
-    b = ms.ones([n, nrhs], dtype=ms.float64, device=device_str)
+    b = ms.ones([n, nrhs], dtype='f64', device=device_str)
     return bench_latency_ms(lambda: ms.solve(a, b), iters)
 
 
@@ -167,8 +167,8 @@ def run_solve(device_str: str, iters: int) -> None:
 def bench_decomp_latency_ms(device_str: str, n: int, iters: int) -> tuple[float, float, float]:
     """lu / qr / svd 方阵延迟（f64；同一 A，各算子独立计时）。"""
     a = ms.add(
-        ms.full([n, n], 1.0, dtype=ms.float64, device=device_str),
-        ms.eye(n, dtype=ms.float64, device=device_str),
+        ms.full([n, n], 1.0, dtype='f64', device=device_str),
+        ms.eye(n, dtype='f64', device=device_str),
     )
     return (
         bench_latency_ms(lambda: ms.lu(a), iters),

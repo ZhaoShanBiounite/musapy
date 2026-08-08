@@ -54,7 +54,7 @@ def make_csr(n: int, density: float, dtype, device_str: str):
     # 随机行分布（不均但足够基准用）
     rows = rng.integers(0, n, size=nnz)
     cols = rng.integers(0, n, size=nnz)
-    data = rng.normal(size=nnz).astype(np.float32 if dtype == ms.float32 else np.float64)
+    data = rng.normal(size=nnz).astype(np.float32 if dtype == 'f32' else np.float64)
     # indptr：按行计数（向量化）
     row_count = np.bincount(rows, minlength=n)
     ptr = np.zeros(n + 1, dtype=np.int32)
@@ -62,8 +62,8 @@ def make_csr(n: int, density: float, dtype, device_str: str):
     ind = cols.astype(np.int32)
     csr = ms.sparse.csr_matrix(
         (ms.array(data.tolist(), dtype=dtype, device=device_str),
-         ms.array(ind.tolist(), dtype=ms.int32, device=device_str),
-         ms.array(ptr.tolist(), dtype=ms.int32, device=device_str)),
+         ms.array(ind.tolist(), dtype='i32', device=device_str),
+         ms.array(ptr.tolist(), dtype='i32', device=device_str)),
         shape=(n, n),
     )
     return csr, nnz
@@ -76,19 +76,19 @@ def run_spmv_spmm(device_str: str, iters: int, n: int) -> None:
     print(f"    {'density':>8} {'nnz':>9} {'spmv(ms)':>10} {'spmm k=4(ms)':>14} {'spmv GB/s':>10}")
     print(f"    {'─'*8} {'─'*9} {'─'*10} {'─'*14} {'─'*10}")
     for density in (0.01, 0.1, 0.5):
-        for dtype in (ms.float32, ms.float64):
+        for dtype in ('f32', 'f64'):
             csr, nnz = make_csr(n, density, dtype, device_str)
             v = ms.array(np.random.rand(n).astype(
-                np.float32 if dtype == ms.float32 else np.float64
+                np.float32 if dtype == 'f32' else np.float64
             ).tolist(), dtype=dtype, device=device_str)
             B = ms.array(np.random.rand(n, 4).astype(
-                np.float32 if dtype == ms.float32 else np.float64
+                np.float32 if dtype == 'f32' else np.float64
             ).tolist(), dtype=dtype, device=device_str)
 
             lat_v = bench_latency_ms(lambda: csr @ v, iters)
             lat_m = bench_latency_ms(lambda: csr @ B, iters)
             # spmv 有效带宽：读 data+indices（4+4 或 8+4 字节/nnz）+ 写 vec
-            elem = 4 if dtype == ms.float32 else 8
+            elem = 4 if dtype == 'f32' else 8
             gbps = (nnz * (elem + 4)) / (lat_v / 1000.0) / 1e9
             print(f"    {density:>8.2f} {nnz:>9} {lat_v:>10.3f} {lat_m:>14.3f} {gbps:>10.2f}")
 
