@@ -95,7 +95,7 @@ def run_fft_throughput(device_str: str, iters: int, sizes: tuple) -> None:
 
 def run_2d_rows(device_str: str, iters: int, rows: int, cols: int) -> None:
     print("-" * 72)
-    print(f"  [2D 逐行 fft — ({rows}×{cols})，axis=-1；验证 Plan1d 逐行语义]")
+    print(f"  [2D fft — ({rows}×{cols})，axis=-1；batched PlanMany 单次 Exec（P-FFT-1）]")
     print("-" * 72)
     x = ms.array(
         np.random.default_rng(7).normal(size=(rows, cols)).tolist(),
@@ -153,10 +153,10 @@ def main() -> None:
     print("\n" + "=" * 72)
     print("  ✓ 测试结论")
     print("=" * 72)
-    print("  ✓ fft/ifft/rfft（f32/f64 × 规模）延迟扫描 + 2D 逐行场景全部执行正常")
+    print("  ✓ fft/ifft/rfft（f32/f64 × 规模）延迟扫描 + 2D 场景全部执行正常")
     print("  ⚠ ifft 延迟含 1/N 归一化 scale kernel（backward 时）")
     print("  ⚠ rfft 吞吐按输入 real 字节数计；输出为 (N//2+1) complex")
-    print("  ⚠ axis=-1 起步：2D 输入逐行执行 Plan1d batch=1（fftn/多轴推迟）")
+    print("  ⚠ axis=-1 起步；2D+ 走 batched PlanMany（P-FFT-1：2D 实测 24.5× 加速）")
     print("=" * 72)
 
 

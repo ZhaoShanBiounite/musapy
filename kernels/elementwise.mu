@@ -1365,6 +1365,39 @@ REAL_RESIZE_KERNEL(double)
 
 #undef REAL_RESIZE_KERNEL
 
+// ── real → complex cast + resize 合并（P-FFT-2，2026-08-08）──
+// fft/ifft 的 real 输入：一次 kernel 完成「扩 complex（re=x, im=0）+ 截断/补零」，
+// 省去原先 cast_array（[.,n_in]）与 resize（[.,n_in]→[.,n_out]）两次传递/launch。
+// 读 real stride-aware shape=[..., n_in]，写 complex 连续 [..., n_out]。
+
+#define CPLX_CAST_RESIZE_KERNELS(SRC_T, CT, SUFFIX)                           \
+__global__ void musapy_cast_resize_##SUFFIX##_cplx_kernel_v2(                 \
+    const SRC_T* __restrict__ a, CT* __restrict__ c, NdMetaUnary meta,        \
+    size_t n_in, size_t n_out, size_t outer                                    \
+) {                                                                           \
+    size_t total = outer * n_out;                                             \
+    size_t idx = blockIdx.x * blockDim.x + threadIdx.x;                       \
+    if (idx < total) {                                                        \
+        size_t outer_idx = idx / n_out;                                       \
+        size_t k = idx % n_out;                                               \
+        if (k < n_in) {                                                       \
+            size_t in_linear = outer_idx * n_in + k;                          \
+            size_t a_off = offset_nd(in_linear, meta.shape, meta.a_strides,   \
+                meta.ndim);                                                   \
+            c[idx].re = a[a_off];                                             \
+            c[idx].im = (SRC_T)0;                                             \
+        } else {                                                              \
+            c[idx].re = (SRC_T)0;                                             \
+            c[idx].im = (SRC_T)0;                                             \
+        }                                                                     \
+    }                                                                         \
+}
+
+CPLX_CAST_RESIZE_KERNELS(float, c64, f32_c64)
+CPLX_CAST_RESIZE_KERNELS(double, c128, f64_c128)
+
+#undef CPLX_CAST_RESIZE_KERNELS
+
 // ── complex 就地缩放（real 标量，Phase 5 fft 归一化）───────────
 // 输出 buffer 恒连续（fft 骨架保证），无需 stride。
 #define CPLX_SCALE_KERNEL(CT)                                                 \
@@ -1433,6 +1466,31 @@ REAL_RESIZE_WRAPPER(float, f32)
 REAL_RESIZE_WRAPPER(double, f64)
 
 #undef REAL_RESIZE_WRAPPER
+
+// cast+resize wrapper（P-FFT-2：real→complex 扩 + 截断/补零一步）
+#define CPLX_CAST_RESIZE_WRAPPER(SRC_T, CT, SUFFIX)                           \
+void musapy_cast_resize_##SUFFIX##_v2(                                        \
+    const SRC_T* __restrict__ a, CT* __restrict__ c,                          \
+    int ndim, const size_t* shape, const ssize_t* a_strides,                  \
+    size_t n_in, size_t n_out, musaStream_t stream                             \
+) {                                                                           \
+    size_t outer = 1;                                                         \
+    for (int i = 0; i < ndim - 1; i++) outer *= shape[i];                    \
+    NdMetaUnary meta;                                                         \
+    meta.ndim = ndim;                                                         \
+    for (int i = 0; i < ndim; i++) {                                          \
+        meta.shape[i] = shape[i];                                             \
+        meta.a_strides[i] = a_strides[i];                                     \
+    }                                                                         \
+    musapy_cast_resize_##SUFFIX##_cplx_kernel_v2<<<                           \
+        grid_size_1d(outer * n_out), 256, 0, stream>>>(                       \
+        a, c, meta, n_in, n_out, outer);                                      \
+}
+
+CPLX_CAST_RESIZE_WRAPPER(float, c64, f32_c64)
+CPLX_CAST_RESIZE_WRAPPER(double, c128, f64_c128)
+
+#undef CPLX_CAST_RESIZE_WRAPPER
 
 // scale wrapper（输出 buffer 恒连续；c64/c128 为 .mu 内 typedef，
 // ABI ≡ musa_x_ffi.rs 的 muComplex/muDoubleComplex）

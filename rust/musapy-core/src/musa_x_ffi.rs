@@ -1991,10 +1991,31 @@ mod mock {
     // ── muFFT ──
 
     /// mock mufft plan 记录（Exec 数值仿真需要知道长度/方向）。
-    /// 只记 Plan1d 的 nx/type；Plan2d/3d/Many 记首维 nx（fft.rs 当前只走 Plan1d）。
+    /// Plan1d 记 nx；PlanMany 记 nx + batch + istride/ostride/idist/odist。
+    /// （Plan2d/3d 记首维 nx；fft.rs 当前只走 Plan1d/PlanMany。）
     struct MockFftPlan {
         nx: i32,
         ftype: mufftType,
+        /// 批次数（Plan1d 固定 1；PlanMany 取 batch 参数）。
+        batch: i32,
+        /// 行内 stride（元素单位；PlanMany 的 istride/ostride）。
+        stride: i32,
+        /// 行间 dist（元素单位；PlanMany 的 idist/odist）。
+        idist: i32,
+        odist: i32,
+    }
+
+    impl MockFftPlan {
+        fn new(nx: i32, ftype: mufftType) -> Self {
+            Self {
+                nx,
+                ftype,
+                batch: 1,
+                stride: 1,
+                idist: nx,
+                odist: nx,
+            }
+        }
     }
 
     static MOCK_MUFFT_PLANS: Mutex<HashMap<mufftHandle, MockFftPlan>> = Mutex::new(HashMap::new());
@@ -2003,7 +2024,7 @@ mod mock {
         unsafe { *plan = next_handle() };
         MOCK_MUFFT_PLANS.lock().unwrap().insert(
             *plan,
-            MockFftPlan { nx, ftype },
+            MockFftPlan::new(nx, ftype),
         );
     }
 
@@ -2126,23 +2147,47 @@ mod mock {
         rank: c_int,
         n: *mut c_int,
         _inembed: *mut c_int,
-        _istride: c_int,
-        _idist: c_int,
+        istride: c_int,
+        idist: c_int,
         _onembed: *mut c_int,
-        _ostride: c_int,
-        _odist: c_int,
+        ostride: c_int,
+        odist: c_int,
         ftype: mufftType,
-        _batch: c_int,
+        batch: c_int,
     ) -> mufftResult {
         if plan.is_null() {
             return 1;
         }
         let nx = if rank > 0 && !n.is_null() { unsafe { *n } } else { 0 };
-        register_plan(plan, nx, ftype);
+        unsafe { *plan = next_handle() };
+        MOCK_MUFFT_PLANS.lock().unwrap().insert(
+            *plan,
+            MockFftPlan {
+                nx,
+                ftype,
+                batch,
+                stride: istride.max(ostride),
+                idist,
+                odist,
+            },
+        );
         MUFFT_SUCCESS
     }
 
-    // ── mock muFFT 执行（naive DFT 数值仿真）──
+    // ── mock muFFT 执行（naive DFT 数值仿真；P-FFT-1 起支持 PlanMany batch）──
+
+    /// 取 plan 的批量信息：(nx, batch, stride, idist, odist)。
+    fn mock_plan_batch(plan: mufftHandle) -> Option<(usize, usize, usize, usize, usize)> {
+        let g = MOCK_MUFFT_PLANS.lock().unwrap();
+        let p = g.get(&plan)?;
+        Some((
+            p.nx as usize,
+            p.batch.max(1) as usize,
+            p.stride.max(1) as usize,
+            p.idist.max(1) as usize,
+            p.odist.max(1) as usize,
+        ))
+    }
 
     pub unsafe fn mufftExecC2C(
         plan: mufftHandle,
@@ -2153,23 +2198,29 @@ mod mock {
         if plan.is_null() || idata.is_null() || odata.is_null() {
             return 1;
         }
-        let n = MOCK_MUFFT_PLANS.lock().unwrap().get(&plan).map(|p| p.nx).unwrap_or(0) as usize;
-        let input: Vec<muDoubleComplex> = (0..n)
-            .map(|i| {
-                let v = unsafe { *idata.add(i) };
-                muDoubleComplex {
+        let Some((n, batch, stride, idist, odist)) = mock_plan_batch(plan) else {
+            return 1;
+        };
+        let inverse = direction == MUFFT_INVERSE;
+        for row in 0..batch {
+            let in_row = unsafe { idata.add(row * idist) };
+            let out_row = unsafe { odata.add(row * odist) };
+            let mut input: Vec<muDoubleComplex> = Vec::with_capacity(n);
+            for i in 0..n {
+                let v = unsafe { *in_row.add(i * stride) };
+                input.push(muDoubleComplex {
                     re: v.re as f64,
                     im: v.im as f64,
+                });
+            }
+            let vals = naive_dft_cplx(&input, inverse);
+            for (i, v) in vals.iter().enumerate() {
+                unsafe {
+                    *out_row.add(i) = muComplex {
+                        re: v.re as f32,
+                        im: v.im as f32,
+                    };
                 }
-            })
-            .collect();
-        let vals = naive_dft_cplx(&input, direction == MUFFT_INVERSE);
-        for (i, v) in vals.iter().enumerate() {
-            unsafe {
-                *odata.add(i) = muComplex {
-                    re: v.re as f32,
-                    im: v.im as f32,
-                };
             }
         }
         MUFFT_SUCCESS
@@ -2183,15 +2234,23 @@ mod mock {
         if plan.is_null() || idata.is_null() || odata.is_null() {
             return 1;
         }
-        let n = MOCK_MUFFT_PLANS.lock().unwrap().get(&plan).map(|p| p.nx).unwrap_or(0) as usize;
-        let input: Vec<f64> = (0..n).map(|i| unsafe { *idata.add(i) } as f64).collect();
-        let vals = naive_dft_real(&input);
-        for (i, v) in vals.iter().enumerate() {
-            unsafe {
-                *odata.add(i) = muComplex {
-                    re: v.re as f32,
-                    im: v.im as f32,
-                };
+        let Some((n, batch, stride, idist, odist)) = mock_plan_batch(plan) else {
+            return 1;
+        };
+        for row in 0..batch {
+            let in_row = unsafe { idata.add(row * idist) };
+            let out_row = unsafe { odata.add(row * odist) };
+            let input: Vec<f64> = (0..n)
+                .map(|i| unsafe { *in_row.add(i * stride) } as f64)
+                .collect();
+            let vals = naive_dft_real(&input);
+            for (i, v) in vals.iter().enumerate() {
+                unsafe {
+                    *out_row.add(i) = muComplex {
+                        re: v.re as f32,
+                        im: v.im as f32,
+                    };
+                }
             }
         }
         MUFFT_SUCCESS
@@ -2206,11 +2265,20 @@ mod mock {
         if plan.is_null() || idata.is_null() || odata.is_null() {
             return 1;
         }
-        let n = MOCK_MUFFT_PLANS.lock().unwrap().get(&plan).map(|p| p.nx).unwrap_or(0) as usize;
-        let input: Vec<muDoubleComplex> = (0..n).map(|i| unsafe { *idata.add(i) }).collect();
-        let vals = naive_dft_cplx(&input, direction == MUFFT_INVERSE);
-        for (i, v) in vals.iter().enumerate() {
-            unsafe { *odata.add(i) = *v };
+        let Some((n, batch, stride, idist, odist)) = mock_plan_batch(plan) else {
+            return 1;
+        };
+        let inverse = direction == MUFFT_INVERSE;
+        for row in 0..batch {
+            let in_row = unsafe { idata.add(row * idist) };
+            let out_row = unsafe { odata.add(row * odist) };
+            let input: Vec<muDoubleComplex> = (0..n)
+                .map(|i| unsafe { *in_row.add(i * stride) })
+                .collect();
+            let vals = naive_dft_cplx(&input, inverse);
+            for (i, v) in vals.iter().enumerate() {
+                unsafe { *out_row.add(i) = *v };
+            }
         }
         MUFFT_SUCCESS
     }
@@ -2223,11 +2291,19 @@ mod mock {
         if plan.is_null() || idata.is_null() || odata.is_null() {
             return 1;
         }
-        let n = MOCK_MUFFT_PLANS.lock().unwrap().get(&plan).map(|p| p.nx).unwrap_or(0) as usize;
-        let input: Vec<f64> = (0..n).map(|i| unsafe { *idata.add(i) }).collect();
-        let vals = naive_dft_real(&input);
-        for (i, v) in vals.iter().enumerate() {
-            unsafe { *odata.add(i) = *v };
+        let Some((n, batch, stride, idist, odist)) = mock_plan_batch(plan) else {
+            return 1;
+        };
+        for row in 0..batch {
+            let in_row = unsafe { idata.add(row * idist) };
+            let out_row = unsafe { odata.add(row * odist) };
+            let input: Vec<f64> = (0..n)
+                .map(|i| unsafe { *in_row.add(i * stride) })
+                .collect();
+            let vals = naive_dft_real(&input);
+            for (i, v) in vals.iter().enumerate() {
+                unsafe { *out_row.add(i) = *v };
+            }
         }
         MUFFT_SUCCESS
     }

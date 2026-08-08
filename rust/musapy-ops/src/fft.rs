@@ -269,10 +269,20 @@ fn fft_impl(
         // 统一为 c_void 指针，Exec 调用处按 out_dtype 转回具体 complex 类型
         let src = work_ptr.map(|p| p.as_ptr() as *mut std::ffi::c_void);
         let dst = result_ptr.map(|p| p.as_ptr() as *mut std::ffi::c_void);
-        let spec = math_handle::MufftPlanSpec::OneD {
-            nx: n as i32,
+        // P-FFT-1（2026-08-08）：batched PlanMany 单次 Exec 替代逐行 Exec。
+        // 逐行执行 Plan1d batch=1 每行有 ~31µs launch 地板（64 行 → ~2ms）；
+        // PlanMany(batch=outer) 一次 Exec 摊销到所有行，真机探针实测 22-49× 加速。
+        let spec = math_handle::MufftPlanSpec::Many {
+            rank: 1,
+            n: vec![n as i32],
+            inembed: Vec::new(),
+            istride: 1,
+            idist: n as i32,
+            onembed: Vec::new(),
+            ostride: 1,
+            odist: result_len as i32,
             ftype,
-            batch: 1,
+            batch: outer as i32,
         };
         math_handle::with_mufft_plan(&device, &out_stream, &spec, |plan| {
             let (Some(src), Some(dst)) = (src, dst) else {
@@ -281,56 +291,32 @@ fn fft_impl(
                 )
                 .into());
             };
-            // Plan1d batch=1 只处理一行：逐行执行 Exec（外层维逐行偏移）。
-            // mock 的 naive DFT 与真机 muFFT 均按单行语义。
-            let src_elem = a.dtype().element_size();
-            let dst_elem = out_dtype.element_size();
-            for row in 0..outer {
-                let src_row = unsafe { src.add(row * n * src_elem) };
-                let dst_row = unsafe { dst.add(row * result_len * dst_elem) };
-                let status = match (out_dtype, real_input) {
-                    (Dtype::Complex64, true) => unsafe {
-                        musa_x_ffi::mufftExecR2C(
-                            plan,
-                            src_row as *mut f32,
-                            dst_row as *mut muComplex,
-                        )
-                    },
-                    (Dtype::Complex64, false) => unsafe {
-                        musa_x_ffi::mufftExecC2C(
-                            plan,
-                            src_row as *mut muComplex,
-                            dst_row as *mut muComplex,
-                            if forward {
-                                MUFFT_FORWARD
-                            } else {
-                                MUFFT_INVERSE
-                            },
-                        )
-                    },
-                    (Dtype::Complex128, true) => unsafe {
-                        musa_x_ffi::mufftExecD2Z(
-                            plan,
-                            src_row as *mut f64,
-                            dst_row as *mut muDoubleComplex,
-                        )
-                    },
-                    (Dtype::Complex128, false) => unsafe {
-                        musa_x_ffi::mufftExecZ2Z(
-                            plan,
-                            src_row as *mut muDoubleComplex,
-                            dst_row as *mut muDoubleComplex,
-                            if forward {
-                                MUFFT_FORWARD
-                            } else {
-                                MUFFT_INVERSE
-                            },
-                        )
-                    },
-                    _ => unreachable!(),
-                };
-                musa_x_ffi::check_mufft(status, "mufftExec")?;
-            }
+            let status = match (out_dtype, real_input) {
+                (Dtype::Complex64, true) => unsafe {
+                    musa_x_ffi::mufftExecR2C(plan, src as *mut f32, dst as *mut muComplex)
+                },
+                (Dtype::Complex64, false) => unsafe {
+                    musa_x_ffi::mufftExecC2C(
+                        plan,
+                        src as *mut muComplex,
+                        dst as *mut muComplex,
+                        if forward { MUFFT_FORWARD } else { MUFFT_INVERSE },
+                    )
+                },
+                (Dtype::Complex128, true) => unsafe {
+                    musa_x_ffi::mufftExecD2Z(plan, src as *mut f64, dst as *mut muDoubleComplex)
+                },
+                (Dtype::Complex128, false) => unsafe {
+                    musa_x_ffi::mufftExecZ2Z(
+                        plan,
+                        src as *mut muDoubleComplex,
+                        dst as *mut muDoubleComplex,
+                        if forward { MUFFT_FORWARD } else { MUFFT_INVERSE },
+                    )
+                },
+                _ => unreachable!(),
+            };
+            musa_x_ffi::check_mufft(status, "mufftExec")?;
             // 归一化：对 [outer, result_len] 结果就地缩放
             if scale != 1.0 {
                 let total = outer * result_len;
@@ -443,8 +429,11 @@ fn prepare_input(
                 }
             } else {
                 // fft/ifft：real → complex 扩展（re=x, im=0）
-                let casted = crate::op_builder::cast_array(a, out_dtype, out_stream)?;
+                // P-FFT-2（2026-08-08）：n != last_dim 时用合并 kernel
+                // （cast + 截断/补零一步完成），省去 cast_array → resize 两次
+                // 传递/launch + 中间 buffer。
                 if n == last_dim {
+                    let casted = crate::op_builder::cast_array(a, out_dtype, out_stream)?;
                     let ptr = adjusted_ptr(&casted, out_dtype);
                     Ok((casted.data().clone(), ptr))
                 } else {
@@ -453,9 +442,9 @@ fn prepare_input(
                         * out_dtype.element_size();
                     let buffer = Buffer::alloc(nbytes, device.clone(), out_stream)?;
                     let data_ref = BufferRef::new(Arc::new(buffer));
-                    casted.data().buffer().wait_last_write_on(out_stream)?;
+                    a.data().buffer().wait_last_write_on(out_stream)?;
                     let ptr = data_ref.buffer().ptr();
-                    launch_resize(&casted, ptr, n, out_dtype, out_stream)?;
+                    launch_cast_resize(a, ptr, n, out_dtype, out_stream)?;
                     Ok((data_ref, ptr))
                 }
             }
@@ -557,6 +546,55 @@ fn launch_real_resize(
         _ => unreachable!("real resize only for f32/f64 input"),
     }
     musa_ffi::check_last_kernel_launch("fft_real_resize")
+}
+
+/// real 输入 → 连续 complex [outer, n]（cast 扩 complex + 截断/补零一步完成，
+/// P-FFT-2；省去 cast_array → resize 两次 kernel + 中间 buffer）。
+fn launch_cast_resize(
+    a: &Array,
+    dst: Option<NonNull<u8>>,
+    n: usize,
+    out_dtype: Dtype,
+    stream: &Arc<Stream>,
+) -> Result<()> {
+    let ndim = a.shape().len();
+    let last_dim = a.shape()[ndim - 1];
+    let a_ptr = adjusted_ptr(a, a.dtype());
+    let shape = a.shape().to_vec();
+    let a_strides = a.layout().strides.clone();
+    let ndim_i = ndim as i32;
+    let stream_raw = stream.raw();
+    let (Some(ap), Some(cp)) = (a_ptr, dst) else {
+        return Ok(());
+    };
+    match (a.dtype(), out_dtype) {
+        (Dtype::Float32, Dtype::Complex64) => unsafe {
+            kernels::musapy_cast_resize_f32_c64_v2(
+                ap.as_ptr() as *const f32,
+                cp.as_ptr() as *mut muComplex,
+                ndim_i,
+                shape.as_ptr(),
+                a_strides.as_ptr(),
+                last_dim,
+                n,
+                stream_raw,
+            )
+        },
+        (Dtype::Float64, Dtype::Complex128) => unsafe {
+            kernels::musapy_cast_resize_f64_c128_v2(
+                ap.as_ptr() as *const f64,
+                cp.as_ptr() as *mut muDoubleComplex,
+                ndim_i,
+                shape.as_ptr(),
+                a_strides.as_ptr(),
+                last_dim,
+                n,
+                stream_raw,
+            )
+        },
+        _ => unreachable!("cast_resize only for f32→c64 / f64→c128"),
+    }
+    musa_ffi::check_last_kernel_launch("fft_cast_resize")
 }
 
 /// 输出 buffer 分配（或复用 out=）。out= 的 shape/dtype/device 已在骨架校验。

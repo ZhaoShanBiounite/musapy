@@ -126,6 +126,9 @@ unsafe extern "C" {
     // real resize（Phase 5 rfft 的 n 参数；输入保持 real，R2C/D2Z 前置）
     pub fn musapy_resize_f32_real_v2(a: *const f32, c: *mut f32, ndim: i32, shape: *const usize, a_strides: *const isize, n_in: usize, n_out: usize, stream: musaStream_t);
     pub fn musapy_resize_f64_real_v2(a: *const f64, c: *mut f64, ndim: i32, shape: *const usize, a_strides: *const isize, n_in: usize, n_out: usize, stream: musaStream_t);
+    // cast + resize 合并（P-FFT-2：real→complex 扩 + 截断/补零一步）
+    pub fn musapy_cast_resize_f32_c64_v2(a: *const f32, c: *mut muComplex, ndim: i32, shape: *const usize, a_strides: *const isize, n_in: usize, n_out: usize, stream: musaStream_t);
+    pub fn musapy_cast_resize_f64_c128_v2(a: *const f64, c: *mut muDoubleComplex, ndim: i32, shape: *const usize, a_strides: *const isize, n_in: usize, n_out: usize, stream: musaStream_t);
     // complex 就地缩放（real 标量，Phase 5 fft 归一化；输出恒连续）
     pub fn musapy_scale_c64_v2(c: *mut muComplex, factor: f64, n: usize, stream: musaStream_t);
     pub fn musapy_scale_c128_v2(c: *mut muDoubleComplex, factor: f64, n: usize, stream: musaStream_t);
@@ -747,6 +750,40 @@ mod mock {
 
     mock_real_resize_v2!(musapy_resize_f32_real_v2, f32);
     mock_real_resize_v2!(musapy_resize_f64_real_v2, f64);
+
+    // cast + resize 合并 mock（P-FFT-2）
+    macro_rules! mock_cast_resize_v2 {
+        ($name:ident, $src:ty, $ct:ty) => {
+            pub unsafe fn $name(
+                a: *const $src, c: *mut $ct,
+                ndim: i32, shape: *const usize, a_strides: *const isize,
+                n_in: usize, n_out: usize,
+                _stream: musaStream_t,
+            ) {
+                if a.is_null() || c.is_null() || ndim < 0 { return; }
+                let ndim = ndim as usize;
+                let shape_s = std::slice::from_raw_parts(shape, ndim);
+                let as_s = std::slice::from_raw_parts(a_strides, ndim);
+                let outer: usize = shape_s[..ndim - 1].iter().product();
+                for oi in 0..outer {
+                    for k in 0..n_out {
+                        let idx = oi * n_out + k;
+                        if k < n_in {
+                            let in_linear = oi * n_in + k;
+                            let a_off = mock_offset_nd(in_linear, shape_s, as_s);
+                            let v = *a.add(a_off) as f64;
+                            *c.add(idx) = $ct { re: v as _, im: 0.0 };
+                        } else {
+                            *c.add(idx) = $ct { re: 0.0, im: 0.0 };
+                        }
+                    }
+                }
+            }
+        };
+    }
+
+    mock_cast_resize_v2!(musapy_cast_resize_f32_c64_v2, f32, muComplex);
+    mock_cast_resize_v2!(musapy_cast_resize_f64_c128_v2, f64, muDoubleComplex);
 
     // complex 就地缩放（real 标量）
     macro_rules! mock_scale_v2 {
