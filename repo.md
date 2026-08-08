@@ -193,17 +193,19 @@ spmv 低密度下延迟被固定开销主导（每调用 create/destroy 描述�
 
 ## 6. reduction 补全（axis=tuple + 复数，Phase 7；2026-08-08 真机新增）
 
-### 6.1 复数 reduction（c64 naive 分量路径；1M 元素）
+### 6.1 复数 reduction（c64 并行分量路径；2026-08-08 优化后）
 
-| 算子 | 延迟(ms) | 带宽(GB/s) | 说明 |
-|---|---|---|---|
-| csum (c64, global) | 214.2 | 0.075 | naive 单线程扫轴（10M/64M 档按 1M 上限运行） |
-| cmean (c64, global) | 215.2 | 0.074 | |
-| cprod (c64, global) | 259.2 | 0.062 | 复数乘法 |
-| csum (c64, axis=0) | 214.2 | 0.075 | |
+| 算子 | 延迟(ms) | 说明 |
+|---|---|---|
+| csum (c64, 1M) | 0.11 | 分量 small_axis/partial/final 并行路径 |
+| cmean (c64, 1M) | 0.10 | |
+| cprod (c64, 1M) | 0.10 | 复数乘法 |
+| csum (c128, 1M) | 0.16 | |
 
-复数归约**仅 naive 路径**（partial/small_axis 的 warp shuffle 对 struct 有
-兼容性风险）→ 单线程扫轴，1M 已 214ms。大归约性能提升需后续 kernel 重构。
+**优化收益**：复数归约 1M 从 naive 路径 **214ms → 0.11ms（~1900×）**。
+实现：`__shfl_down_sync` 不支持 struct（探针证实），故 c64/c128 的 re/im 拆成
+两个独立标量分别 shuffle 归约，走 small_axis（16-1024 轴长）/partial/final
+（>1024）三路并行。
 max/min/argmax/argmin 复数**正确抛 DtypeError**（无全序）。
 
 ### 6.2 多轴归约（256×256 矩阵，axis=(0,1) 全轴归约 → 0-dim）
@@ -245,7 +247,7 @@ max/min/argmax/argmin 复数**正确抛 DtypeError**（无全序）。
 | fft 2D 64×4096（batched） | 0.262 ms（逐行对比 6.43 ms，P-FFT-1 24.5×） |
 | fft f64（10M） | 16.6 ms（mp_22 FP64 仿真，慢 4×） |
 | spmv 2000² d=0.5 | ~1.0 ms / ~21 GB/s（CSR 随机访存） |
-| 复数 sum（c64 1M） | 214 ms（naive 单线程扫轴，Phase 7） |
+| 复数 sum（c64 1M） | 0.11 ms（分量并行，优化前 214ms，~1900×） |
 | 多轴 sum axis=(0,1)（256²） | 0.11-0.13 ms（逐轴迭代，Phase 7） |
 
 ---

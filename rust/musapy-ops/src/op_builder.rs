@@ -2508,11 +2508,10 @@ pub(crate) fn reduction_axis(
                 const PARALLEL_REDUCE_THRESHOLD: usize = 1024;
                 const SMALL_AXIS_MIN: usize = 16;
 
-                // Phase 7 P7.2：complex 归约仅 naive 路径（无 partial/small_axis
-                // 实例化，warp shuffle 对 struct 有兼容性风险；正确性优先）
-                let is_complex = matches!(compute_dtype, Dtype::Complex64 | Dtype::Complex128);
+                // Phase 7 P7.2：complex 归约支持三路并行（2026-08-08 优化：
+                // 分量 re/im 各一路 shuffle 的 small_axis/partial/final kernel）
 
-                if !is_complex && axis_len > PARALLEL_REDUCE_THRESHOLD {
+                if axis_len > PARALLEL_REDUCE_THRESHOLD {
                     // ═══ 两阶段并行路径 ═══
                     // P2：partial kernel 每线程 REDUCE_ITEMS=4 元素，
                     // 一个 tile（256 线程）覆盖 1024 个元素
@@ -2715,6 +2714,72 @@ pub(crate) fn reduction_axis(
                                     },
                                 )?;
                             }
+                            Dtype::Complex64 => {
+                                launch_reduce_partial!(musapy_mean_partial_c64_v2, a_ptr, pp_ptr, kernel_ndim, kernel_shape, in_strides, kernel_axis, axis_len, out_size, tiles_per_output, stream_raw, "mean_partial_c64_v2");
+                                multi_stage_reduce_tail(
+                                    &device, &out_stream, out_size, elem_size, pp_ptr.expect("reduce partial buf").as_ptr(), tiles_per_output,
+                                    |src, dst, os, tiles| {
+                                        let shape = [os, tiles];
+                                        let strides = [tiles as isize, 1];
+                                        unsafe {
+                                            kernels::musapy_sum_partial_c64_v2(
+                                                src as *const muComplex,
+                                                dst as *mut muComplex, 2,
+                                                shape.as_ptr(), strides.as_ptr(), 1, tiles, os,
+                                                (tiles + 1023) / 1024, stream_raw,
+                                            );
+                                        }
+                                        musa_ffi::check_last_kernel_launch("sum_partial_c64_v2_mid")
+                                    },
+                                    |pp, np| {
+                                        if let Some(op) = out_ptr {
+                                            unsafe {
+                                                kernels::musapy_mean_final_c64_v2(
+                                                    pp as *const muComplex,
+                                                    op.as_ptr() as *mut muComplex,
+                                                    np, out_size, axis_len, stream_raw,
+                                                );
+                                            }
+                                            musa_ffi::check_last_kernel_launch("mean_final_c64_v2")
+                                        } else {
+                                            Ok(())
+                                        }
+                                    },
+                                )?;
+                            }
+                            Dtype::Complex128 => {
+                                launch_reduce_partial!(musapy_mean_partial_c128_v2, a_ptr, pp_ptr, kernel_ndim, kernel_shape, in_strides, kernel_axis, axis_len, out_size, tiles_per_output, stream_raw, "mean_partial_c128_v2");
+                                multi_stage_reduce_tail(
+                                    &device, &out_stream, out_size, elem_size, pp_ptr.expect("reduce partial buf").as_ptr(), tiles_per_output,
+                                    |src, dst, os, tiles| {
+                                        let shape = [os, tiles];
+                                        let strides = [tiles as isize, 1];
+                                        unsafe {
+                                            kernels::musapy_sum_partial_c128_v2(
+                                                src as *const muDoubleComplex,
+                                                dst as *mut muDoubleComplex, 2,
+                                                shape.as_ptr(), strides.as_ptr(), 1, tiles, os,
+                                                (tiles + 1023) / 1024, stream_raw,
+                                            );
+                                        }
+                                        musa_ffi::check_last_kernel_launch("sum_partial_c128_v2_mid")
+                                    },
+                                    |pp, np| {
+                                        if let Some(op) = out_ptr {
+                                            unsafe {
+                                                kernels::musapy_mean_final_c128_v2(
+                                                    pp as *const muDoubleComplex,
+                                                    op.as_ptr() as *mut muDoubleComplex,
+                                                    np, out_size, axis_len, stream_raw,
+                                                );
+                                            }
+                                            musa_ffi::check_last_kernel_launch("mean_final_c128_v2")
+                                        } else {
+                                            Ok(())
+                                        }
+                                    },
+                                )?;
+                            }
                             _ => unreachable!("mean only supports float compute dtype"),
                         }
                     } else {
@@ -2790,6 +2855,49 @@ pub(crate) fn reduction_axis(
                                     |pp, np| launch_final_tail!(musapy_sum_final_f64_v2, pp, np, "sum_final_f64_v2"),
                                 )?;
                             }
+                            // complex sum（Phase 7 优化：分量 partial/final）
+                            (ReduceKernel::Sum, Dtype::Complex64) => {
+                                launch_reduce_partial!(musapy_sum_partial_c64_v2, a_ptr, pp_ptr, kernel_ndim, kernel_shape, in_strides, kernel_axis, axis_len, out_size, tiles_per_output, stream_raw, "sum_partial_c64_v2");
+                                multi_stage_reduce_tail(
+                                    &device, &out_stream, out_size, elem_size, pp_ptr.expect("reduce partial buf").as_ptr(), tiles_per_output,
+                                    |src, dst, os, tiles| launch_partial_mid!(musapy_sum_partial_c64_v2, src, dst, os, tiles, "sum_partial_c64_v2_mid"),
+                                    |pp, np| {
+                                        if let Some(op) = out_ptr {
+                                            unsafe {
+                                                kernels::musapy_sum_final_c64_v2(
+                                                    pp as *const muComplex,
+                                                    op.as_ptr() as *mut muComplex,
+                                                    np, out_size, axis_len, stream_raw,
+                                                );
+                                            }
+                                            musa_ffi::check_last_kernel_launch("sum_final_c64_v2")
+                                        } else {
+                                            Ok(())
+                                        }
+                                    },
+                                )?;
+                            }
+                            (ReduceKernel::Sum, Dtype::Complex128) => {
+                                launch_reduce_partial!(musapy_sum_partial_c128_v2, a_ptr, pp_ptr, kernel_ndim, kernel_shape, in_strides, kernel_axis, axis_len, out_size, tiles_per_output, stream_raw, "sum_partial_c128_v2");
+                                multi_stage_reduce_tail(
+                                    &device, &out_stream, out_size, elem_size, pp_ptr.expect("reduce partial buf").as_ptr(), tiles_per_output,
+                                    |src, dst, os, tiles| launch_partial_mid!(musapy_sum_partial_c128_v2, src, dst, os, tiles, "sum_partial_c128_v2_mid"),
+                                    |pp, np| {
+                                        if let Some(op) = out_ptr {
+                                            unsafe {
+                                                kernels::musapy_sum_final_c128_v2(
+                                                    pp as *const muDoubleComplex,
+                                                    op.as_ptr() as *mut muDoubleComplex,
+                                                    np, out_size, axis_len, stream_raw,
+                                                );
+                                            }
+                                            musa_ffi::check_last_kernel_launch("sum_final_c128_v2")
+                                        } else {
+                                            Ok(())
+                                        }
+                                    },
+                                )?;
+                            }
                             (ReduceKernel::Prod, Dtype::Int64) => {
                                 launch_reduce_partial!(musapy_prod_partial_i64_v2, a_ptr, pp_ptr, kernel_ndim, kernel_shape, in_strides, kernel_axis, axis_len, out_size, tiles_per_output, stream_raw, "prod_partial_i64_v2");
                                 multi_stage_reduce_tail(
@@ -2812,6 +2920,49 @@ pub(crate) fn reduction_axis(
                                     &device, &out_stream, out_size, elem_size, pp_ptr.expect("reduce partial buf").as_ptr(), tiles_per_output,
                                     |src, dst, os, tiles| launch_partial_mid!(musapy_prod_partial_f64_v2, src, dst, os, tiles, "prod_partial_f64_v2_mid"),
                                     |pp, np| launch_final_tail!(musapy_prod_final_f64_v2, pp, np, "prod_final_f64_v2"),
+                                )?;
+                            }
+                            // complex prod（Phase 7 优化：分量 partial/final）
+                            (ReduceKernel::Prod, Dtype::Complex64) => {
+                                launch_reduce_partial!(musapy_prod_partial_c64_v2, a_ptr, pp_ptr, kernel_ndim, kernel_shape, in_strides, kernel_axis, axis_len, out_size, tiles_per_output, stream_raw, "prod_partial_c64_v2");
+                                multi_stage_reduce_tail(
+                                    &device, &out_stream, out_size, elem_size, pp_ptr.expect("reduce partial buf").as_ptr(), tiles_per_output,
+                                    |src, dst, os, tiles| launch_partial_mid!(musapy_prod_partial_c64_v2, src, dst, os, tiles, "prod_partial_c64_v2_mid"),
+                                    |pp, np| {
+                                        if let Some(op) = out_ptr {
+                                            unsafe {
+                                                kernels::musapy_prod_final_c64_v2(
+                                                    pp as *const muComplex,
+                                                    op.as_ptr() as *mut muComplex,
+                                                    np, out_size, axis_len, stream_raw,
+                                                );
+                                            }
+                                            musa_ffi::check_last_kernel_launch("prod_final_c64_v2")
+                                        } else {
+                                            Ok(())
+                                        }
+                                    },
+                                )?;
+                            }
+                            (ReduceKernel::Prod, Dtype::Complex128) => {
+                                launch_reduce_partial!(musapy_prod_partial_c128_v2, a_ptr, pp_ptr, kernel_ndim, kernel_shape, in_strides, kernel_axis, axis_len, out_size, tiles_per_output, stream_raw, "prod_partial_c128_v2");
+                                multi_stage_reduce_tail(
+                                    &device, &out_stream, out_size, elem_size, pp_ptr.expect("reduce partial buf").as_ptr(), tiles_per_output,
+                                    |src, dst, os, tiles| launch_partial_mid!(musapy_prod_partial_c128_v2, src, dst, os, tiles, "prod_partial_c128_v2_mid"),
+                                    |pp, np| {
+                                        if let Some(op) = out_ptr {
+                                            unsafe {
+                                                kernels::musapy_prod_final_c128_v2(
+                                                    pp as *const muDoubleComplex,
+                                                    op.as_ptr() as *mut muDoubleComplex,
+                                                    np, out_size, axis_len, stream_raw,
+                                                );
+                                            }
+                                            musa_ffi::check_last_kernel_launch("prod_final_c128_v2")
+                                        } else {
+                                            Ok(())
+                                        }
+                                    },
                                 )?;
                             }
                             (ReduceKernel::Max, Dtype::Int64) => {
@@ -2865,7 +3016,7 @@ pub(crate) fn reduction_axis(
                             _ => unreachable!(),
                         }
                     }
-                } else if !is_complex && axis_len > SMALL_AXIS_MIN && !kernel.output_is_index() {
+                } else if axis_len > SMALL_AXIS_MIN && !kernel.output_is_index() {
                     // ═══ 小 axis 并行路径（P2）═══
                     // 每输出配 group_size 线程（≥ axis_len 向上取 2 的幂，
                     // 上限 256），修 naive 在 out_size 小时并行度不足的问题
@@ -2893,6 +3044,13 @@ pub(crate) fn reduction_axis(
                         (ReduceKernel::Min, Dtype::Float64) => launch_reduce_small_axis!(musapy_min_small_axis_f64_v2, a_ptr, out_ptr, kernel_ndim, kernel_shape, in_strides, kernel_axis, axis_len, out_size, group_size, stream_raw, "min_small_axis_f64_v2"),
                         (ReduceKernel::Mean, Dtype::Float32) => launch_reduce_small_axis!(musapy_mean_small_axis_f32_v2, a_ptr, out_ptr, kernel_ndim, kernel_shape, in_strides, kernel_axis, axis_len, out_size, group_size, stream_raw, "mean_small_axis_f32_v2"),
                         (ReduceKernel::Mean, Dtype::Float64) => launch_reduce_small_axis!(musapy_mean_small_axis_f64_v2, a_ptr, out_ptr, kernel_ndim, kernel_shape, in_strides, kernel_axis, axis_len, out_size, group_size, stream_raw, "mean_small_axis_f64_v2"),
+                        // complex（Phase 7 优化：分量 small_axis）
+                        (ReduceKernel::Sum, Dtype::Complex64) => launch_reduce_small_axis!(musapy_sum_small_axis_c64_v2, a_ptr, out_ptr, kernel_ndim, kernel_shape, in_strides, kernel_axis, axis_len, out_size, group_size, stream_raw, "sum_small_axis_c64_v2"),
+                        (ReduceKernel::Sum, Dtype::Complex128) => launch_reduce_small_axis!(musapy_sum_small_axis_c128_v2, a_ptr, out_ptr, kernel_ndim, kernel_shape, in_strides, kernel_axis, axis_len, out_size, group_size, stream_raw, "sum_small_axis_c128_v2"),
+                        (ReduceKernel::Prod, Dtype::Complex64) => launch_reduce_small_axis!(musapy_prod_small_axis_c64_v2, a_ptr, out_ptr, kernel_ndim, kernel_shape, in_strides, kernel_axis, axis_len, out_size, group_size, stream_raw, "prod_small_axis_c64_v2"),
+                        (ReduceKernel::Prod, Dtype::Complex128) => launch_reduce_small_axis!(musapy_prod_small_axis_c128_v2, a_ptr, out_ptr, kernel_ndim, kernel_shape, in_strides, kernel_axis, axis_len, out_size, group_size, stream_raw, "prod_small_axis_c128_v2"),
+                        (ReduceKernel::Mean, Dtype::Complex64) => launch_reduce_small_axis!(musapy_mean_small_axis_c64_v2, a_ptr, out_ptr, kernel_ndim, kernel_shape, in_strides, kernel_axis, axis_len, out_size, group_size, stream_raw, "mean_small_axis_c64_v2"),
+                        (ReduceKernel::Mean, Dtype::Complex128) => launch_reduce_small_axis!(musapy_mean_small_axis_c128_v2, a_ptr, out_ptr, kernel_ndim, kernel_shape, in_strides, kernel_axis, axis_len, out_size, group_size, stream_raw, "mean_small_axis_c128_v2"),
                         _ => unreachable!(),
                     }
                 } else {

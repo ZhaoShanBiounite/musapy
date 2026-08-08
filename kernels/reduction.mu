@@ -226,6 +226,193 @@ CPLX_NAIVE_KERNEL(c128, double, c128)
 
 #undef CPLX_NAIVE_KERNEL
 
+// ── Complex 并行归约（2026-08-08，复数 reduction 优化）────────
+// 探针证实：mcc 的 __shfl_down_sync 不支持 struct（c64/c128），但支持
+// float/double 标量。故 cplx 归约把 re/im 拆成两个独立标量，分别 shuffle
+// 归约（分量在 warp 内同步推进，等价于 struct shuffle）。
+//
+// CplxOpSum/Prod<RT> 提供分量归约运算：
+//   sum:  re+=vr, im+=vi
+//   prod: (re+im·i)(vr+vi·i) 复数乘法
+// mean = sum 后除以 axis_len（DIVIDE_AXIS 或 final 除法）。
+
+template <typename RT> struct CplxOpSum {
+    __device__ static void identity(RT& re, RT& im) { re = (RT)0; im = (RT)0; }
+    __device__ static void combine(RT& re, RT& im, RT vr, RT vi) { re += vr; im += vi; }
+};
+template <typename RT> struct CplxOpProd {
+    __device__ static void identity(RT& re, RT& im) { re = (RT)1; im = (RT)0; }
+    __device__ static void combine(RT& re, RT& im, RT vr, RT vi) {
+        RT nre = re * vr - im * vi;
+        RT nim = re * vi + im * vr;
+        re = nre; im = nim;
+    }
+};
+
+// 小 axis cplx kernel：每输出 G 线程，re/im 分量各一路 shuffle + smem。
+template <typename CT, typename RT, typename Op, int G, bool DIVIDE_AXIS>
+__global__ void musapy_reduce_small_axis_cplx_kernel(
+    const CT* __restrict__ a, CT* __restrict__ c,
+    NdMetaReduce meta, size_t out_size
+) {
+    size_t tid = blockIdx.x * blockDim.x + threadIdx.x;
+    size_t out_idx = tid / G;
+    int lane = (int)(tid & (G - 1));
+    bool valid = out_idx < out_size;
+    RT acc_re, acc_im; Op::identity(acc_re, acc_im);
+    if (valid) {
+        size_t base = reduce_offset(out_idx, meta, 0);
+        ssize_t axis_stride = meta.in_strides[meta.axis];
+        for (size_t k = (size_t)lane; k < meta.axis_len; k += G) {
+            CT v = a[base + k * (size_t)axis_stride];
+            Op::combine(acc_re, acc_im, v.re, v.im);
+        }
+    }
+    // 第一级：warp 内分量 shuffle 归约
+    #pragma unroll
+    for (int offset = 16; offset > 0; offset >>= 1) {
+        RT sv_re = __shfl_down_sync(0xffffffff, acc_re, offset);
+        RT sv_im = __shfl_down_sync(0xffffffff, acc_im, offset);
+        Op::combine(acc_re, acc_im, sv_re, sv_im);
+    }
+    if (G == 32) {
+        if (valid && (threadIdx.x & 31) == 0) {
+            if (DIVIDE_AXIS) { acc_re /= (RT)meta.axis_len; acc_im /= (RT)meta.axis_len; }
+            c[out_idx].re = acc_re;
+            c[out_idx].im = acc_im;
+        }
+        return;
+    }
+    // 第二级：跨 warp 合并（re/im 两组 smem）
+    __shared__ RT warp_partials_re[8];
+    __shared__ RT warp_partials_im[8];
+    if ((threadIdx.x & 31) == 0) {
+        warp_partials_re[threadIdx.x >> 5] = acc_re;
+        warp_partials_im[threadIdx.x >> 5] = acc_im;
+    }
+    __syncthreads();
+    if (valid && lane == 0) {
+        int warps_per_group = G >> 5;
+        int group_in_block = (int)threadIdx.x / G;
+        int first = group_in_block * warps_per_group;
+        RT total_re = warp_partials_re[first];
+        RT total_im = warp_partials_im[first];
+        for (int w = 1; w < warps_per_group; w++) {
+            Op::combine(total_re, total_im, warp_partials_re[first + w], warp_partials_im[first + w]);
+        }
+        if (DIVIDE_AXIS) { total_re /= (RT)meta.axis_len; total_im /= (RT)meta.axis_len; }
+        c[out_idx].re = total_re;
+        c[out_idx].im = total_im;
+    }
+}
+
+// Partial cplx kernel（Phase 1，REDUCE_ITEMS 连续读 + 分量 shuffle）。
+#define CPLX_PARTIAL_BODY(CT, RT, OP)                                          \
+    size_t base = reduce_offset(blockIdx.x / tiles_per_output, meta, 0);       \
+    ssize_t axis_stride = meta.in_strides[meta.axis];                          \
+    size_t total_threads = tiles_per_output * blockDim.x;                      \
+    size_t global_tid = tile_idx * blockDim.x + threadIdx.x;                   \
+    size_t axis_len = meta.axis_len;                                           \
+    RT acc_re, acc_im; OP::identity(acc_re, acc_im);                           \
+    for (size_t k0 = global_tid * REDUCE_ITEMS; k0 < axis_len;                 \
+         k0 += total_threads * REDUCE_ITEMS) {                                 \
+        _Pragma("unroll")                                                      \
+        for (int j = 0; j < REDUCE_ITEMS; j++) {                               \
+            size_t k = k0 + j;                                                 \
+            if (k < axis_len) {                                                \
+                CT v = a[base + k * (size_t)axis_stride];                      \
+                OP::combine(acc_re, acc_im, v.re, v.im);                       \
+            }                                                                  \
+        }                                                                      \
+    }                                                                          \
+    extern __shared__ char smem[];                                             \
+    RT* sdata_re = (RT*)smem;                                                  \
+    RT* sdata_im = sdata_re + blockDim.x;                                      \
+    for (int offset = 16; offset > 0; offset >>= 1) {                          \
+        RT sv_re = __shfl_down_sync(0xffffffff, acc_re, offset);               \
+        RT sv_im = __shfl_down_sync(0xffffffff, acc_im, offset);               \
+        OP::combine(acc_re, acc_im, sv_re, sv_im);                             \
+    }                                                                          \
+    if ((threadIdx.x & 31) == 0) {                                             \
+        sdata_re[threadIdx.x >> 5] = acc_re;                                   \
+        sdata_im[threadIdx.x >> 5] = acc_im;                                   \
+    }                                                                          \
+    __syncthreads();                                                           \
+    RT total_re = (RT)0, total_im = (RT)0;                                     \
+    if (threadIdx.x < 32) {                                                    \
+        int nwarps = (int)(blockDim.x >> 5);                                   \
+        if ((int)threadIdx.x < nwarps) {                                       \
+            total_re = sdata_re[threadIdx.x];                                  \
+            total_im = sdata_im[threadIdx.x];                                  \
+        }                                                                      \
+        for (int offset = nwarps / 2; offset > 0; offset >>= 1) {              \
+            RT sv_re = __shfl_down_sync(0xffffffff, total_re, offset);         \
+            RT sv_im = __shfl_down_sync(0xffffffff, total_im, offset);         \
+            OP::combine(total_re, total_im, sv_re, sv_im);                     \
+        }                                                                      \
+    }
+
+// Partial cplx kernel 实例（sum/prod 用；mean 复用 sum 分量 kernel，final 除）
+#define CPLX_PARTIAL_KERNEL(OP, CT, RT, OPSTRUCT, SUFFIX)                     \
+template <typename T_CT, typename T_RT, typename T_OP>                         \
+__global__ void musapy_##OP##_partial_cplx_##SUFFIX##_kernel_v2(              \
+    const T_CT* __restrict__ a, T_CT* __restrict__ partials,                 \
+    NdMetaReduce meta, size_t out_size, size_t tiles_per_output               \
+) {                                                                           \
+    size_t out_idx = blockIdx.x / tiles_per_output;                           \
+    size_t tile_idx = blockIdx.x % tiles_per_output;                          \
+    if (out_idx >= out_size) return;                                          \
+    CPLX_PARTIAL_BODY(T_CT, T_RT, T_OP)                                       \
+    if (threadIdx.x == 0) {                                                   \
+        partials[out_idx * tiles_per_output + tile_idx].re = total_re;        \
+        partials[out_idx * tiles_per_output + tile_idx].im = total_im;        \
+    }                                                                         \
+}
+
+CPLX_PARTIAL_KERNEL(sum, c64, float, CplxOpSum<float>, c64)
+CPLX_PARTIAL_KERNEL(sum, c128, double, CplxOpSum<double>, c128)
+CPLX_PARTIAL_KERNEL(prod, c64, float, CplxOpProd<float>, c64)
+CPLX_PARTIAL_KERNEL(prod, c128, double, CplxOpProd<double>, c128)
+CPLX_PARTIAL_KERNEL(mean, c64, float, CplxOpSum<float>, c64)
+CPLX_PARTIAL_KERNEL(mean, c128, double, CplxOpSum<double>, c128)
+
+#undef CPLX_PARTIAL_KERNEL
+
+// Final cplx kernel（Phase 2：smem 树形分量归约，无 shuffle）。
+template <typename CT, typename RT, typename Op, bool DIVIDE_AXIS>
+__global__ void musapy_cplx_final_kernel_v2(
+    const CT* __restrict__ partials, CT* __restrict__ c,
+    size_t num_partials, size_t out_size, size_t axis_len
+) {
+    extern __shared__ char smem[];
+    RT* sdata_re = (RT*)smem;
+    RT* sdata_im = sdata_re + blockDim.x;
+    size_t out_idx = blockIdx.x;
+    if (out_idx >= out_size) return;
+
+    const CT* src = partials + out_idx * num_partials;
+    RT acc_re, acc_im; Op::identity(acc_re, acc_im);
+    for (size_t i = threadIdx.x; i < num_partials; i += blockDim.x) {
+        Op::combine(acc_re, acc_im, src[i].re, src[i].im);
+    }
+    sdata_re[threadIdx.x] = acc_re;
+    sdata_im[threadIdx.x] = acc_im;
+    __syncthreads();
+    for (int s = blockDim.x / 2; s > 0; s >>= 1) {
+        if (threadIdx.x < s) {
+            Op::combine(sdata_re[threadIdx.x], sdata_im[threadIdx.x],
+                        sdata_re[threadIdx.x + s], sdata_im[threadIdx.x + s]);
+        }
+        __syncthreads();
+    }
+    if (threadIdx.x == 0) {
+        RT re = sdata_re[0], im = sdata_im[0];
+        if (DIVIDE_AXIS) { re /= (RT)axis_len; im /= (RT)axis_len; }
+        c[out_idx].re = re;
+        c[out_idx].im = im;
+    }
+}
+
 // ── Argmax / Argmin naive kernel（输入 T，输出 int64_t）────────
 
 template <typename T>
@@ -1242,6 +1429,105 @@ CPLX_REDUCE_V2(mean, c64, c64)
 CPLX_REDUCE_V2(mean, c128, c128)
 
 #undef CPLX_REDUCE_V2
+
+// ── Complex 并行 wrapper（small_axis / partial / final）────────
+// 符号：musapy_{sum,prod,mean}_{small_axis,partial,final}_c64/c128_v2
+// 分量 shuffle 方案（探针验证通过：mcc 的 shfl 不支持 struct，re/im 标量可行）。
+
+#define CPLX_SMALL_AXIS_V2(OP, CT, RT, OPSTRUCT, SUFFIX, DIVIDE)             \
+void musapy_##OP##_small_axis_##SUFFIX##_v2(                                  \
+    const CT* __restrict__ a, CT* __restrict__ c,                             \
+    int ndim, const size_t* in_shape, const ssize_t* in_strides,              \
+    int axis, size_t axis_len, size_t out_size, int group_size,               \
+    musaStream_t stream                                                       \
+) {                                                                           \
+    NdMetaReduce meta;                                                        \
+    meta.ndim = ndim;                                                         \
+    meta.axis = axis;                                                         \
+    meta.axis_len = axis_len;                                                 \
+    for (int i = 0; i < ndim; i++) {                                          \
+        meta.in_shape[i] = in_shape[i];                                       \
+        meta.in_strides[i] = in_strides[i];                                   \
+    }                                                                         \
+    size_t grid = (out_size * (size_t)group_size + 255) / 256;                \
+    switch (group_size) {                                                     \
+        case 32:                                                              \
+            musapy_reduce_small_axis_cplx_kernel<CT, RT, OPSTRUCT, 32, DIVIDE>\
+                <<<grid, 256, 0, stream>>>(a, c, meta, out_size); break;      \
+        case 64:                                                              \
+            musapy_reduce_small_axis_cplx_kernel<CT, RT, OPSTRUCT, 64, DIVIDE>\
+                <<<grid, 256, 0, stream>>>(a, c, meta, out_size); break;      \
+        case 128:                                                             \
+            musapy_reduce_small_axis_cplx_kernel<CT, RT, OPSTRUCT, 128, DIVIDE>\
+                <<<grid, 256, 0, stream>>>(a, c, meta, out_size); break;      \
+        default:                                                              \
+            musapy_reduce_small_axis_cplx_kernel<CT, RT, OPSTRUCT, 256, DIVIDE>\
+                <<<grid, 256, 0, stream>>>(a, c, meta, out_size); break;      \
+    }                                                                         \
+}
+
+#define CPLX_PARTIAL_V2(OP, CT, RT, OPSTRUCT, SUFFIX)                         \
+void musapy_##OP##_partial_##SUFFIX##_v2(                                     \
+    const CT* __restrict__ a, CT* __restrict__ partials,                     \
+    int ndim, const size_t* in_shape, const ssize_t* in_strides,              \
+    int axis, size_t axis_len, size_t out_size,                               \
+    size_t tiles_per_output, musaStream_t stream                              \
+) {                                                                           \
+    NdMetaReduce meta;                                                        \
+    meta.ndim = ndim;                                                         \
+    meta.axis = axis;                                                         \
+    meta.axis_len = axis_len;                                                 \
+    for (int i = 0; i < ndim; i++) {                                          \
+        meta.in_shape[i] = in_shape[i];                                       \
+        meta.in_strides[i] = in_strides[i];                                   \
+    }                                                                         \
+    size_t grid = out_size * tiles_per_output;                                \
+    size_t smem = 2 * 256 * sizeof(RT);                                       \
+    musapy_##OP##_partial_cplx_##SUFFIX##_kernel_v2<CT, RT, OPSTRUCT>         \
+        <<<grid, 256, smem, stream>>>(a, partials, meta, out_size, tiles_per_output); \
+}
+
+#define CPLX_FINAL_V2(OP, CT, RT, OPSTRUCT, SUFFIX, DIVIDE)                   \
+void musapy_##OP##_final_##SUFFIX##_v2(                                       \
+    const CT* __restrict__ partials, CT* __restrict__ c,                     \
+    size_t num_partials, size_t out_size, size_t axis_len, musaStream_t stream \
+) {                                                                           \
+    size_t smem = 2 * 256 * sizeof(RT);                                       \
+    musapy_cplx_final_kernel_v2<CT, RT, OPSTRUCT, DIVIDE>                     \
+        <<<out_size, 256, smem, stream>>>(partials, c, num_partials, out_size, axis_len); \
+}
+
+// sum（partial 输出为 sum，final 无除法）
+#define CPLX_SUM_PARALLEL(CT, RT, SUFFIX)                                     \
+    CPLX_SMALL_AXIS_V2(sum, CT, RT, CplxOpSum<RT>, SUFFIX, false)             \
+    CPLX_PARTIAL_V2(sum, CT, RT, CplxOpSum<RT>, SUFFIX)                       \
+    CPLX_FINAL_V2(sum, CT, RT, CplxOpSum<RT>, SUFFIX, false)
+
+// prod（partial 输出为 prod，final 无除法）
+#define CPLX_PROD_PARALLEL(CT, RT, SUFFIX)                                    \
+    CPLX_SMALL_AXIS_V2(prod, CT, RT, CplxOpProd<RT>, SUFFIX, false)           \
+    CPLX_PARTIAL_V2(prod, CT, RT, CplxOpProd<RT>, SUFFIX)                     \
+    CPLX_FINAL_V2(prod, CT, RT, CplxOpProd<RT>, SUFFIX, false)
+
+// mean：small_axis 直接除（DIVIDE=true）；partial 用 sum 分量（final 除 axis_len）
+#define CPLX_MEAN_PARALLEL(CT, RT, SUFFIX)                                    \
+    CPLX_SMALL_AXIS_V2(mean, CT, RT, CplxOpSum<RT>, SUFFIX, true)             \
+    CPLX_PARTIAL_V2(mean, CT, RT, CplxOpSum<RT>, SUFFIX)                      \
+    CPLX_FINAL_V2(mean, CT, RT, CplxOpSum<RT>, SUFFIX, true)
+
+CPLX_SUM_PARALLEL(c64, float, c64)
+CPLX_SUM_PARALLEL(c128, double, c128)
+CPLX_PROD_PARALLEL(c64, float, c64)
+CPLX_PROD_PARALLEL(c128, double, c128)
+CPLX_MEAN_PARALLEL(c64, float, c64)
+CPLX_MEAN_PARALLEL(c128, double, c128)
+
+#undef CPLX_SMALL_AXIS_V2
+#undef CPLX_PARTIAL_V2
+#undef CPLX_FINAL_V2
+#undef CPLX_SUM_PARALLEL
+#undef CPLX_PROD_PARALLEL
+#undef CPLX_MEAN_PARALLEL
 
 /// mean wrapper：只有 f32/f64
 #define MEAN_V2(T, SUFFIX)                                                    \

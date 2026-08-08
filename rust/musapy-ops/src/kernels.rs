@@ -252,6 +252,27 @@ unsafe extern "C" {
     pub fn musapy_mean_final_f32_v2(partials: *const f32, c: *mut f32, num_partials: usize, out_size: usize, axis_len: usize, stream: musaStream_t);
     pub fn musapy_mean_final_f64_v2(partials: *const f64, c: *mut f64, num_partials: usize, out_size: usize, axis_len: usize, stream: musaStream_t);
 
+    // ── Complex parallel（Phase 7 优化：分量 re/im 各一路 shuffle）──
+    // small_axis / partial / final；final 额外带 axis_len（mean 除法用，sum/prod 忽略）
+    pub fn musapy_sum_small_axis_c64_v2(a: *const muComplex, c: *mut muComplex, ndim: i32, in_shape: *const usize, in_strides: *const isize, axis: i32, axis_len: usize, out_size: usize, group_size: i32, stream: musaStream_t);
+    pub fn musapy_sum_small_axis_c128_v2(a: *const muDoubleComplex, c: *mut muDoubleComplex, ndim: i32, in_shape: *const usize, in_strides: *const isize, axis: i32, axis_len: usize, out_size: usize, group_size: i32, stream: musaStream_t);
+    pub fn musapy_prod_small_axis_c64_v2(a: *const muComplex, c: *mut muComplex, ndim: i32, in_shape: *const usize, in_strides: *const isize, axis: i32, axis_len: usize, out_size: usize, group_size: i32, stream: musaStream_t);
+    pub fn musapy_prod_small_axis_c128_v2(a: *const muDoubleComplex, c: *mut muDoubleComplex, ndim: i32, in_shape: *const usize, in_strides: *const isize, axis: i32, axis_len: usize, out_size: usize, group_size: i32, stream: musaStream_t);
+    pub fn musapy_mean_small_axis_c64_v2(a: *const muComplex, c: *mut muComplex, ndim: i32, in_shape: *const usize, in_strides: *const isize, axis: i32, axis_len: usize, out_size: usize, group_size: i32, stream: musaStream_t);
+    pub fn musapy_mean_small_axis_c128_v2(a: *const muDoubleComplex, c: *mut muDoubleComplex, ndim: i32, in_shape: *const usize, in_strides: *const isize, axis: i32, axis_len: usize, out_size: usize, group_size: i32, stream: musaStream_t);
+    pub fn musapy_sum_partial_c64_v2(a: *const muComplex, partials: *mut muComplex, ndim: i32, in_shape: *const usize, in_strides: *const isize, axis: i32, axis_len: usize, out_size: usize, tiles_per_output: usize, stream: musaStream_t);
+    pub fn musapy_sum_partial_c128_v2(a: *const muDoubleComplex, partials: *mut muDoubleComplex, ndim: i32, in_shape: *const usize, in_strides: *const isize, axis: i32, axis_len: usize, out_size: usize, tiles_per_output: usize, stream: musaStream_t);
+    pub fn musapy_prod_partial_c64_v2(a: *const muComplex, partials: *mut muComplex, ndim: i32, in_shape: *const usize, in_strides: *const isize, axis: i32, axis_len: usize, out_size: usize, tiles_per_output: usize, stream: musaStream_t);
+    pub fn musapy_prod_partial_c128_v2(a: *const muDoubleComplex, partials: *mut muDoubleComplex, ndim: i32, in_shape: *const usize, in_strides: *const isize, axis: i32, axis_len: usize, out_size: usize, tiles_per_output: usize, stream: musaStream_t);
+    pub fn musapy_mean_partial_c64_v2(a: *const muComplex, partials: *mut muComplex, ndim: i32, in_shape: *const usize, in_strides: *const isize, axis: i32, axis_len: usize, out_size: usize, tiles_per_output: usize, stream: musaStream_t);
+    pub fn musapy_mean_partial_c128_v2(a: *const muDoubleComplex, partials: *mut muDoubleComplex, ndim: i32, in_shape: *const usize, in_strides: *const isize, axis: i32, axis_len: usize, out_size: usize, tiles_per_output: usize, stream: musaStream_t);
+    pub fn musapy_sum_final_c64_v2(partials: *const muComplex, c: *mut muComplex, num_partials: usize, out_size: usize, axis_len: usize, stream: musaStream_t);
+    pub fn musapy_sum_final_c128_v2(partials: *const muDoubleComplex, c: *mut muDoubleComplex, num_partials: usize, out_size: usize, axis_len: usize, stream: musaStream_t);
+    pub fn musapy_prod_final_c64_v2(partials: *const muComplex, c: *mut muComplex, num_partials: usize, out_size: usize, axis_len: usize, stream: musaStream_t);
+    pub fn musapy_prod_final_c128_v2(partials: *const muDoubleComplex, c: *mut muDoubleComplex, num_partials: usize, out_size: usize, axis_len: usize, stream: musaStream_t);
+    pub fn musapy_mean_final_c64_v2(partials: *const muComplex, c: *mut muComplex, num_partials: usize, out_size: usize, axis_len: usize, stream: musaStream_t);
+    pub fn musapy_mean_final_c128_v2(partials: *const muDoubleComplex, c: *mut muDoubleComplex, num_partials: usize, out_size: usize, axis_len: usize, stream: musaStream_t);
+
     // ── Argmax/Argmin parallel: partial ──
     // 签名：(a, partials_val, partials_idx, ndim, in_shape, in_strides, axis, axis_len, out_size, tiles_per_output, stream)
     pub fn musapy_argmax_partial_i64_v2(a: *const i64, partials_val: *mut i64, partials_idx: *mut i64, ndim: i32, in_shape: *const usize, in_strides: *const isize, axis: i32, axis_len: usize, out_size: usize, tiles_per_output: usize, stream: musaStream_t);
@@ -1026,6 +1047,81 @@ mod mock {
     mock_small_axis_v2!(musapy_min_small_axis_f64_v2, musapy_min_f64_v2, f64);
     mock_small_axis_v2!(musapy_mean_small_axis_f32_v2, musapy_mean_f32_v2, f32);
     mock_small_axis_v2!(musapy_mean_small_axis_f64_v2, musapy_mean_f64_v2, f64);
+
+    // complex 并行 mock（Phase 7 优化）：small_axis/partial 委托 naive 语义
+    // （group_size/tiles 仅影响线程映射，结果相同）；final 归约 partials。
+    macro_rules! mock_cplx_small_axis_v2 {
+        ($name:ident, $inner:ident, $t:ty) => {
+            pub unsafe fn $name(
+                a: *const $t, c: *mut $t,
+                ndim: i32, in_shape: *const usize, in_strides: *const isize,
+                axis: i32, axis_len: usize, out_size: usize, _group: i32,
+                _stream: musaStream_t,
+            ) {
+                unsafe { $inner(a, c, ndim, in_shape, in_strides, axis, axis_len, out_size, std::ptr::null_mut()) }
+            }
+        };
+    }
+    macro_rules! mock_cplx_partial_v2 {
+        ($name:ident, $inner:ident, $t:ty) => {
+            pub unsafe fn $name(
+                a: *const $t, partials: *mut $t,
+                ndim: i32, in_shape: *const usize, in_strides: *const isize,
+                axis: i32, axis_len: usize, out_size: usize, _tiles: usize,
+                _stream: musaStream_t,
+            ) {
+                unsafe { $inner(a, partials, ndim, in_shape, in_strides, axis, axis_len, out_size, std::ptr::null_mut()) }
+            }
+        };
+    }
+    macro_rules! mock_cplx_final_v2 {
+        ($name:ident, $t:ty, $kind:ident) => {
+            pub unsafe fn $name(
+                partials: *const $t, c: *mut $t,
+                num_partials: usize, out_size: usize, axis_len: usize,
+                _stream: musaStream_t,
+            ) {
+                if partials.is_null() || c.is_null() { return; }
+                for idx in 0..out_size {
+                    let src = std::slice::from_raw_parts(partials.add(idx * num_partials), num_partials);
+                    let mut re: f64 = 0.0;
+                    let mut im: f64 = 0.0;
+                    for v in src {
+                        match $kind {
+                            _ if $kind == "sum" || $kind == "mean" => { re += v.re as f64; im += v.im as f64; }
+                            _ => {
+                                let (ar, ai) = (re, im);
+                                let (br, bi) = (v.re as f64, v.im as f64);
+                                re = ar * br - ai * bi;
+                                im = ar * bi + ai * br;
+                            }
+                        }
+                    }
+                    if $kind == "mean" { re /= axis_len as f64; im /= axis_len as f64; }
+                    *c.add(idx) = $t { re: re as _, im: im as _ };
+                }
+            }
+        };
+    }
+
+    mock_cplx_small_axis_v2!(musapy_sum_small_axis_c64_v2, musapy_sum_c64_v2, muComplex);
+    mock_cplx_small_axis_v2!(musapy_sum_small_axis_c128_v2, musapy_sum_c128_v2, muDoubleComplex);
+    mock_cplx_small_axis_v2!(musapy_prod_small_axis_c64_v2, musapy_prod_c64_v2, muComplex);
+    mock_cplx_small_axis_v2!(musapy_prod_small_axis_c128_v2, musapy_prod_c128_v2, muDoubleComplex);
+    mock_cplx_small_axis_v2!(musapy_mean_small_axis_c64_v2, musapy_mean_c64_v2, muComplex);
+    mock_cplx_small_axis_v2!(musapy_mean_small_axis_c128_v2, musapy_mean_c128_v2, muDoubleComplex);
+    mock_cplx_partial_v2!(musapy_sum_partial_c64_v2, musapy_sum_c64_v2, muComplex);
+    mock_cplx_partial_v2!(musapy_sum_partial_c128_v2, musapy_sum_c128_v2, muDoubleComplex);
+    mock_cplx_partial_v2!(musapy_prod_partial_c64_v2, musapy_prod_c64_v2, muComplex);
+    mock_cplx_partial_v2!(musapy_prod_partial_c128_v2, musapy_prod_c128_v2, muDoubleComplex);
+    mock_cplx_partial_v2!(musapy_mean_partial_c64_v2, musapy_mean_c64_v2, muComplex);
+    mock_cplx_partial_v2!(musapy_mean_partial_c128_v2, musapy_mean_c128_v2, muDoubleComplex);
+    mock_cplx_final_v2!(musapy_sum_final_c64_v2, muComplex, "sum");
+    mock_cplx_final_v2!(musapy_sum_final_c128_v2, muDoubleComplex, "sum");
+    mock_cplx_final_v2!(musapy_prod_final_c64_v2, muComplex, "prod");
+    mock_cplx_final_v2!(musapy_prod_final_c128_v2, muDoubleComplex, "prod");
+    mock_cplx_final_v2!(musapy_mean_final_c64_v2, muComplex, "mean");
+    mock_cplx_final_v2!(musapy_mean_final_c128_v2, muDoubleComplex, "mean");
 
     // argmax/argmin mock（输入 T，输出 i64）
     macro_rules! mock_argreduce_v2 {

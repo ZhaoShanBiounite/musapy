@@ -309,16 +309,11 @@ def run_benchmark(size: int, iters: int, device_id: int):
     print("\n" + "-" * 72)
     print("  [Phase 7 专项 — 复数 reduction + axis=tuple 多轴归约]")
     print("-" * 72)
-    # 复数（sum/prod/mean：naive 分量路径；max/min/arg* 复数无全序拒绝）。
-    # naive 路径单线程扫轴，大数组极慢（1M c64 全局 ~214ms）→ 降级到 1M
-    # （同 cumsum 模式：性能特征由 naive 路径决定，规模只影响绝对延迟）。
-    cplx_cap = min(size, 1_000_000)
-    cplx_data = [complex(i % 1000 * 0.001, i % 500 * 0.002) for i in range(cplx_cap)]
+    # 复数（sum/prod/mean：分量 small_axis/partial/final 并行路径，2026-08-08 优化
+    # 后 1M 已 0.1ms 量级；max/min/arg* 复数无全序拒绝）
+    cplx_data = [complex(i % 1000 * 0.001, i % 500 * 0.002) for i in range(size)]
     cplx = ms.array(cplx_data, dtype=ms.complex64, device=device_str)
-    if cplx_cap < size:
-        print(f"  注: 复数按上限 {cplx_cap:,} 运行（naive 单线程扫轴，"
-              f"{size:,} 会过慢；性能特征不变）")
-    print(f"  复数数组: {cplx_cap:,} elements × complex64 = {fmt_bytes(cplx_cap * 8)} / array")
+    print(f"  复数数组: {size:,} elements × complex64 = {fmt_bytes(size * 8)} / array")
     cplx_ops = [
         # (name, fn, flops_per_elem, read_bytes_per_elem, write_bytes_per_elem)
         # complex64 读 8B + 写 8B（元素）
@@ -330,7 +325,7 @@ def run_benchmark(size: int, iters: int, device_id: int):
     print(f"\n  {'算子':<20} {'延迟(ms)':<11} {'吞吐(GE/s)':<13} {'带宽(GB/s)':<11}")
     print(f"  {'─'*20} {'─'*11} {'─'*13} {'─'*11}")
     for name, fn, flops, r_bytes, w_bytes in cplx_ops:
-        r = bench_op(fn, iters, cplx_cap, flops, r_bytes, w_bytes)
+        r = bench_op(fn, iters, size, flops, r_bytes, w_bytes)
         print(f"  {name:<20} {r.latency_ms:<11.3f} {r.gelem_per_sec:<13.3f} {r.effective_bw_gb_s:<11.3f}")
     # 复数排序归约拒绝（正确性断言，非计时）
     try:
