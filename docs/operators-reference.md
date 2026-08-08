@@ -6,7 +6,7 @@
 
 ---
 
-## 算子总览（v0.3，63 个 + 3 命名空间 + 索引语法）
+## 算子总览（v0.3，61 个 + 3 命名空间 + 索引语法）
 
 | 分类 | 算子 | 数量 |
 |------|------|------|
@@ -17,14 +17,14 @@
 | Reduction | sum, prod, max, min, mean（axis=int/tuple） | 5 |
 | Arg-reduction | argmax, argmin（axis=int/tuple, keepdims） | 2 |
 | Scan | cumsum | 1 |
-| Cast | astype | 1 |
+| Cast | astype（Array 方法） | 1 |
 | Init | zeros, ones, full, eye, arange, linspace, zeros_like, ones_like | 8 |
 | Indexing | transpose, permute, flip, slice, index_select, contiguous, gather, scatter | 8 |
 | Linalg | matmul, dot, solve, lu, qr, svd | 6 |
 | 命名空间 | ms.random（rand, randn, uniform, normal, bernoulli）· ms.fft（fft, ifft, rfft）· ms.sparse（csr_matrix, spmv, spmm） | 3 子模块 11 函数 |
 | 高级索引 | a[mask]（boolean）· a[idx] / a[i0,i1,...]（fancy） | 语法扩展 |
 | Complex 扩展 | elementwise（add/sub/mul/div/neg/abs/eq/ne）+ reduction（sum/mean/prod）+ cast（real→c64/c128） | dtype 扩展 |
-| **合计** | | **63 个函数 + 3 命名空间 + 高级索引语法** |
+| **合计** | | **50 个模块函数 + 11 命名空间函数（61）+ 3 命名空间 + 高级索引语法** |
 
 > 复数 max/min/argmax/argmin **永久拒绝**（复数无全序，002-D3）。
 > 数学库算子（linalg/random/fft/sparse）**GPU-only**（003-D4）。
@@ -153,28 +153,33 @@ ms.cumsum(a, axis=None, out=None) -> Array
 | mean | cast → f64 | 保持 | 保持 | 同 compute dtype |
 | argmax/argmin | cast → i64 | 保持 | **拒绝**（无全序） | **恒 i64**（索引） |
 
-### Kernel 符号（76 个，P6 清理后）
+### Kernel 符号（107 个，含复数 sum/prod/mean 与 arg _mid_ 族）
 
 ```
-musapy_{sum|prod|max|min}_{i64|f32|f64}_v2                  # 12（naive）
-musapy_mean_{f32|f64}_v2                                     #  2（naive）
-musapy_{argmax|argmin}_{i64|f32|f64}_v2                      #  6（naive）
-musapy_{sum|prod|max|min}_small_axis_{i64|f32|f64}_v2        # 12（小 axis）
-musapy_mean_small_axis_{f32|f64}_v2                          #  2（小 axis）
-musapy_{sum|prod|max|min}_partial_{i64|f32|f64}_v2           # 12（两阶段 P1）
-musapy_mean_partial_{f32|f64}_v2                             #  2（两阶段 P1）
-musapy_{sum|prod|max|min}_final_{i64|f32|f64}_v2             # 12（两阶段 P2）
-musapy_mean_final_{f32|f64}_v2                               #  2（两阶段 P2）
-musapy_{argmax|argmin}_partial_{i64|f32|f64}_v2              #  6（两阶段 P1）
-musapy_{argmax|argmin}_final_{i64|f32|f64}_v2                #  6（两阶段 P2）
-musapy_cumsum_{i64|f32|f64}_v3                               #  3（分层扫描）
+musapy_{sum|prod}_{i64|f32|f64|c64|c128}_v2                    # 20（naive）
+musapy_{max|min}_{i64|f32|f64}_v2                               #  6（naive）
+musapy_mean_{f32|f64|c64|c128}_v2                               #  4（naive）
+musapy_{argmax|argmin}_{i64|f32|f64}_v2                         #  6（naive）
+musapy_{sum|prod}_small_axis_{i64|f32|f64|c64|c128}_v2          # 20（小 axis）
+musapy_{max|min}_small_axis_{i64|f32|f64}_v2                    #  6（小 axis）
+musapy_mean_small_axis_{f32|f64|c64|c128}_v2                    #  4（小 axis）
+musapy_{sum|prod}_partial_{i64|f32|f64|c64|c128}_v2             # 20（两阶段 P1）
+musapy_{max|min}_partial_{i64|f32|f64}_v2                       #  6（两阶段 P1）
+musapy_mean_partial_{f32|f64|c64|c128}_v2                       #  4（两阶段 P1）
+musapy_{sum|prod}_final_{i64|f32|f64|c64|c128}_v2               # 20（两阶段 P2）
+musapy_{max|min}_final_{i64|f32|f64}_v2                         #  6（两阶段 P2）
+musapy_mean_final_{f32|f64|c64|c128}_v2                         #  4（两阶段 P2）
+musapy_{argmax|argmin}_partial_{i64|f32|f64}_v2                 #  6（两阶段 P1）
+musapy_{argmax|argmin}_mid_{i64|f32|f64}_v2                     #  6（多级 partial 中间级，P2b）
+musapy_{argmax|argmin}_final_{i64|f32|f64}_v2                   #  6（两阶段 P2）
+musapy_cumsum_{i64|f32|f64}_v3                                  #  3（分层扫描）
 ```
 
-> P6（2026-08-04）清理：删除 3 个无调用者的死符号
-> （`musapy_add_f32/f64_v1`、`musapy_mean_partial_i64_v2`），
-> 全库 extern 符号 179 → 176。naive 值算子 14 个保留——门禁实测
-> 在 axis_len ≤ 16 × 大 out_size 时优于小 axis 路径（最高 15.5×），
-> argmax/argmin 在 axis_len ≤ 1024 段也只有 naive 实现。
+> 复数（c64/c128）reduction：sum/prod/mean 支持（re/im 分量并行归约，
+> 2026-08-08 优化 ~1900×）；max/min/argmax/argmin 对复数**永久拒绝**（无全序）。
+> arg _mid_ 族为 P2b 多级 partial 的中间级（每级 ÷1024 递归，val/idx 双缓冲）。
+> naive 值算子 14 个保留——门禁实测在 axis_len ≤ 16 × 大 out_size 时优于
+> 小 axis 路径（最高 15.5×），argmax/argmin 在 axis_len ≤ 1024 段也只有 naive 实现。
 
 Reduction ABI（naive / small_axis）:
 ```c
@@ -213,10 +218,12 @@ a.astype(dtype) -> Array
 
 ### 实现要点
 
-- 目标 dtype：float32 / float64 / int64
-- 源 dtype：int8~uint64 / float32 / float64
+- 目标 dtype：float32 / float64 / int64 / complex64 / complex128
+- 源 dtype：int8~uint64 / float32 / float64（→ real 或 complex）；complex64 → complex128
+  （宽度提升）；complex→real **不支持**（抛 DtypeError，无 cast kernel）
 - 同 dtype 返回深拷贝
-- Kernel 符号：`musapy_cast_{src}_{dst}_v2`（25 个组合）
+- Kernel 符号：`musapy_cast_{src}_{dst}_v2`（32 个：27 实数组合 + 5 复数组合）
+  + fft 扩展 `musapy_cast_resize_{src}_{dst}_v2`（2 个，截断/补零）
 - Stride-aware（支持非连续输入）
 
 ---
@@ -363,6 +370,8 @@ ms.sparse.spmv(csr, vec) / ms.sparse.spmm(csr, dense)  # 显式函数形式
 - 实现走 **muSPARSE 泛型 API**（`musparseCreateCsr` + `CreateDnVec/DnMat` +
   `SpMV/SpMM`）；两段式（`temp_buffer=NULL` 查询 size → `get_workspace` → 计算）
 - **GPU-only**（003-D4）：CPU 设备上构造/运算抛 `DeviceError`
+- **`shape=(rows, cols)` 必须显式提供**（nnz>0 时无法从 device 端推断 cols，
+  缺省会抛 ValueError）；nnz=0 时可省略（默认全零矩阵）
 - **本轮范围**：只做 `csr_matrix`（`coo_matrix`/coo→csr 推迟）；data dtype
   f32/f64，indices/indptr 须 int32（`MUSPARSE_INDEX_32I`，0-based）
 - `@` 右侧：ms.Array 走 device 直连；ndarray/list 经 `tolist()` → `ms.array`

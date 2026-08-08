@@ -14,6 +14,9 @@
 - **v0.3 Phase 6** — sparse 套件：csr_matrix + spmv/spmm/toarray（P6.1/P6.3/P6.4/P6.6）
 - **v0.3 Phase 7** — reduction 补全：axis=tuple + 复数 sum/mean/prod（P7.1–P7.3）
 - **v0.3 Phase 8** — 高级索引：boolean mask + fancy indexing（P8.1–P8.4）
+- **dtype 字符串语法** — 全部 dtype 参数接受字符串短别名（`'f32'`/`'i64'`/`'c64'`/
+  `'b1'` 等）或全名（`'float32'`），`a.dtype == 'f32'` 可互比；兼容 `ms.float32`
+  常量（`63e621c`）
 
 ### Performance
 
@@ -30,6 +33,9 @@
 - 大块 buffer 立即 musaFree（跳过 pool/deferred 队列，修 bench_random 驱动 OOM）
 - build.rs pkg-config 探测合并嵌套 if（clippy collapsible_if 门禁，pre-existing）
 - bench Phase 7 复数项带宽口径（w=8 误计 16B/elem，虚高 2×）
+- **cast 类型对 dispatch/validate 不一致** — f32/f64→i64 缺 GPU kernel 分支、
+  complex→real 未拦截，真机 astype 触发 `unreachable!` panic；补 kernel/声明/
+  mock/dispatch + validate 显式拒绝（`ca6611b`）
 
 ### Docs
 
@@ -38,6 +44,13 @@
 - repo.md 全量 benchmark 数据报告 + 更新
 - Phase 2–8 各阶段状态更新 + 性能归因文档（P-A2/A4 证伪记录、复数带宽分析）
 - benchmark/README.md — 大/中/小三档运行命令
+- benchmark 与 README 的 dtype 参数迁移到字符串语法（`895a092`）
+
+### Refactor
+
+- 清理死代码与冗余实现（-245 行）：musaGetDevice/musaMemcpy2D/probe 等死 FFI、
+  Layout::broadcast_to 死路径、parse_device 重复实现合并、redundant 比较简化、
+  未用 import/死 helper/死赋值（`95358f3`）
 
 ### Bench
 

@@ -27,9 +27,16 @@ print(c.tolist())
 | 类型提升 | `int64 + float64 → float64`，自动 cast，无需手动转换 |
 | 14 个 elementwise 算子 | binary / unary / clamp / astype，全部支持 GPU + CPU |
 | 6 个 comparison 算子 | `== / != / < / > / <= / >=`，输出 bool |
-| 8 个 reduction 算子 | sum / prod / max / min / mean + argmax / argmin / cumsum |
+| 8 个 reduction 算子 | sum / prod / max / min / mean + argmax / argmin / cumsum（axis=int/tuple，v0.3） |
 | 8 个 init 算子 | zeros / ones / full / eye / arange / linspace / `*_like` |
 | 7 个 indexing 算子 | transpose / permute / flip / slice（零拷贝 view）+ gather / scatter（copy） |
+| 高级索引（v0.3） | `a[mask]` boolean + `a[idx]` fancy（恒 copy，越界抛 IndexError） |
+| linalg（v0.3，GPU-only） | matmul / dot / solve / lu / qr / svd |
+| random（v0.3，GPU-only） | rand / randn / uniform / normal / bernoulli（seed 可复现） |
+| fft（v0.3，GPU-only） | fft / ifft / rfft（含 2D batched） |
+| sparse（v0.3，GPU-only） | csr_matrix + `@` spmv / spmm / toarray |
+| 复数支持（v0.3） | elementwise / reduction（sum/mean/prod）/ cast（real→c64/c128）；`array([1+2j])` 推断 c128 |
+| 字符串 dtype 语法（v0.3） | `dtype='f32'` / `'i64'` / `'c64'` / `'b1'` 等短别名，`a.dtype == 'f32'` |
 | 显式设备管理 | 5 级 Device 解析链，数据去向可追溯 |
 | Stream 异步 | 多 stream 并行，自动依赖管理，capture-safe 3-phase 骨架 |
 | Rust 核心 | 内存安全、零开销抽象、RAII 生命周期 |
@@ -45,7 +52,9 @@ print(c.tolist())
 musapy/
 ├── python/musapy/              # Python 前端（import musapy as ms）
 │   ├── __init__.py             #   公开 API 导出
-│   └── _core.pyi               #   类型 stub（IDE 补全）
+│   ├── _core.pyi               #   类型 stub（IDE 补全）
+│   ├── random.py / fft.py      #   ms.random / ms.fft 命名空间包装
+│   └── sparse.py               #   ms.sparse 命名空间包装
 ├── rust/
 │   ├── musapy-core/            # 核心运行时
 │   │   ├── device.rs           #   Device 解析链（5 级）
@@ -53,19 +62,30 @@ musapy/
 │   │   ├── stream.rs           #   Stream + OpContext
 │   │   ├── buffer.rs           #   Buffer（GPU/CPU 内存）
 │   │   ├── array.rs            #   Array（Buffer + Layout + metadata）
-│   │   ├── layout.rs           #   Layout + broadcast_to
+│   │   ├── layout.rs           #   Layout + broadcast
+│   │   ├── math_handle.rs      #   MUSA-X 句柄/plan/workspace 生命周期
 │   │   └── musa_ffi.rs         #   MUSA Runtime FFI 绑定
 │   ├── musapy-ops/             # 算子层
-│   │   ├── broadcast.rs        #   NumPy 广播规则
-│   │   ├── elementwise.rs      #   公开 API（add/sub/.../clamp/astype）
 │   │   ├── op_builder.rs       #   3-phase 骨架（parse → launch → post）
+│   │   ├── elementwise.rs      #   elementwise + cast
+│   │   ├── reduction.rs        #   reduction / argreduce / cumsum
+│   │   ├── linalg.rs           #   matmul / solve / lu / qr / svd
+│   │   ├── random.rs           #   muRAND 生成
+│   │   ├── fft.rs              #   muFFT 变换
+│   │   ├── sparse.rs           #   muSPARSE csr_matrix / spmv / spmm
+│   │   ├── indexing.rs         #   view / gather / scatter / 高级索引
+│   │   ├── creation.rs         #   zeros / ones / full / eye / arange ...
+│   │   ├── broadcast.rs        #   NumPy 广播规则
 │   │   └── kernels.rs          #   extern "C" 声明 + mock stub
 │   └── musapy-python/          # PyO3 绑定
 │       ├── ops.rs              #   #[pyfunction] 模块级函数
 │       ├── array.rs            #   Array 方法 + dunders
 │       └── lib.rs              #   模块注册
 ├── kernels/                    # MUSA C kernel（mcc 编译）
-│   ├── elementwise.mu          #   所有 _v2 kernel（binary/unary/clamp/cast）
+│   ├── elementwise.mu          #   binary/unary/clamp/cast kernel
+│   ├── reduction.mu            #   归约/arg/scan kernel
+│   ├── indexing.mu             #   索引 kernel（adv_gather/nonzero 预留）
+│   ├── init.mu                 #   fill/arange/linspace/eye kernel
 │   └── include/common.h        #   offset_nd + grid 工具函数
 ├── benchmark/                  # GPU 计算占用验证脚本
 ├── tests/python/               # pytest 测试套件
@@ -152,7 +172,44 @@ ms.neg(a, out=None)       # -x
 
 ```python
 ms.clamp(a, lo, hi, out=None)   # min(max(x, lo), hi)
-a.astype(dtype)                  # 显式 dtype 转换
+a.astype(dtype)                  # 显式 dtype 转换（接受 'f32' 字符串或 Dtype）
+```
+
+### v0.3 数学库算子（GPU-only，详见 [operators-reference.md](docs/operators-reference.md)）
+
+```python
+# linalg（muBLAS + muSOLVER）
+ms.matmul(a, b) / ms.dot(a, b) / ms.solve(A, b) / ms.lu(A) / ms.qr(A) / ms.svd(A)
+
+# random（muRAND，seed 可复现）
+ms.random.rand(shape, dtype='f32', seed=None)   # uniform [0,1)
+ms.random.randn(shape, dtype='f64', seed=1)     # N(0,1)
+ms.random.uniform(low, high, shape=...) / normal(loc, scale, shape=...) / bernoulli(p, shape=...)
+
+# fft（muFFT，axis=-1；2D+ batched）
+ms.fft.fft(x) / ms.fft.ifft(x) / ms.fft.rfft(x)
+
+# sparse（muSPARSE）
+csr = ms.sparse.csr_matrix((data, indices, indptr), shape=(rows, cols))
+y = csr @ vec                    # spmv
+C = csr @ dense                  # spmm
+A = csr.toarray()
+```
+
+### v0.3 语义扩展
+
+```python
+# 复数（elementwise / reduction / cast；array([1+2j]) 推断 c128）
+ms.array([1+2j, 3-4j], dtype='c64')
+ms.sum(ms.array([1+2j], dtype='c64'))          # sum/mean/prod 支持复数
+ms.max(x)                                     # 复数 → DtypeError（无全序）
+
+# reduction 多轴 + arg* keepdims
+ms.sum(a, axis=(0, 1))  /  ms.argmax(a, axis=1, keepdims=True)
+
+# 高级索引（恒 copy；越界抛 IndexError）
+a[mask]         # boolean mask（等形或前 md 维广播）
+a[[0, 2]]       # fancy（坐标配对/索引形状广播/N-D/负索引）
 ```
 
 ### Python 运算符
@@ -272,6 +329,23 @@ cargo fmt --check
 
 ```
 设备: MTT S4000, arch=mp_22, 47.9 GB VRAM, 56 CUs
+权威数据: repo.md（2026-08-08 全量报告，含 v0.3 数学库算子）
+
+关键数字（2026-08-08 复测）:
+elementwise 峰值带宽（64M）      696 GB/s（≈ DRAM 峰值 90%）
+reduction 峰值带宽（64M）        219 GB/s
+comparison 峰值带宽（64M）       414 GB/s
+f32 matmul 峰值                  13.9 TFLOPS（n=2048）
+fft 2D 64×4096                   0.262 ms（batched，P-FFT-1 24.5×）
+spmv 2000² d=0.01                0.061 ms（描述符缓存，P-A3 11×）
+复数 sum（c64 1M）               0.11 ms（分量并行，~1900×）
+
+复现: python benchmark/bench_linalg.py / bench_musa_utilization.py ...
+完整数据: repo.md、benchmark/analysis-*.md
+```
+> 下方为 2026-08-04 历史快照（P0–P5 优化后基线），权威数据以上方 repo.md 为准。
+
+```
 规模: 1,000,000 elements × f32（2026-08-04，P0–P5 优化后）
 
 类别            延迟(ms)      备注
@@ -301,7 +375,7 @@ add 16M → 620 GB/s（≈ DRAM 峰值 89%），64M → 655 GB/s
 | v0.2-alpha P3 | Reduction（sum / prod / max / min / mean / argmax / argmin / cumsum） | ✅ 完成 |
 | v0.2-alpha P4 | Init（zeros / ones / full / eye / arange / linspace / `*_like`） | ✅ 完成 |
 | v0.2-alpha P5 | Indexing（transpose / permute / flip / slice 零拷贝 view + gather / scatter copy） | ✅ 完成（v0.2.0-alpha，2026-08-04） |
-| v0.3-alpha | 数学库（linalg / random / fft / sparse）+ axis=tuple / 复数归约 / 高级索引 | 规划中（见 [v0.3-alpha-plan-zh.md](docs/v0.3-alpha-plan-zh.md)） |
+| v0.3-alpha | 数学库（linalg / random / fft / sparse）+ axis=tuple / 复数归约 / 高级索引 + 字符串 dtype 语法 | ✅ 完成（v0.3.0-alpha，2026-08-08） |
 | v0.4-beta | 互操作（DLPack / NumPy 协议） | 规划中 |
 | v1.0 | 正式版 | 规划中 |
 
@@ -310,7 +384,11 @@ add 16M → 620 GB/s（≈ DRAM 峰值 89%），64M → 655 GB/s
 ## 文档
 
 - [快速上手](docs/getting-started.md)
+- [已实现算子参考](docs/operators-reference.md)
 - [架构决策记录（ADR）](docs/ADR-zh.md)
+- [v0.3.0-alpha 发布说明](docs/v0.3-alpha-release-note.md)
+- [SDK 3.1.0 已知限制](docs/sdk-3.1.0-limitations.md)
+- [Benchmark 数据报告](repo.md)
 - [v0.2 实现计划](docs/v0.2-alpha-plan-zh.md)
 - [v0.1 发布说明](docs/v0.1-alpha-release-note.md)
 

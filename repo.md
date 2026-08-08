@@ -1,8 +1,8 @@
 # musapy Benchmark 数据报告（2026-08-08）
 
-**环境**：MTT S4000（mp_22, 56 CUs, 47.9 GB VRAM）· 分支 `feat/v0.3-musax-ffi`
-（release 构建）· 原始输出 `/tmp/results-2026-08-08-full/`（基线 `3417ef8`）与
-`/tmp/results-2026-08-08-final/`（最终复测，见 §8）
+**环境**：MTT S4000（mp_22, 56 CUs, 47.9 GB VRAM）· 分支 `main`
+（数据采集于 `feat/v0.3-musax-ffi`，release 构建）· 原始输出 `/tmp/results-2026-08-08-full/`
+（基线 `3417ef8`）与 `/tmp/results-2026-08-08-final/`（最终复测，见 §8）
 
 **范围**：`bench_linalg.py` + `bench_musa_utilization.py`（1M/10M/64M 三档）+
 `bench_random.py` + `bench_fft.py` + `bench_sparse.py`；排除 `bench_math_handles.py`
@@ -163,7 +163,7 @@ rfft 输出减半故约快 2×。2D+ 走 **batched PlanMany 单次 Exec**（P-FF
 ### 4.2 数值
 
 真机对照 np.fft：fft/ifft/rfft rtol 1e-10（f64）/1e-5（f32）；ifft 圆整性、norm 三值、
-n 截断/补零、2D batched 全部通过（test_fft.py，24 用例）。
+n 截断/补零、2D batched 全部通过（test_fft.py，19 用例）。
 
 ---
 
@@ -176,13 +176,14 @@ GPU-only（003-D4）；`@` 收 ms.Array 直连 + ndarray/list 经 tolist 转 dev
 
 | density | nnz | spmv(ms) | spmm k=4(ms) | spmv 有效带宽(GB/s) |
 |---|---|---|---|---|
-| 0.01 | 40,000 | 0.65-0.67 | 0.055-0.064 | 0.5-0.7 |
+| 0.01 | 40,000 | **0.061**（P-A3 描述符缓存后） | 0.055-0.064 | 0.5-0.7 |
 | 0.10 | 400,000 | 0.81-0.83 | 0.104-0.163 | 3.9-5.8 |
 | 0.50 | 2,000,000 | 0.97-1.12 | 0.329-0.644 | 16.5-21.5 |
 
-spmv 低密度下延迟被固定开销主导（每调用 create/destroy 描述符 + 两段式查询），
-带宽随 nnz 上升；spmm 快 ~10×（批量列处理高效）。详细归因见
-[benchmark/analysis-sparse-2026-08-08.md](benchmark/analysis-sparse-2026-08-08.md)。
+低密度 spmv 基线（P-A3 前）为 0.65-0.67 ms；描述符缓存（`with_musparse_csr`，
+spmv 2000² d=0.01 **11×**）后降至 ~0.061 ms 已达 launch 地板，见
+[benchmark/analysis-sparse-2026-08-08.md](benchmark/analysis-sparse-2026-08-08.md) §5。
+带宽随 nnz 上升；spmm 快 ~10×（批量列处理高效）。
 
 ### 5.2 数值
 
@@ -282,6 +283,6 @@ mask（等形/前 md 维左对齐广播）+ fancy（坐标配对/索引形状广
 （`bench_linalg.py` + `bench_musa_utilization.py` 1M/10M/64M 三档 +
 `bench_random.py` + `bench_fft.py` + `bench_sparse.py`，全部 exit=0），
 与 `3417ef8` 基线及 fft/sparse 提交时数据**逐项一致，无回归**：
-matmul f32 13895 GFLOPS、elementwise 64M 696 GB/s、sum 64M 1.19 ms、
+matmul f32 13885 GFLOPS、elementwise 64M 696 GB/s、sum 64M 1.19 ms、
 cumsum 64M 2.94 ms（16.7M 上限）、randn f64 ~3 GB/s、fft 2D 0.262 ms
 （P-FFT-1 收益保持 24.5×）、spmv ~1 ms。原始输出 `/tmp/results-2026-08-08-final/`。

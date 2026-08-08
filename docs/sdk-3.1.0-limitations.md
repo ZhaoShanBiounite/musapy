@@ -1,6 +1,6 @@
 # SDK 3.1.0 MUSA-X 已知限制与实测行为汇总
 
-> **日期**:2026-08-08（随 v0.3 P0-P2 性能优化更新；§1.8-1.11 为 2026-08-07 benchmark 段级探针新增）
+> **日期**:2026-08-08（随 v0.3 P0-P2 性能优化更新；§1.8-1.11 为 2026-08-07/08 benchmark 段级探针新增，§1.12-1.16 为 mcc 编译器限制）
 > **SDK**:MUSA 3.1.0（`/usr/local/musa` → `/usr/local/musa-3.1.0`,mp_21/mp_22,与 MTT S4000 匹配）
 > **目的**:把散落在 ADR-003（003-D2/D3/D8）、v0.3 计划 §2/§16 风险表、
 > sdk-3.1.0-musax-coverage.md、linalg.rs 注释中的 SDK 限制/怪异行为集中到本文件,
@@ -27,6 +27,11 @@
 | 1.9 | **`mublas?gemm` f64 封顶 ~160 GFLOPS**(f32 的 1/86) | 2026-08-08 探针:dgemm 512/1024/2048 = 97/156/159 GFLOPS;f32/f64 延迟比随规模恶化 14×→48×→88×(mp_22 无原生 FP64,软件仿真 + DGEMM kernel 调优不足) | 所有 f64 分解类算子(lu/qr/svd/solve 的 getrf/getrs)性能预期上限 ≈160 GFLOPS | 文档注明性能预期;f64 大批量计算需评估精度折衷走 f32 | 升级 SDK 后重测 |
 | 1.10 | **`gesvd` NONE/NONE 仅省 ~25% 耗时**(compute_uv=False 收益有限) | 2026-08-08 探针:1024² f64 ALL 2695ms vs NONE 2016ms(0.75×);256² 同样 0.76× | svd(compute_uv=False)逃生通道收益有限——NONE 模式仍做大部分迭代工作 | svd 已支持 compute_uv=False;文档注明预期收益;eigh 等其他分解不依赖此路径 | 升级 SDK 后重测 |
 | 1.11 | **`geqrf`/`orgqr` 实现低效**(f64 亦非仿真问题) | 2026-08-08 探针:geqrf 1024² f64 259ms vs getrf 17ms(同量级 O(n³) 工作量慢 15×);f32 qr(1024) 365ms 仅比 f64 快 1.2× | qr 算子延迟天花板 ≈ geqrf+orgqr 组合(~438ms@1024²) | qr 走 geqrf+orgqr(无替代);文档注明;大批量 qr 需评估 | 升级 SDK 后重测 |
+| 1.12 | **mcc 不支持 `__shfl_down_sync` 的 struct 参数**(c64/c128 编译错误) | 探针证实(2026-08-08 复数归约):shfl 传 `muComplex`/`muDoubleComplex` 编译失败 | 复数归约无法直接 shuffle 复合值 | re/im 拆成两个独立标量分别 shuffle 归约(reduction.mu `cplx_*_v2`,~1900× 优化,repo.md §6.1) | 升级 mcc 后可评估复合值 shuffle |
+| 1.13 | **mcc 不支持指针数组 kernel 参数**(`const int64_t* const*` 启动 error 999) | 2026-08-08 探针(高级索引):`adv_gather`/`nonzero` kernel 传索引指针数组启动报错 999 | GPU 端 fancy/boolean 索引无法直接收指针数组 | 高级索引走 host fallback(D2H→host→H2D),kernel 已声明留作后续接入(indexing.rs,repo.md §7) | 升级 mcc 后接入 GPU kernel |
+| 1.14 | **musparse alpha/beta 标量指针宽度须按 dtype 传**(f32 路径传 f64 指针 → 输出全零) | 2026-08-08 真机:spmv/spmm 的 f32 分支若沿用 f64 alpha/beta 指针,输出恒 0 | alpha/beta 指针类型必须与 data dtype 匹配 | 按 dtype 传对应宽度标量指针(f32→f32*,f64→f64*,sparse.rs 注释) | 语义不随 SDK 变化 |
+| 1.15 | **mcc 对 float4+shuffle 组合生成病态代码**(f32 reduction 显式 float4 变慢 ~47×) | 2026-08-08 探针(analysis-cplx-bw):f32 reduction 显式 float4+shuffle 组合 47× 变慢 | f32 归约无法用显式 float4 提速(LD.B128 与 shuffle 路径互斥) | f32 reduction 保持标量路径(~220 GB/s);若编译器升级后可翻倍(analysis-cplx-bw 注释) | 升级 mcc 后重测 |
+| 1.16 | **mcc 对 REDUCE_ITEMS=8 的 unroll+边界检查生成病态代码**(~3500× 退化) | 2026-08-07 探针:REDUCE_ITEMS 4→8,64M sum 1.176→4106ms | 大 unroll 宽度 + 边界检查组合生成病态代码(与 1.15 同族) | REDUCE_ITEMS 回退 4;partial 带宽 ~220 GB/s 瓶颈在 shuffle+smem 路径本身 | 升级 mcc 后重测 |
 
 ---
 
@@ -53,7 +58,7 @@
 | 3.2 | **muSOLVER → libomp**(OpenMP 运行库) | 需 **versionless `libomp.so`**;2026-08-07 部署时创建 `/usr/lib/x86_64-linux-gnu/libomp.so → libomp.so.5` | 部署环境需预检;缺失表现为运行期加载失败 |
 | 3.3 | 宿主 OpenBLAS(v0.2 CPU fallback) | 缺失则降级纯 Rust 朴素实现 | v0.3+ 数学库算子 GPU-only 后仅影响 v0.2 算子 |
 | 3.4 | **SDK 3.1.0 过老** | mutlass ≥4.3.4 / tilelang ≥5.2 等轮子不可用 | 风险表(已知,低);本计划不引入这些依赖;升级 SDK 列为 v0.3 后期可选 |
-| 3.5 | mcc 3.1.0 编译 complex kernel | 兼容性未验证 | 风险表(中,中);Phase 5 先做最小 complex 冒烟再扩套件 |
+| 3.5 | mcc 3.1.0 编译 complex kernel | Phase 5 已落地:complex elementwise/reduction/cast 全套编译并通过真机验证(见 1.12/1.15/1.16 的 mcc 限制规避) | 已解决;复数归约 re/im 分量并行,complex 仅支持已实现算子族 |
 
 ---
 
@@ -67,8 +72,10 @@
 | `svd` | 1.2/1.3/1.4/1.5/1.10 | ALL 模式 + 薄视图切片 + S 合理性校验(linalg.rs `svd`);compute_uv=False 仅省 ~25% |
 | `eigh`(v0.4) | 2.3(syevd 仅 S/D) | 推迟;复数另行评估 |
 | random 套件(Phase 4) | 2.8 | 无实质影响 |
+| 复数 reduction(Phase 7) | 1.12(shfl struct)/1.15(float4+shuffle) | re/im 分量并行归约(reduction.mu `cplx_*_v2`) |
+| 高级索引(Phase 8) | 1.13(指针数组 error 999) | host fallback;GPU kernel 已声明待接入 |
 | fft 套件(Phase 5) | 3.1(libmtfft-device) | 部署环境预检 |
-| sparse 套件(Phase 6) | 2.5 | 两段式查询 |
+| sparse 套件(Phase 6) | 2.5、1.14(alpha/beta 宽度) | 两段式查询;按 dtype 传标量指针 |
 | 内存管理(全局) | 2.4(无 async alloc) | deferred-free 默认路径(ADR-zh L3-9) |
 | 句柄管理(全局) | 2.7(共享句柄) | `math_handle::with_mublas_handle`(003-D2) |
 

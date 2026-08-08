@@ -47,12 +47,12 @@ pip install target/wheels/musapy-*.whl
 
 ```bash
 python -c "import musapy; print(musapy.__version__)"
-# v0.2.0-alpha
+# v0.3.0-alpha
 ```
 
 ## 快速上手
 
-以下代码在 MUSA GPU（或 CPU 模式）上端到端跑通（v0.2 全功能面）：
+以下代码在 MUSA GPU（或 CPU 模式）上端到端跑通（v0.3 全功能面）：
 
 ```python
 import musapy as ms
@@ -137,9 +137,12 @@ print(row.tolist())                  # [104.0, 108.0, 112.0]
 
 | 函数 | 签名 | 说明 |
 |---|---|---|
-| `sum / prod / max / min / mean` | `(a, axis=None, keepdims=False, out=None)` | `axis=None` 全缩减 |
-| `argmax / argmin` | `(a, axis=None, out=None)` | 输出恒 int64 索引 |
+| `sum / prod / max / min / mean` | `(a, axis=None, keepdims=False, out=None)` | `axis=None` 全缩减；v0.3 支持 `axis=(0,1)` 多轴 |
+| `argmax / argmin` | `(a, axis=None, keepdims=False, out=None)` | 输出恒 int64 索引；v0.3 支持多轴 + keepdims |
 | `cumsum` | `(a, axis=None, out=None)` | 单轴容量上限 256³ ≈ 16.7M 元素 |
+
+复数输入：sum/mean/prod 支持 c64/c128（分量并行归约）；max/min/argmax/argmin
+对复数**抛 DtypeError**（复数无全序）。
 
 ### 5. Init / Creation
 
@@ -208,9 +211,9 @@ A = csr.toarray()      # 物化稠密 ms.Array
 | 函数 | 签名 | 说明 |
 |---|---|---|
 | `rand` | `(*shape, dtype=None, device=None, seed=None)` | uniform [0,1) |
-| `randn` | `(*shape, dtype=None, seed=None)` | N(0,1) |
-| `uniform` | `(low=0, high=1, shape=None, dtype=None, seed=None)` | [low, high) |
-| `normal` | `(loc=0, scale=1, shape=None, dtype=None, seed=None)` | N(loc, scale²) |
+| `randn` | `(*shape, dtype=None, device=None, seed=None)` | N(0,1) |
+| `uniform` | `(low=0, high=1, shape=None, dtype=None, device=None, seed=None)` | [low, high) |
+| `normal` | `(loc=0, scale=1, shape=None, dtype=None, device=None, seed=None)` | N(loc, scale²) |
 | `bernoulli` | `(p=0.5, shape=None, device=None, seed=None)` | bool |
 
 - **GPU-only**（003-D4）；同 seed 紧邻两次逐元素可复现（003-D9）
@@ -303,6 +306,7 @@ MusapyError
 ├── MemoryError ────────── OutOfMemoryError
 ├── StreamError
 ├── KernelError
+├── LinAlgError
 └── InteropError
 ```
 
@@ -340,7 +344,7 @@ Device 解析遵循 5 级优先级链：
 | 2 | context manager | `with ms.device("musa:0"):` |
 | 3 | 输入 Array 的 device | `a + b` 跟 a 走 |
 | 4 | 全局默认 | `ms.set_default_device("musa:0")` |
-| 5 | 启动 auto-probe | 有 MUSA 用 musa:0，否则 cpu |
+| 5 | 无兜底（L0-9） | 从未 set_default_device 时首次创建抛 `DeviceNotConfiguredError`；`ms.set_default_device(auto_probe())` 仅显式调用时启用自动探测 |
 
 ### Stream
 
