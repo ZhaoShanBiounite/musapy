@@ -383,7 +383,7 @@ python benchmark/bench_musa_utilization.py --size 1000000 --iters 100
 
 ## 下一步
 
-- [v0.2-alpha 发布说明](../v0.2-alpha-release-note.md)) — 本版本功能/性能/语义变更
+- [v0.2-alpha 发布说明](../release/v0.2-alpha-release-note.md)) — 本版本功能/性能/语义变更
 - [operators-reference.md](./operators-reference.md)) — 已实现算子参考（kernel 符号、ABI、性能）
 - [ADR-zh.md](../ADR-zh.md)) — 完整架构决策（L0-L4 分层；类型提升见 L1-14）
 - [v0.2-alpha 实现计划](./v0.2-alpha-plan-zh.md)) — 版本范围与阶段

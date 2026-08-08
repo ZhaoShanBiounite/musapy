@@ -60,9 +60,9 @@
 ## [v0.2.0-alpha] — 2026-08-04
 
 完整算子面（elementwise/comparison/reduction/init/indexing）+ 性能优化 + 正确性修复。
-详见 [docs/v0.2-alpha-release-note.md](./docs/v0.2-alpha-release-note.md)。
+详见 [docs/v0.2-alpha-release-note.md](docs/release/v0.2-alpha-release-note.md)。
 
 ## [v0.1.0-alpha] — 2026-07-28
 
 核心运行时（Device/Dtype/Stream/Array/Buffer）+ 最小 add 算子。
-详见 [docs/v0.1-alpha-release-note.md](./docs/v0.1-alpha-release-note.md)。
+详见 [docs/v0.1-alpha-release-note.md](docs/release/v0.1-alpha-release-note.md)。
