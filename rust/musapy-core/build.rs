@@ -96,17 +96,18 @@ fn probe_via_pkgconfig() -> Option<PathBuf> {
 
     match probe {
         Ok(lib) => {
-            if let Some(inc) = lib.include_paths.first() {
-                if let Some(home) = inc.parent() {
-                    let home = home.to_path_buf();
-                    if validate(&home) {
-                        println!(
-                            "cargo:warning=MUSAPY: MUSA SDK found via pkg-config, home={}",
-                            home.display()
-                        );
-                        return Some(home);
-                    }
-                }
+            // 合并嵌套 if（clippy collapsible_if 门禁）
+            let home = lib
+                .include_paths
+                .first()
+                .and_then(|inc| inc.parent())
+                .map(|p| p.to_path_buf());
+            if let Some(home) = home.filter(|h| validate(h)) {
+                println!(
+                    "cargo:warning=MUSAPY: MUSA SDK found via pkg-config, home={}",
+                    home.display()
+                );
+                return Some(home);
             }
             None
         }
