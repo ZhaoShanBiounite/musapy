@@ -288,6 +288,33 @@ GPU 路径不在 host 端同步校验 indices，而是由 kernel 内检查：
 
 ---
 
+## 高级索引（v0.3 Phase 8，ADR-002-D4）
+
+### 签名
+
+```python
+a[mask]          # boolean mask（等形或前 md 维广播）→ copy
+a[idx]           # fancy 单索引（1D/N-D 索引数组）→ copy
+a[i0, i1, ...]   # 多索引坐标配对（索引形状广播）→ copy
+a[[0, 1, 2]]     # Python list 索引（自动转 int64）→ copy
+```
+
+### 实现要点
+
+- **boolean mask**（`boolean_mask`）：mask 与 a 的**前 md 维**左对齐广播
+  （NumPy 语义），输出 `(n_true,) + a.shape[md:]`，按 C 序取 true 位置子块展平拼接
+- **fancy indexing**（`adv_index`）：单/多索引数组坐标配对 + 索引形状右对齐广播 +
+  N-D 索引数组 + 负索引（kernel/ops 内转正）；输出恒为 copy
+- **越界抛 Python 内置 `IndexError`**（非 MusapyError 子类，NumPy 兼容；
+  L3-6 单继承限制下直接映射 `pyo3::PyIndexError`）
+- `__getitem__` 识别 PyArray / ndarray / list 索引；混合 basic+fancy
+  （`a[1:, [0,2]]`）抛 `NotImplementedError`（v0.4 推迟）
+- 实现路径：GPU 侧目前走 **host fallback**（mcc 不支持指针数组 kernel 参数，
+  error 999 探针证实）；`musapy_adv_gather_*_v2`/`musapy_nonzero_*_v2` kernel
+  已声明，后续优化接入
+
+---
+
 ## FFT 算子（v0.3 Phase 5，ADR-003 003-D5/D7）
 
 ### 签名
