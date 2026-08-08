@@ -316,11 +316,12 @@ def run_benchmark(size: int, iters: int, device_id: int):
     print(f"  复数数组: {size:,} elements × complex64 = {fmt_bytes(size * 8)} / array")
     cplx_ops = [
         # (name, fn, flops_per_elem, read_bytes_per_elem, write_bytes_per_elem)
-        # complex64 读 8B + 写 8B（元素）
-        ("csum  (c64,global)",  lambda: ms.sum(cplx),   1.0, 8, 8),
-        ("cmean (c64,global)",  lambda: ms.mean(cplx),  2.0, 8, 8),
-        ("cprod (c64,global)",  lambda: ms.prod(cplx),  2.0, 8, 8),
-        ("csum  (c64,axis=0)",  lambda: ms.sum(cplx, axis=0), 1.0, 8, 8),
+        # 全局/axis 归约：只读输入（c64 元素 8B），写标量 4B 忽略（w=0，对齐
+        # f32 reduction 项的 r=4/w=0；若误写 w=8 会按 16B/elem 虚高带宽 2×）
+        ("csum  (c64,global)",  lambda: ms.sum(cplx),   1.0, 8, 0),
+        ("cmean (c64,global)",  lambda: ms.mean(cplx),  2.0, 8, 0),
+        ("cprod (c64,global)",  lambda: ms.prod(cplx),  2.0, 8, 0),
+        ("csum  (c64,axis=0)",  lambda: ms.sum(cplx, axis=0), 1.0, 8, 0),
     ]
     print(f"\n  {'算子':<20} {'延迟(ms)':<11} {'吞吐(GE/s)':<13} {'带宽(GB/s)':<11}")
     print(f"  {'─'*20} {'─'*11} {'─'*13} {'─'*11}")

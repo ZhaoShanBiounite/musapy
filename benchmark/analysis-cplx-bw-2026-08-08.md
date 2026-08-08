@@ -50,3 +50,11 @@ memory pipe 按指令数限速 → c64 每指令搬 2× 数据 → 带宽近 2×
 f32 reduction 带宽受限是**编译器/硬件访存宽度限制**（LD.B32 4B/指令），
 非应用层可解（float4+shuffle 病态）；c64 的 8B 元素天然占便宜。
 若 SDK/编译器升级后 float4+shuffle 可用，f32 reduction 预期可翻倍。
+
+## 附：benchmark 口径 bug 修正（2026-08-08 追加）
+
+用户 64M 档输出显示 c64 sum 751.8 GB/s（vs 实测 376），暴露 `bench_musa_utilization.py`
+Phase 7 cplx_ops 项带宽口径错误：误写 `read=8, write=8`（16B/elem），而**全局归约只读
+一遍输入、写标量 4B 可忽略**。已修正为 `read=8, write=0`（对齐 f32 reduction 项的
+`r=4/w=0`）。修正后 c64 sum 64M = 374.6 GB/s，真实带宽比 f32 = **1.71×**（非虚高
+3.44×）。
