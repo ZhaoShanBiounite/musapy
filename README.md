@@ -385,7 +385,7 @@ add 16M → 620 GB/s（≈ DRAM 峰值 89%），64M → 655 GB/s
 
 - [快速上手](docs/archive/getting-started.md)
 - [已实现算子参考](docs/archive/operators-reference.md)
-- [架构决策记录（ADR）](docs/ADR-zh.md)
+- [架构决策记录（ADR）](docs/adr/ADR-zh.md)
 - [v0.3.0-alpha 发布说明](docs/release/v0.3-alpha-release-note.md)
 - [SDK 3.1.0 已知限制](docs/archive/sdk-3.1.0-limitations.md)
 - [Benchmark 数据报告](repo.md)

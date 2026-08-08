@@ -189,5 +189,5 @@ capsule 存活期间被 pool 回收。
 |---|---|
 | 2026-08-08 | 起草 ADR-004（004-D1~D8），随 v0.4-beta 计划制定 |
 
-*与 [v0.4-beta-plan-zh.md](./v0.4-beta-plan-zh.md) 同步维护；英文版要点待 v0.4 决策转已接受时
+*与 [v0.4-beta-plan-zh.md](../v0.4-beta-plan-zh.md) 同步维护；英文版要点待 v0.4 决策转已接受时
 补 ADR-004.md。*

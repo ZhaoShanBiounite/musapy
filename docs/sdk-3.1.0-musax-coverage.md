@@ -3,7 +3,7 @@
 > **日期**:2026-08-06
 > **SDK**:MUSA 3.1.0(`/usr/local/musa` → `/usr/local/musa-3.1.0`,mp_21/mp_22,与 MTT S4000 匹配)
 > **依据**:[v0.3-alpha-plan-zh.md](./archive/v0.3-alpha-plan-zh.md) §2 前置条件 + Phase 1 P1.1;
-> [ADR-003-zh.md](./ADR-003-zh.md) 003-D2(句柄模型)
+> [ADR-003-zh.md](./adr/ADR-003-zh.md) 003-D2(句柄模型)
 
 本清单是 v0.3 全部数学库阶段的符号级前置验证,分两级完成:
 
