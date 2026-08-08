@@ -9,6 +9,7 @@
 //! - 无错误返回（kernels 返回 void；launch 错误由 ops 层检查 musaGetLastError）
 
 use musapy_core::musa_ffi::musaStream_t;
+use musapy_core::musa_x_ffi::{muComplex, muDoubleComplex};
 
 // ── 真实模式：链接 C 编译的 kernel ──────────────────────────
 
@@ -90,6 +91,44 @@ unsafe extern "C" {
     pub fn musapy_le_f64_v2(a: *const f64, b: *const f64, c: *mut u8, ndim: i32, shape: *const usize, a_strides: *const isize, b_strides: *const isize, stream: musaStream_t);
     pub fn musapy_ge_f32_v2(a: *const f32, b: *const f32, c: *mut u8, ndim: i32, shape: *const usize, a_strides: *const isize, b_strides: *const isize, stream: musaStream_t);
     pub fn musapy_ge_f64_v2(a: *const f64, b: *const f64, c: *mut u8, ndim: i32, shape: *const usize, a_strides: *const isize, b_strides: *const isize, stream: musaStream_t);
+
+    // v2 Complex（v0.3 Phase 5，ADR-003 003-D5）：
+    //   binary add/sub/mul/div + unary neg（输出同 complex）
+    //   + unary abs（输出 real：c64→float / c128→double）
+    //   + comparison eq/ne（输出 u8；lt/gt/le/ge 对 complex 永久拒绝，不实例化）
+    // ABI：complex buffer 的 interleaved re/im 布局 ≡ muComplex/muDoubleComplex（#[repr(C)]）。
+    pub fn musapy_add_c64_v2(a: *const muComplex, b: *const muComplex, c: *mut muComplex, ndim: i32, shape: *const usize, a_strides: *const isize, b_strides: *const isize, stream: musaStream_t);
+    pub fn musapy_add_c128_v2(a: *const muDoubleComplex, b: *const muDoubleComplex, c: *mut muDoubleComplex, ndim: i32, shape: *const usize, a_strides: *const isize, b_strides: *const isize, stream: musaStream_t);
+    pub fn musapy_sub_c64_v2(a: *const muComplex, b: *const muComplex, c: *mut muComplex, ndim: i32, shape: *const usize, a_strides: *const isize, b_strides: *const isize, stream: musaStream_t);
+    pub fn musapy_sub_c128_v2(a: *const muDoubleComplex, b: *const muDoubleComplex, c: *mut muDoubleComplex, ndim: i32, shape: *const usize, a_strides: *const isize, b_strides: *const isize, stream: musaStream_t);
+    pub fn musapy_mul_c64_v2(a: *const muComplex, b: *const muComplex, c: *mut muComplex, ndim: i32, shape: *const usize, a_strides: *const isize, b_strides: *const isize, stream: musaStream_t);
+    pub fn musapy_mul_c128_v2(a: *const muDoubleComplex, b: *const muDoubleComplex, c: *mut muDoubleComplex, ndim: i32, shape: *const usize, a_strides: *const isize, b_strides: *const isize, stream: musaStream_t);
+    pub fn musapy_div_c64_v2(a: *const muComplex, b: *const muComplex, c: *mut muComplex, ndim: i32, shape: *const usize, a_strides: *const isize, b_strides: *const isize, stream: musaStream_t);
+    pub fn musapy_div_c128_v2(a: *const muDoubleComplex, b: *const muDoubleComplex, c: *mut muDoubleComplex, ndim: i32, shape: *const usize, a_strides: *const isize, b_strides: *const isize, stream: musaStream_t);
+    pub fn musapy_neg_c64_v2(a: *const muComplex, c: *mut muComplex, ndim: i32, shape: *const usize, a_strides: *const isize, stream: musaStream_t);
+    pub fn musapy_neg_c128_v2(a: *const muDoubleComplex, c: *mut muDoubleComplex, ndim: i32, shape: *const usize, a_strides: *const isize, stream: musaStream_t);
+    pub fn musapy_abs_c64_v2(a: *const muComplex, c: *mut f32, ndim: i32, shape: *const usize, a_strides: *const isize, stream: musaStream_t);
+    pub fn musapy_abs_c128_v2(a: *const muDoubleComplex, c: *mut f64, ndim: i32, shape: *const usize, a_strides: *const isize, stream: musaStream_t);
+    pub fn musapy_eq_c64_v2(a: *const muComplex, b: *const muComplex, c: *mut u8, ndim: i32, shape: *const usize, a_strides: *const isize, b_strides: *const isize, stream: musaStream_t);
+    pub fn musapy_eq_c128_v2(a: *const muDoubleComplex, b: *const muDoubleComplex, c: *mut u8, ndim: i32, shape: *const usize, a_strides: *const isize, b_strides: *const isize, stream: musaStream_t);
+    pub fn musapy_ne_c64_v2(a: *const muComplex, b: *const muComplex, c: *mut u8, ndim: i32, shape: *const usize, a_strides: *const isize, b_strides: *const isize, stream: musaStream_t);
+    pub fn musapy_ne_c128_v2(a: *const muDoubleComplex, b: *const muDoubleComplex, c: *mut u8, ndim: i32, shape: *const usize, a_strides: *const isize, b_strides: *const isize, stream: musaStream_t);
+    // real → complex cast（Phase 5：fft real 输入扩展 + 混合提升；re=src, im=0）
+    pub fn musapy_cast_f32_c64_v2(a: *const f32, c: *mut muComplex, ndim: i32, shape: *const usize, a_strides: *const isize, stream: musaStream_t);
+    pub fn musapy_cast_f32_c128_v2(a: *const f32, c: *mut muDoubleComplex, ndim: i32, shape: *const usize, a_strides: *const isize, stream: musaStream_t);
+    pub fn musapy_cast_f64_c64_v2(a: *const f64, c: *mut muComplex, ndim: i32, shape: *const usize, a_strides: *const isize, stream: musaStream_t);
+    pub fn musapy_cast_f64_c128_v2(a: *const f64, c: *mut muDoubleComplex, ndim: i32, shape: *const usize, a_strides: *const isize, stream: musaStream_t);
+    // complex 宽度提升（c64 → c128，跨类别提升用）
+    pub fn musapy_cast_c64_c128_v2(a: *const muComplex, c: *mut muDoubleComplex, ndim: i32, shape: *const usize, a_strides: *const isize, stream: musaStream_t);
+    // complex resize（截断/补零，Phase 5 fft 的 n 参数；输入 stride-aware，输出连续）
+    pub fn musapy_resize_c64_v2(a: *const muComplex, c: *mut muComplex, ndim: i32, shape: *const usize, a_strides: *const isize, n_in: usize, n_out: usize, stream: musaStream_t);
+    pub fn musapy_resize_c128_v2(a: *const muDoubleComplex, c: *mut muDoubleComplex, ndim: i32, shape: *const usize, a_strides: *const isize, n_in: usize, n_out: usize, stream: musaStream_t);
+    // real resize（Phase 5 rfft 的 n 参数；输入保持 real，R2C/D2Z 前置）
+    pub fn musapy_resize_f32_real_v2(a: *const f32, c: *mut f32, ndim: i32, shape: *const usize, a_strides: *const isize, n_in: usize, n_out: usize, stream: musaStream_t);
+    pub fn musapy_resize_f64_real_v2(a: *const f64, c: *mut f64, ndim: i32, shape: *const usize, a_strides: *const isize, n_in: usize, n_out: usize, stream: musaStream_t);
+    // complex 就地缩放（real 标量，Phase 5 fft 归一化；输出恒连续）
+    pub fn musapy_scale_c64_v2(c: *mut muComplex, factor: f64, n: usize, stream: musaStream_t);
+    pub fn musapy_scale_c128_v2(c: *mut muDoubleComplex, factor: f64, n: usize, stream: musaStream_t);
 
     // v2 Reduction（Phase 4：沿轴缩减）
     pub fn musapy_sum_i64_v2(a: *const i64, c: *mut i64, ndim: i32, in_shape: *const usize, in_strides: *const isize, axis: i32, axis_len: usize, out_size: usize, stream: musaStream_t);
@@ -475,6 +514,257 @@ mod mock {
     mock_compare_v2!(musapy_le_f64_v2, f64, |a, b| a <= b);
     mock_compare_v2!(musapy_ge_f32_v2, f32, |a, b| a >= b);
     mock_compare_v2!(musapy_ge_f64_v2, f64, |a, b| a >= b);
+
+    // v2 Complex mock（v0.3 Phase 5，ADR-003 003-D5）：
+    // binary add/sub/mul/div + neg（同 complex）+ abs（输出 real）+ eq/ne（输出 u8）。
+    // 与真实 kernel 的 re/im 分量公式一致（逐元素 CPU 复算，供无 GPU CI 对照）。
+    macro_rules! mock_cplx_binary_v2 {
+        ($name:ident, $t:ty, $op:expr) => {
+            pub unsafe fn $name(
+                a: *const $t, b: *const $t, c: *mut $t,
+                ndim: i32, shape: *const usize,
+                a_strides: *const isize, b_strides: *const isize,
+                _stream: musaStream_t,
+            ) {
+                if a.is_null() || b.is_null() || c.is_null() || ndim < 0 { return; }
+                let ndim = ndim as usize;
+                let shape_s = std::slice::from_raw_parts(shape, ndim);
+                let as_s = std::slice::from_raw_parts(a_strides, ndim);
+                let bs_s = std::slice::from_raw_parts(b_strides, ndim);
+                let n: usize = shape_s.iter().product();
+                let op: fn($t, $t) -> $t = $op;
+                for idx in 0..n {
+                    let ao = mock_offset_nd(idx, shape_s, as_s);
+                    let bo = mock_offset_nd(idx, shape_s, bs_s);
+                    *c.add(idx) = op(*a.add(ao), *b.add(bo));
+                }
+            }
+        };
+    }
+
+    mock_cplx_binary_v2!(musapy_add_c64_v2, muComplex, |a, b| muComplex { re: a.re + b.re, im: a.im + b.im });
+    mock_cplx_binary_v2!(musapy_add_c128_v2, muDoubleComplex, |a, b| muDoubleComplex { re: a.re + b.re, im: a.im + b.im });
+    mock_cplx_binary_v2!(musapy_sub_c64_v2, muComplex, |a, b| muComplex { re: a.re - b.re, im: a.im - b.im });
+    mock_cplx_binary_v2!(musapy_sub_c128_v2, muDoubleComplex, |a, b| muDoubleComplex { re: a.re - b.re, im: a.im - b.im });
+    mock_cplx_binary_v2!(musapy_mul_c64_v2, muComplex, |a, b| muComplex { re: a.re * b.re - a.im * b.im, im: a.re * b.im + a.im * b.re });
+    mock_cplx_binary_v2!(musapy_mul_c128_v2, muDoubleComplex, |a, b| muDoubleComplex { re: a.re * b.re - a.im * b.im, im: a.re * b.im + a.im * b.re });
+    mock_cplx_binary_v2!(musapy_div_c64_v2, muComplex, |a, b| {
+        let den = b.re * b.re + b.im * b.im;
+        muComplex { re: (a.re * b.re + a.im * b.im) / den, im: (a.im * b.re - a.re * b.im) / den }
+    });
+    mock_cplx_binary_v2!(musapy_div_c128_v2, muDoubleComplex, |a, b| {
+        let den = b.re * b.re + b.im * b.im;
+        muDoubleComplex { re: (a.re * b.re + a.im * b.im) / den, im: (a.im * b.re - a.re * b.im) / den }
+    });
+
+    // neg（输出同 complex）
+    macro_rules! mock_cplx_neg_v2 {
+        ($name:ident, $t:ty) => {
+            pub unsafe fn $name(
+                a: *const $t, c: *mut $t,
+                ndim: i32, shape: *const usize, a_strides: *const isize,
+                _stream: musaStream_t,
+            ) {
+                if a.is_null() || c.is_null() || ndim < 0 { return; }
+                let ndim = ndim as usize;
+                let shape_s = std::slice::from_raw_parts(shape, ndim);
+                let as_s = std::slice::from_raw_parts(a_strides, ndim);
+                let n: usize = shape_s.iter().product();
+                for idx in 0..n {
+                    let ao = mock_offset_nd(idx, shape_s, as_s);
+                    let v = *a.add(ao);
+                    *c.add(idx) = $t { re: -v.re, im: -v.im };
+                }
+            }
+        };
+    }
+
+    mock_cplx_neg_v2!(musapy_neg_c64_v2, muComplex);
+    mock_cplx_neg_v2!(musapy_neg_c128_v2, muDoubleComplex);
+
+    // abs（输出 real：c64→f32 / c128→f64）
+    macro_rules! mock_cplx_abs_v2 {
+        ($name:ident, $ct:ty, $rt:ty) => {
+            pub unsafe fn $name(
+                a: *const $ct, c: *mut $rt,
+                ndim: i32, shape: *const usize, a_strides: *const isize,
+                _stream: musaStream_t,
+            ) {
+                if a.is_null() || c.is_null() || ndim < 0 { return; }
+                let ndim = ndim as usize;
+                let shape_s = std::slice::from_raw_parts(shape, ndim);
+                let as_s = std::slice::from_raw_parts(a_strides, ndim);
+                let n: usize = shape_s.iter().product();
+                for idx in 0..n {
+                    let ao = mock_offset_nd(idx, shape_s, as_s);
+                    let v = *a.add(ao);
+                    *c.add(idx) = (v.re * v.re + v.im * v.im).sqrt() as $rt;
+                }
+            }
+        };
+    }
+
+    mock_cplx_abs_v2!(musapy_abs_c64_v2, muComplex, f32);
+    mock_cplx_abs_v2!(musapy_abs_c128_v2, muDoubleComplex, f64);
+
+    // comparison eq/ne（输出 u8）
+    macro_rules! mock_cplx_compare_v2 {
+        ($name:ident, $t:ty, $eq:expr) => {
+            pub unsafe fn $name(
+                a: *const $t, b: *const $t, c: *mut u8,
+                ndim: i32, shape: *const usize,
+                a_strides: *const isize, b_strides: *const isize,
+                _stream: musaStream_t,
+            ) {
+                if a.is_null() || b.is_null() || c.is_null() || ndim < 0 { return; }
+                let ndim = ndim as usize;
+                let shape_s = std::slice::from_raw_parts(shape, ndim);
+                let as_s = std::slice::from_raw_parts(a_strides, ndim);
+                let bs_s = std::slice::from_raw_parts(b_strides, ndim);
+                let n: usize = shape_s.iter().product();
+                let eq: fn($t, $t) -> bool = $eq;
+                for idx in 0..n {
+                    let ao = mock_offset_nd(idx, shape_s, as_s);
+                    let bo = mock_offset_nd(idx, shape_s, bs_s);
+                    *c.add(idx) = if eq(*a.add(ao), *b.add(bo)) { 1 } else { 0 };
+                }
+            }
+        };
+    }
+
+    mock_cplx_compare_v2!(musapy_eq_c64_v2, muComplex, |a, b| a.re == b.re && a.im == b.im);
+    mock_cplx_compare_v2!(musapy_eq_c128_v2, muDoubleComplex, |a, b| a.re == b.re && a.im == b.im);
+    mock_cplx_compare_v2!(musapy_ne_c64_v2, muComplex, |a, b| a.re != b.re || a.im != b.im);
+    mock_cplx_compare_v2!(musapy_ne_c128_v2, muDoubleComplex, |a, b| a.re != b.re || a.im != b.im);
+
+    // real → complex cast（Phase 5：re=src, im=0）
+    macro_rules! mock_cplx_cast_v2 {
+        ($name:ident, $src:ty, $ct:ty) => {
+            pub unsafe fn $name(
+                a: *const $src, c: *mut $ct,
+                ndim: i32, shape: *const usize, a_strides: *const isize,
+                _stream: musaStream_t,
+            ) {
+                if a.is_null() || c.is_null() || ndim < 0 { return; }
+                let ndim = ndim as usize;
+                let shape_s = std::slice::from_raw_parts(shape, ndim);
+                let as_s = std::slice::from_raw_parts(a_strides, ndim);
+                let n: usize = shape_s.iter().product();
+                for idx in 0..n {
+                    let ao = mock_offset_nd(idx, shape_s, as_s);
+                    let v = *a.add(ao) as f64;
+                    *c.add(idx) = $ct { re: v as _, im: 0.0 };
+                }
+            }
+        };
+    }
+
+    mock_cplx_cast_v2!(musapy_cast_f32_c64_v2, f32, muComplex);
+    mock_cplx_cast_v2!(musapy_cast_f32_c128_v2, f32, muDoubleComplex);
+    mock_cplx_cast_v2!(musapy_cast_f64_c64_v2, f64, muComplex);
+    mock_cplx_cast_v2!(musapy_cast_f64_c128_v2, f64, muDoubleComplex);
+
+    // complex 宽度提升（c64 → c128）
+    pub unsafe fn musapy_cast_c64_c128_v2(
+        a: *const muComplex, c: *mut muDoubleComplex,
+        ndim: i32, shape: *const usize, a_strides: *const isize,
+        _stream: musaStream_t,
+    ) {
+        if a.is_null() || c.is_null() || ndim < 0 { return; }
+        let ndim = ndim as usize;
+        let shape_s = std::slice::from_raw_parts(shape, ndim);
+        let as_s = std::slice::from_raw_parts(a_strides, ndim);
+        let n: usize = shape_s.iter().product();
+        for idx in 0..n {
+            let ao = mock_offset_nd(idx, shape_s, as_s);
+            let v = *a.add(ao);
+            *c.add(idx) = muDoubleComplex { re: v.re as f64, im: v.im as f64 };
+        }
+    }
+
+    // complex resize（截断/补零：输入 stride-aware shape=[...,n_in]，输出连续 [...,n_out]）
+    macro_rules! mock_resize_v2 {
+        ($name:ident, $ct:ty) => {
+            pub unsafe fn $name(
+                a: *const $ct, c: *mut $ct,
+                ndim: i32, shape: *const usize, a_strides: *const isize,
+                n_in: usize, n_out: usize,
+                _stream: musaStream_t,
+            ) {
+                if a.is_null() || c.is_null() || ndim < 0 { return; }
+                let ndim = ndim as usize;
+                let shape_s = std::slice::from_raw_parts(shape, ndim);
+                let as_s = std::slice::from_raw_parts(a_strides, ndim);
+                let outer: usize = shape_s[..ndim - 1].iter().product();
+                for oi in 0..outer {
+                    for k in 0..n_out {
+                        let idx = oi * n_out + k;
+                        if k < n_in {
+                            let in_linear = oi * n_in + k;
+                            let a_off = mock_offset_nd(in_linear, shape_s, as_s);
+                            *c.add(idx) = *a.add(a_off);
+                        } else {
+                            *c.add(idx) = $ct { re: 0.0, im: 0.0 };
+                        }
+                    }
+                }
+            }
+        };
+    }
+
+    mock_resize_v2!(musapy_resize_c64_v2, muComplex);
+    mock_resize_v2!(musapy_resize_c128_v2, muDoubleComplex);
+
+    // real resize（rfft 的 n 参数；输入保持 real）
+    macro_rules! mock_real_resize_v2 {
+        ($name:ident, $t:ty) => {
+            pub unsafe fn $name(
+                a: *const $t, c: *mut $t,
+                ndim: i32, shape: *const usize, a_strides: *const isize,
+                n_in: usize, n_out: usize,
+                _stream: musaStream_t,
+            ) {
+                if a.is_null() || c.is_null() || ndim < 0 { return; }
+                let ndim = ndim as usize;
+                let shape_s = std::slice::from_raw_parts(shape, ndim);
+                let as_s = std::slice::from_raw_parts(a_strides, ndim);
+                let outer: usize = shape_s[..ndim - 1].iter().product();
+                for oi in 0..outer {
+                    for k in 0..n_out {
+                        let idx = oi * n_out + k;
+                        if k < n_in {
+                            let in_linear = oi * n_in + k;
+                            let a_off = mock_offset_nd(in_linear, shape_s, as_s);
+                            *c.add(idx) = *a.add(a_off);
+                        } else {
+                            *c.add(idx) = 0 as $t;
+                        }
+                    }
+                }
+            }
+        };
+    }
+
+    mock_real_resize_v2!(musapy_resize_f32_real_v2, f32);
+    mock_real_resize_v2!(musapy_resize_f64_real_v2, f64);
+
+    // complex 就地缩放（real 标量）
+    macro_rules! mock_scale_v2 {
+        ($name:ident, $ct:ty) => {
+            pub unsafe fn $name(c: *mut $ct, factor: f64, n: usize, _stream: musaStream_t) {
+                if c.is_null() { return; }
+                for i in 0..n {
+                    let v = &mut *c.add(i);
+                    v.re = (v.re as f64 * factor) as _;
+                    v.im = (v.im as f64 * factor) as _;
+                }
+            }
+        };
+    }
+
+    mock_scale_v2!(musapy_scale_c64_v2, muComplex);
+    mock_scale_v2!(musapy_scale_c128_v2, muDoubleComplex);
+
 
     // v2 Reduction mock（Phase 4）
     // 辅助：计算 reduce_input_offset（与 common.h 逻辑一致）

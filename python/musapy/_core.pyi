@@ -297,6 +297,30 @@ def bernoulli(
     seed: int | None = None,
 ) -> Array: ...
 
+# FFT (v0.3 Phase 5; 由 python/musapy/fft.py 包装为 ms.fft.* 命名空间)
+# 注意：axis 目前仅支持 -1（fftn/多轴推迟）；输出恒 complex。
+def fft(
+    a: Array,
+    n: int | None = None,
+    axis: int = -1,
+    norm: str | None = None,
+    out: Array | None = None,
+) -> Array: ...
+def ifft(
+    a: Array,
+    n: int | None = None,
+    axis: int = -1,
+    norm: str | None = None,
+    out: Array | None = None,
+) -> Array: ...
+def rfft(
+    a: Array,
+    n: int | None = None,
+    axis: int = -1,
+    norm: str | None = None,
+    out: Array | None = None,
+) -> Array: ...
+
 # Creation (Phase 5)
 def zeros(shape: int | Sequence[int], *, dtype: Dtype | None = None, device: str | Device | None = None) -> Array: ...
 def ones(shape: int | Sequence[int], *, dtype: Dtype | None = None, device: str | Device | None = None) -> Array: ...

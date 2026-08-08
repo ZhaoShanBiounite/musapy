@@ -13,6 +13,7 @@ pub mod broadcast;
 pub mod comparison;
 pub mod creation;
 pub mod elementwise;
+pub mod fft;
 pub mod indexing;
 pub mod kernels;
 pub mod linalg;
@@ -30,3 +31,4 @@ pub use indexing::{
 };
 pub use linalg::{dot, lu, matmul, qr, solve, svd};
 pub use random::{bernoulli, normal, rand, randn, uniform};
+pub use fft::{FftNorm, fft, ifft, rfft};

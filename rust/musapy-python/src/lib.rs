@@ -7,6 +7,7 @@ pub mod array;
 pub mod device;
 pub mod dtype;
 pub mod error;
+pub mod fft;
 pub mod math_handles;
 pub mod ops;
 pub mod random;
@@ -344,6 +345,10 @@ fn _core(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(random::uniform, m)?)?;
     m.add_function(wrap_pyfunction!(random::normal, m)?)?;
     m.add_function(wrap_pyfunction!(random::bernoulli, m)?)?;
+    // Phase 5 (v0.3): fft ops（_core 平铺，fft.py 包装为 ms.fft.*）
+    m.add_function(wrap_pyfunction!(fft::fft, m)?)?;
+    m.add_function(wrap_pyfunction!(fft::ifft, m)?)?;
+    m.add_function(wrap_pyfunction!(fft::rfft, m)?)?;
     // Phase 5: creation ops
     m.add_function(wrap_pyfunction!(ops::zeros, m)?)?;
     m.add_function(wrap_pyfunction!(ops::ones, m)?)?;

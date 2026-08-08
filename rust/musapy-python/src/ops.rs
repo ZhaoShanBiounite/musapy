@@ -10,7 +10,8 @@ use crate::error;
 use musapy_core::musa_ffi;
 use musapy_core::resolution;
 use musapy_core::{
-    Buffer, BufferRef, Device, DeviceResolution, Dtype, DtypeResolution, Layout, Stream,
+    Buffer, BufferRef, Device, DeviceResolution, Dtype, DtypeResolution, Layout, ResolutionSource,
+    Stream,
 };
 use musapy_core::{PythonFrame, debug};
 use musapy_ops;
@@ -56,8 +57,14 @@ pub fn array(
     // --- 3. 5 级解析（ADR L0-6, L0-7）---
     let device_res: DeviceResolution =
         resolution::resolve_device(device_arg, &[]).map_err(error::to_pyerr)?;
-    let dtype_res: DtypeResolution =
+    let mut dtype_res: DtypeResolution =
         resolution::resolve_dtype(dtype_arg, &[]).map_err(error::to_pyerr)?;
+
+    // --- 3b. complex 字面量推断（ADR-003 003-D5：ms.array([1+2j]) → complex128，
+    // NumPy 行为；显式 dtype= 优先，不覆盖）---
+    if dtype_arg.is_none() && data_contains_complex(data) {
+        dtype_res = DtypeResolution::new(Dtype::Complex128, ResolutionSource::AutoProbe);
+    }
 
     let resolved_device = device_res.device.clone();
     let resolved_dtype = dtype_res.dtype;
@@ -291,7 +298,7 @@ pub(crate) fn extract_caller_frame(py: Python<'_>) -> Option<PythonFrame> {
 /// 从 Python 数据按 dtype 提取 raw bytes 和 shape。
 ///
 /// 支持：
-/// - 标量（int/float/bool）→ 0-dim，shape=[]
+/// - 标量（int/float/bool/complex）→ 0-dim，shape=[]
 /// - 1D list/tuple → shape=[n]
 /// - 嵌套 list/tuple → shape=[d0, d1, ...]（必须矩形）
 fn extract_data(data: &Bound<PyAny>, dtype: Dtype) -> PyResult<(Vec<u8>, Vec<usize>)> {
@@ -316,6 +323,41 @@ fn extract_data(data: &Bound<PyAny>, dtype: Dtype) -> PyResult<(Vec<u8>, Vec<usi
 
     // 标量 → 0-dim
     extract_scalar(data, dtype)
+}
+
+/// complex 提取辅助：把 Python complex 标量转成 (re, im) f64 对。
+///
+/// pyo3 0.23 的 `Bound<PyComplex>` 本身不是 `Copy`/可 re-extract 的借用，
+/// 提取时用 `.borrow()` 后按 `ComplexProtocol`（real()/imag()）读分量。
+trait PyComplexExt {
+    fn to_re_im(&self) -> PyResult<(f64, f64)>;
+}
+
+impl PyComplexExt for Bound<'_, pyo3::types::PyComplex> {
+    fn to_re_im(&self) -> PyResult<(f64, f64)> {
+        use pyo3::types::PyComplexMethods;
+        Ok((self.real() as f64, self.imag() as f64))
+    }
+}
+
+/// 递归扫描 data 中是否含 Python complex 字面量（NumPy 语义：触发 complex128 推断）。
+fn data_contains_complex(data: &Bound<PyAny>) -> bool {
+    if data.downcast::<pyo3::types::PyComplex>().is_ok() {
+        return true;
+    }
+    if let Ok(seq) = data.downcast::<pyo3::types::PySequence>() {
+        let Ok(len) = seq.len() else {
+            return false;
+        };
+        for i in 0..len {
+            if let Ok(item) = seq.get_item(i) {
+                if data_contains_complex(&item) {
+                    return true;
+                }
+            }
+        }
+    }
+    false
 }
 
 /// 提取多维嵌套序列。
@@ -399,11 +441,61 @@ fn extract_flat(data: &Bound<PyAny>, dtype: Dtype) -> PyResult<(Vec<u8>, Vec<usi
         Dtype::Float16 | Dtype::Bfloat16 => Err(pyo3::exceptions::PyNotImplementedError::new_err(
             "float16/bfloat16 array creation not yet supported",
         )),
-        Dtype::Complex64 | Dtype::Complex128 => {
-            Err(pyo3::exceptions::PyNotImplementedError::new_err(
-                "complex dtypes not yet supported for array creation",
-            ))
-        }
+        // complex（Phase 5，ADR-003 003-D5）：逐元素 accept complex（re/im 分量），
+        // 也接受实数（mixed 列表，im=0）；1+2j 字面量推断由 array() 提前完成。
+        Dtype::Complex64 => extract_cplx_flat::<f32>(data),
+        Dtype::Complex128 => extract_cplx_flat::<f64>(data),
+    }
+}
+
+/// 提取 1D complex flat 序列（interleaved re/im 字节序；T=f32→c64 / f64→c128）。
+fn extract_cplx_flat<T: CplxComponent>(
+    data: &Bound<PyAny>,
+) -> PyResult<(Vec<u8>, Vec<usize>)> {
+    let seq = data.downcast::<pyo3::types::PySequence>()?;
+    let len = seq.len()?;
+    let mut bytes: Vec<u8> = Vec::with_capacity(len * T::ELEM_SIZE * 2);
+    for i in 0..len {
+        let item = seq.get_item(i)?;
+        let (re, im) = extract_cplx_scalar_any(&item)?;
+        bytes.extend_from_slice(&T::to_bytes(re, im));
+    }
+    Ok((bytes, vec![len]))
+}
+
+/// 从任意 Python 标量提取 complex 分量（complex → re/im；否则按 float → re, im=0）。
+fn extract_cplx_scalar_any(item: &Bound<PyAny>) -> PyResult<(f64, f64)> {
+    if let Ok(cz) = item.downcast::<pyo3::types::PyComplex>() {
+        return cz.to_re_im();
+    }
+    let v: f64 = item.extract()?;
+    Ok((v, 0.0))
+}
+
+/// complex 分量的字节写入（f32 窄化在 to_bytes 内完成；返回精确 re/im 字节数：
+/// c64=8 / c128=16）。
+trait CplxComponent {
+    const ELEM_SIZE: usize;
+    fn to_bytes(re: f64, im: f64) -> Vec<u8>;
+}
+
+impl CplxComponent for f32 {
+    const ELEM_SIZE: usize = 4;
+    fn to_bytes(re: f64, im: f64) -> Vec<u8> {
+        let mut out = Vec::with_capacity(8);
+        out.extend_from_slice(&(re as f32).to_le_bytes());
+        out.extend_from_slice(&(im as f32).to_le_bytes());
+        out
+    }
+}
+
+impl CplxComponent for f64 {
+    const ELEM_SIZE: usize = 8;
+    fn to_bytes(re: f64, im: f64) -> Vec<u8> {
+        let mut out = Vec::with_capacity(16);
+        out.extend_from_slice(&re.to_le_bytes());
+        out.extend_from_slice(&im.to_le_bytes());
+        out
     }
 }
 
@@ -435,10 +527,14 @@ fn extract_scalar(data: &Bound<PyAny>, dtype: Dtype) -> PyResult<(Vec<u8>, Vec<u
         Dtype::Float16 | Dtype::Bfloat16 => Err(pyo3::exceptions::PyNotImplementedError::new_err(
             "float16/bfloat16 array creation not yet supported",
         )),
-        Dtype::Complex64 | Dtype::Complex128 => {
-            Err(pyo3::exceptions::PyNotImplementedError::new_err(
-                "complex dtypes not yet supported for array creation",
-            ))
+        // complex（Phase 5）：标量 complex → 0-dim（re/im 分量）
+        Dtype::Complex64 => {
+            let (re, im) = extract_cplx_scalar_any(data)?;
+            Ok((<f32 as CplxComponent>::to_bytes(re, im), vec![]))
+        }
+        Dtype::Complex128 => {
+            let (re, im) = extract_cplx_scalar_any(data)?;
+            Ok((<f64 as CplxComponent>::to_bytes(re, im), vec![]))
         }
     }
 }

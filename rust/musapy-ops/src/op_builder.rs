@@ -20,6 +20,7 @@ use crate::broadcast;
 use crate::kernels;
 use musapy_core::error::{DeviceError, DtypeError, MemoryError, ShapeError};
 use musapy_core::musa_ffi;
+use musapy_core::musa_x_ffi::{muComplex, muDoubleComplex};
 use musapy_core::resolution;
 use musapy_core::{
     promote, Array, Buffer, BufferRef, Device, DeviceResolution, Dtype, DtypeResolution, Layout,
@@ -343,12 +344,20 @@ pub(crate) fn binary_elementwise(
     let all_gpu = matches!(device, Device::Musa(_));
     let dtype = promote(a.dtype(), b.dtype(), all_gpu)?;
 
-    // 4. 计算白名单（仅 f32/f64，其他计算 dtype 后续 Phase 添加）
-    match dtype {
-        Dtype::Float32 | Dtype::Float64 => {}
+    // 4. 计算白名单（f32/f64 + complex64/128，Phase 5；pow 对 complex 不实例化）
+    match (&dtype, &kernel) {
+        (Dtype::Float32 | Dtype::Float64, _) => {}
+        (Dtype::Complex64 | Dtype::Complex128, BinaryKernel::Pow) => {
+            return Err(DtypeError::Unsupported(format!(
+                "{}: pow not supported for complex dtype {} (Phase 5 complex scope: add/sub/mul/div)",
+                op_name, dtype
+            ))
+            .into());
+        }
+        (Dtype::Complex64 | Dtype::Complex128, _) => {}
         _ => {
             return Err(DtypeError::Unsupported(format!(
-                "{}: promoted dtype {} not supported (compute whitelist: float32/float64)",
+                "{}: promoted dtype {} not supported (compute whitelist: float32/float64/complex64/complex128)",
                 op_name, dtype
             ))
             .into());
@@ -472,7 +481,16 @@ pub(crate) fn binary_elementwise(
                 (BinaryKernel::Div, Dtype::Float64) => launch_binary!(musapy_div_f64_v2, a_ptr_adj, b_ptr_adj, out_ptr, ndim, out_shape, a_strides, b_strides, stream_raw, "div_f64_v2"),
                 (BinaryKernel::Pow, Dtype::Float32) => launch_binary!(musapy_pow_f32_v2, a_ptr_adj, b_ptr_adj, out_ptr, ndim, out_shape, a_strides, b_strides, stream_raw, "pow_f32_v2"),
                 (BinaryKernel::Pow, Dtype::Float64) => launch_binary!(musapy_pow_f64_v2, a_ptr_adj, b_ptr_adj, out_ptr, ndim, out_shape, a_strides, b_strides, stream_raw, "pow_f64_v2"),
-                _ => unreachable!("dtype already validated as float32/float64"),
+                // complex（Phase 5，ADR-003 003-D5：add/sub/mul/div；pow 白名单已拒）
+                (BinaryKernel::Add, Dtype::Complex64) => launch_binary!(musapy_add_c64_v2, a_ptr_adj, b_ptr_adj, out_ptr, ndim, out_shape, a_strides, b_strides, stream_raw, "add_c64_v2"),
+                (BinaryKernel::Add, Dtype::Complex128) => launch_binary!(musapy_add_c128_v2, a_ptr_adj, b_ptr_adj, out_ptr, ndim, out_shape, a_strides, b_strides, stream_raw, "add_c128_v2"),
+                (BinaryKernel::Sub, Dtype::Complex64) => launch_binary!(musapy_sub_c64_v2, a_ptr_adj, b_ptr_adj, out_ptr, ndim, out_shape, a_strides, b_strides, stream_raw, "sub_c64_v2"),
+                (BinaryKernel::Sub, Dtype::Complex128) => launch_binary!(musapy_sub_c128_v2, a_ptr_adj, b_ptr_adj, out_ptr, ndim, out_shape, a_strides, b_strides, stream_raw, "sub_c128_v2"),
+                (BinaryKernel::Mul, Dtype::Complex64) => launch_binary!(musapy_mul_c64_v2, a_ptr_adj, b_ptr_adj, out_ptr, ndim, out_shape, a_strides, b_strides, stream_raw, "mul_c64_v2"),
+                (BinaryKernel::Mul, Dtype::Complex128) => launch_binary!(musapy_mul_c128_v2, a_ptr_adj, b_ptr_adj, out_ptr, ndim, out_shape, a_strides, b_strides, stream_raw, "mul_c128_v2"),
+                (BinaryKernel::Div, Dtype::Complex64) => launch_binary!(musapy_div_c64_v2, a_ptr_adj, b_ptr_adj, out_ptr, ndim, out_shape, a_strides, b_strides, stream_raw, "div_c64_v2"),
+                (BinaryKernel::Div, Dtype::Complex128) => launch_binary!(musapy_div_c128_v2, a_ptr_adj, b_ptr_adj, out_ptr, ndim, out_shape, a_strides, b_strides, stream_raw, "div_c128_v2"),
+                _ => unreachable!("dtype already validated as float32/float64/complex64/complex128"),
             },
         }
     }
@@ -540,23 +558,40 @@ pub(crate) fn unary_elementwise(
     // Phase A：参数解析（一次性，capture-safe）
     // ═══════════════════════════════════════════════════════════════
 
-    // 1. Dtype 白名单（仅 f32/f64，其他 dtype 后续 Phase 添加）
+    // 1. Dtype 白名单（f32/f64 + complex64/128；complex 仅 neg/abs，Phase 5）
     let dtype = a.dtype();
     match dtype {
         Dtype::Float32 | Dtype::Float64 => {}
+        Dtype::Complex64 | Dtype::Complex128 => match kernel {
+            UnaryKernel::Neg | UnaryKernel::Abs => {}
+            _ => {
+                return Err(DtypeError::Unsupported(format!(
+                    "{}: {} not supported for complex dtype {} (Phase 5 complex scope: neg/abs)",
+                    op_name, kernel.name(), dtype
+                ))
+                .into());
+            }
+        },
         _ => {
             return Err(DtypeError::Unsupported(format!(
-                "{}: dtype {} not supported (only float32/float64)",
+                "{}: dtype {} not supported (only float32/float64/complex64/complex128)",
                 op_name, dtype
             ))
             .into());
         }
     }
 
+    // abs(complex) 输出 real（NumPy：np.abs(complex) → float）；其余输出同输入 dtype。
+    let out_dtype = match (dtype, kernel) {
+        (Dtype::Complex64, UnaryKernel::Abs) => Dtype::Float32,
+        (Dtype::Complex128, UnaryKernel::Abs) => Dtype::Float64,
+        _ => dtype,
+    };
+
     let device = a.device().clone();
     let out_shape = a.shape().clone();
     let out_size: usize = out_shape.iter().product();
-    let nbytes = out_size * dtype.element_size();
+    let nbytes = out_size * out_dtype.element_size();
 
     // 2. out= 参数校验（若提供）
     if let Some(o) = out {
@@ -569,12 +604,12 @@ pub(crate) fn unary_elementwise(
             ))
             .into());
         }
-        if o.dtype() != dtype {
+        if o.dtype() != out_dtype {
             return Err(DtypeError::Unsupported(format!(
-                "{}: out dtype {} != input dtype {}",
+                "{}: out dtype {} != expected output dtype {}",
                 op_name,
                 o.dtype(),
-                dtype
+                out_dtype
             ))
             .into());
         }
@@ -651,7 +686,12 @@ pub(crate) fn unary_elementwise(
                 (UnaryKernel::Sign, Dtype::Float64) => launch_unary!(musapy_sign_f64_v2, a_ptr, out_ptr, ndim, out_shape, a_strides, stream_raw, "sign_f64_v2"),
                 (UnaryKernel::Neg, Dtype::Float32) => launch_unary!(musapy_neg_f32_v2, a_ptr, out_ptr, ndim, out_shape, a_strides, stream_raw, "neg_f32_v2"),
                 (UnaryKernel::Neg, Dtype::Float64) => launch_unary!(musapy_neg_f64_v2, a_ptr, out_ptr, ndim, out_shape, a_strides, stream_raw, "neg_f64_v2"),
-                _ => unreachable!("dtype already validated as float32/float64"),
+                // complex（Phase 5，ADR-003 003-D5：neg/abs；abs 输出 real）
+                (UnaryKernel::Neg, Dtype::Complex64) => launch_unary!(musapy_neg_c64_v2, a_ptr, out_ptr, ndim, out_shape, a_strides, stream_raw, "neg_c64_v2"),
+                (UnaryKernel::Neg, Dtype::Complex128) => launch_unary!(musapy_neg_c128_v2, a_ptr, out_ptr, ndim, out_shape, a_strides, stream_raw, "neg_c128_v2"),
+                (UnaryKernel::Abs, Dtype::Complex64) => launch_unary!(musapy_abs_c64_v2, a_ptr, out_ptr, ndim, out_shape, a_strides, stream_raw, "abs_c64_v2"),
+                (UnaryKernel::Abs, Dtype::Complex128) => launch_unary!(musapy_abs_c128_v2, a_ptr, out_ptr, ndim, out_shape, a_strides, stream_raw, "abs_c128_v2"),
+                _ => unreachable!("dtype already validated as float32/float64/complex64/complex128"),
             },
         }
     }
@@ -680,14 +720,14 @@ pub(crate) fn unary_elementwise(
         out_stream.record_op(ctx);
     }
 
-    // 8. 构造输出 Array（连续布局，shape = 输入 shape）
+    // 8. 构造输出 Array（连续布局，shape = 输入 shape；abs(complex) 输出 real）
     Ok(Array::new(
         out_data_ref,
         Layout::from_shape(out_shape),
-        dtype,
+        out_dtype,
         out_stream,
         DeviceResolution::new(device, ResolutionSource::InputArray),
-        DtypeResolution::new(dtype, ResolutionSource::InputArray),
+        DtypeResolution::new(out_dtype, ResolutionSource::InputArray),
     ))
 }
 
@@ -852,18 +892,36 @@ pub(crate) fn clamp_elementwise(
 
 // ── Cast 骨架（Phase 2）───────────────────────────────────────
 
-/// 校验 cast 类型对是否受 Phase 2 kernel 支持。
+/// 校验 cast 类型对是否受 Phase 2/5 kernel 支持。
 ///
 /// 支持矩阵（见 kernels.rs `musapy_cast_<src>_<dst>_v2`）：
-/// - dst ∈ {float32, float64}（计算白名单）
-/// - src ∈ {int8..int64, uint8..uint64, float32, float64}，且 src != dst
-/// - bool/float16/bfloat16/complex 尚无 cast kernel（后续 Phase）
+/// - dst ∈ {float32, float64}（计算白名单），src ∈ {int8..int64, uint8..uint64, float32, float64}
+/// - dst ∈ {int64}（reduction 整数累加）
+/// - dst ∈ {complex64, complex128}（Phase 5：real→complex，re=src, im=0；
+///   f32→c64 / f64→c128 两对，fft real 输入扩展用）
+/// - bool/float16/bfloat16/complex→real 尚无 cast kernel（后续 Phase）
 fn validate_cast_pair(src: Dtype, dst: Dtype) -> Result<()> {
     match dst {
         Dtype::Float32 | Dtype::Float64 | Dtype::Int64 => {}
+        Dtype::Complex64 | Dtype::Complex128 => {
+            // Phase 5：real→complex 全部 4 对（f32/f64 → c64/c128，re=src, im=0）
+            // + complex 宽度提升（c64 → c128，跨类别提升：f64+c64→c128）
+            return match (src, dst) {
+                (Dtype::Float32, Dtype::Complex64)
+                | (Dtype::Float32, Dtype::Complex128)
+                | (Dtype::Float64, Dtype::Complex64)
+                | (Dtype::Float64, Dtype::Complex128)
+                | (Dtype::Complex64, Dtype::Complex128) => Ok(()),
+                _ => Err(DtypeError::Unsupported(format!(
+                    "cast: {} → {} not supported (Phase 5 cast scope: real→complex + c64→c128)",
+                    src, dst
+                ))
+                .into()),
+            };
+        }
         _ => {
             return Err(DtypeError::Unsupported(format!(
-                "cast: target dtype {} not supported (only float32/float64/int64)",
+                "cast: target dtype {} not supported (only float32/float64/int64/complex64/complex128)",
                 dst
             ))
             .into());
@@ -960,7 +1018,19 @@ fn launch_cast_kernel(
                     Dtype::Uint64 => launch_cast!(musapy_cast_u64_i64_v2, a_ptr, c_ptr, ndim, shape, a_strides, stream_raw, "cast_u64_i64_v2"),
                     _ => unreachable!("cast pair already validated"),
                 },
-                _ => unreachable!("cast target already validated as float32/float64/int64"),
+                // real → complex（Phase 5，ADR-003 003-D5；re=src, im=0）
+                Dtype::Complex64 => match src {
+                    Dtype::Float32 => launch_cast!(musapy_cast_f32_c64_v2, a_ptr, c_ptr, ndim, shape, a_strides, stream_raw, "cast_f32_c64_v2"),
+                    Dtype::Float64 => launch_cast!(musapy_cast_f64_c64_v2, a_ptr, c_ptr, ndim, shape, a_strides, stream_raw, "cast_f64_c64_v2"),
+                    _ => unreachable!("cast pair already validated"),
+                },
+                Dtype::Complex128 => match src {
+                    Dtype::Float32 => launch_cast!(musapy_cast_f32_c128_v2, a_ptr, c_ptr, ndim, shape, a_strides, stream_raw, "cast_f32_c128_v2"),
+                    Dtype::Float64 => launch_cast!(musapy_cast_f64_c128_v2, a_ptr, c_ptr, ndim, shape, a_strides, stream_raw, "cast_f64_c128_v2"),
+                    Dtype::Complex64 => launch_cast!(musapy_cast_c64_c128_v2, a_ptr, c_ptr, ndim, shape, a_strides, stream_raw, "cast_c64_c128_v2"),
+                    _ => unreachable!("cast pair already validated"),
+                },
+                _ => unreachable!("cast target already validated as float32/float64/int64/complex64/complex128"),
             }
             Ok(())
         }
@@ -1290,12 +1360,20 @@ pub(crate) fn comparison_elementwise(
     let all_gpu = matches!(device, Device::Musa(_));
     let dtype = promote(a.dtype(), b.dtype(), all_gpu)?;
 
-    // 4. 计算白名单（仅 f32/f64，其他计算 dtype 后续 Phase 添加）
-    match dtype {
-        Dtype::Float32 | Dtype::Float64 => {}
+    // 4. 计算白名单（f32/f64 + complex eq/ne，Phase 5；lt/gt/le/ge 对 complex 拒绝）
+    match (&dtype, &kernel) {
+        (Dtype::Float32 | Dtype::Float64, _) => {}
+        (Dtype::Complex64 | Dtype::Complex128, CompareKernel::Eq | CompareKernel::Ne) => {}
+        (Dtype::Complex64 | Dtype::Complex128, _) => {
+            return Err(DtypeError::Unsupported(format!(
+                "{}: {} not supported for complex dtype {} (complex has no total order, ADR-003 003-D5; only eq/ne)",
+                op_name, kernel.name(), dtype
+            ))
+            .into());
+        }
         _ => {
             return Err(DtypeError::Unsupported(format!(
-                "{}: promoted dtype {} not supported (compute whitelist: float32/float64)",
+                "{}: promoted dtype {} not supported (compute whitelist: float32/float64, complex eq/ne)",
                 op_name, dtype
             ))
             .into());
@@ -1425,7 +1503,12 @@ pub(crate) fn comparison_elementwise(
                 (CompareKernel::Le, Dtype::Float64) => launch_compare!(musapy_le_f64_v2, a_ptr, b_ptr, out_ptr, ndim, out_shape, a_strides, b_strides, stream_raw, "le_f64_v2"),
                 (CompareKernel::Ge, Dtype::Float32) => launch_compare!(musapy_ge_f32_v2, a_ptr, b_ptr, out_ptr, ndim, out_shape, a_strides, b_strides, stream_raw, "ge_f32_v2"),
                 (CompareKernel::Ge, Dtype::Float64) => launch_compare!(musapy_ge_f64_v2, a_ptr, b_ptr, out_ptr, ndim, out_shape, a_strides, b_strides, stream_raw, "ge_f64_v2"),
-                _ => unreachable!("dtype already validated as float32/float64"),
+                // complex eq/ne（Phase 5，ADR-003 003-D5；lt/gt/le/ge 白名单已拒）
+                (CompareKernel::Eq, Dtype::Complex64) => launch_compare!(musapy_eq_c64_v2, a_ptr, b_ptr, out_ptr, ndim, out_shape, a_strides, b_strides, stream_raw, "eq_c64_v2"),
+                (CompareKernel::Eq, Dtype::Complex128) => launch_compare!(musapy_eq_c128_v2, a_ptr, b_ptr, out_ptr, ndim, out_shape, a_strides, b_strides, stream_raw, "eq_c128_v2"),
+                (CompareKernel::Ne, Dtype::Complex64) => launch_compare!(musapy_ne_c64_v2, a_ptr, b_ptr, out_ptr, ndim, out_shape, a_strides, b_strides, stream_raw, "ne_c64_v2"),
+                (CompareKernel::Ne, Dtype::Complex128) => launch_compare!(musapy_ne_c128_v2, a_ptr, b_ptr, out_ptr, ndim, out_shape, a_strides, b_strides, stream_raw, "ne_c128_v2"),
+                _ => unreachable!("dtype already validated as float32/float64/complex64/complex128"),
             },
         }
     }
@@ -1549,7 +1632,94 @@ fn cpu_binary_elementwise(
     match dtype {
         Dtype::Float32 => cpu_binary_typed::<f32>(a, b, c, shape, a_strides, b_strides, kernel),
         Dtype::Float64 => cpu_binary_typed::<f64>(a, b, c, shape, a_strides, b_strides, kernel),
-        _ => unreachable!("dtype already validated as float32/float64"),
+        Dtype::Complex64 => {
+            cpu_binary_cplx::<muComplex>(a, b, c, shape, a_strides, b_strides, kernel)
+        }
+        Dtype::Complex128 => {
+            cpu_binary_cplx::<muDoubleComplex>(a, b, c, shape, a_strides, b_strides, kernel)
+        }
+        _ => unreachable!("dtype already validated as float32/float64/complex64/complex128"),
+    }
+}
+
+// ── CPU complex binary（Phase 5，ADR-003 003-D5）──────────────
+
+/// 复数分量 trait：让 muComplex/muDoubleComplex 共用一套 CPU 复算。
+trait CplxScalar: Copy {
+    fn cplx_re(&self) -> f64;
+    fn cplx_im(&self) -> f64;
+    fn cplx_from_parts(re: f64, im: f64) -> Self;
+}
+
+impl CplxScalar for muComplex {
+    fn cplx_re(&self) -> f64 {
+        self.re as f64
+    }
+    fn cplx_im(&self) -> f64 {
+        self.im as f64
+    }
+    fn cplx_from_parts(re: f64, im: f64) -> Self {
+        muComplex {
+            re: re as f32,
+            im: im as f32,
+        }
+    }
+}
+
+impl CplxScalar for muDoubleComplex {
+    fn cplx_re(&self) -> f64 {
+        self.re
+    }
+    fn cplx_im(&self) -> f64 {
+        self.im
+    }
+    fn cplx_from_parts(re: f64, im: f64) -> Self {
+        muDoubleComplex { re, im }
+    }
+}
+
+/// 泛型 CPU complex binary（stride-aware，re/im 分量公式与 kernel 一致）。
+fn cpu_binary_cplx<T: CplxScalar>(
+    a: Option<NonNull<u8>>,
+    b: Option<NonNull<u8>>,
+    c: Option<NonNull<u8>>,
+    shape: &[usize],
+    a_strides: &[isize],
+    b_strides: &[isize],
+    kernel: &BinaryKernel,
+) {
+    let n: usize = shape.iter().product();
+    if n == 0 {
+        return;
+    }
+    let (Some(ap), Some(bp), Some(cp)) = (a, b, c) else {
+        return;
+    };
+    unsafe {
+        let base_a = ap.as_ptr() as *const T;
+        let base_b = bp.as_ptr() as *const T;
+        let base_c = cp.as_ptr() as *mut T;
+        for idx in 0..n {
+            let a_off = cpu_offset_nd(idx, shape, a_strides);
+            let b_off = cpu_offset_nd(idx, shape, b_strides);
+            let av = *base_a.offset(a_off);
+            let bv = *base_b.offset(b_off);
+            let ar = av.cplx_re();
+            let ai = av.cplx_im();
+            let br = bv.cplx_re();
+            let bi = bv.cplx_im();
+            let (re, im) = match kernel {
+                BinaryKernel::Add => (ar + br, ai + bi),
+                BinaryKernel::Sub => (ar - br, ai - bi),
+                BinaryKernel::Mul => (ar * br - ai * bi, ar * bi + ai * br),
+                BinaryKernel::Div => {
+                    let den = br * br + bi * bi;
+                    ((ar * br + ai * bi) / den, (ai * br - ar * bi) / den)
+                }
+                BinaryKernel::Pow => unreachable!("pow rejected for complex by whitelist"),
+            };
+            *base_c.add(idx) = T::cplx_from_parts(re, im);
+        }
     }
 }
 
@@ -1598,7 +1768,50 @@ fn cpu_comparison_elementwise(
     match dtype {
         Dtype::Float32 => cpu_compare_typed::<f32>(a, b, c, shape, a_strides, b_strides, kernel),
         Dtype::Float64 => cpu_compare_typed::<f64>(a, b, c, shape, a_strides, b_strides, kernel),
-        _ => unreachable!("dtype already validated as float32/float64"),
+        // complex（Phase 5：仅 eq/ne，re 与 im 全等才相等）
+        Dtype::Complex64 => {
+            cpu_compare_cplx::<muComplex>(a, b, c, shape, a_strides, b_strides, kernel)
+        }
+        Dtype::Complex128 => {
+            cpu_compare_cplx::<muDoubleComplex>(a, b, c, shape, a_strides, b_strides, kernel)
+        }
+        _ => unreachable!("dtype already validated as float32/float64/complex64/complex128"),
+    }
+}
+
+/// 泛型 CPU complex comparison（仅 eq/ne；lt/gt/le/ge 由白名单拦截）。
+fn cpu_compare_cplx<T: CplxScalar>(
+    a: Option<NonNull<u8>>,
+    b: Option<NonNull<u8>>,
+    c: Option<NonNull<u8>>,
+    shape: &[usize],
+    a_strides: &[isize],
+    b_strides: &[isize],
+    kernel: &CompareKernel,
+) {
+    let n: usize = shape.iter().product();
+    if n == 0 {
+        return;
+    }
+    let (Some(ap), Some(bp), Some(cp)) = (a, b, c) else {
+        return;
+    };
+    unsafe {
+        let base_a = ap.as_ptr() as *const T;
+        let base_b = bp.as_ptr() as *const T;
+        let base_c = cp.as_ptr() as *mut u8;
+        for idx in 0..n {
+            let a_off = cpu_offset_nd(idx, shape, a_strides);
+            let b_off = cpu_offset_nd(idx, shape, b_strides);
+            let av = *base_a.offset(a_off);
+            let bv = *base_b.offset(b_off);
+            let result = match kernel {
+                CompareKernel::Eq => av.cplx_re() == bv.cplx_re() && av.cplx_im() == bv.cplx_im(),
+                CompareKernel::Ne => av.cplx_re() != bv.cplx_re() || av.cplx_im() != bv.cplx_im(),
+                _ => unreachable!("ordering comparisons rejected for complex by whitelist"),
+            };
+            *base_c.add(idx) = if result { 1 } else { 0 };
+        }
     }
 }
 
@@ -1680,7 +1893,70 @@ fn cpu_unary_elementwise(
     match dtype {
         Dtype::Float32 => dispatch_unary_cpu!(f32, a, c, shape, a_strides, kernel),
         Dtype::Float64 => dispatch_unary_cpu!(f64, a, c, shape, a_strides, kernel),
-        _ => unreachable!("dtype already validated as float32/float64"),
+        // complex（Phase 5，ADR-003 003-D5：neg/abs；abs 输出 real）
+        Dtype::Complex64 => match kernel {
+            UnaryKernel::Neg => cpu_unary_typed::<muComplex>(a, c, shape, a_strides, |v| {
+                muComplex { re: -v.re, im: -v.im }
+            }),
+            UnaryKernel::Abs => cpu_unary_cplx_abs::<muComplex, f32>(a, c, shape, a_strides),
+            _ => unreachable!("complex unary whitelist: neg/abs only"),
+        },
+        Dtype::Complex128 => match kernel {
+            UnaryKernel::Neg => {
+                cpu_unary_typed::<muDoubleComplex>(a, c, shape, a_strides, |v| {
+                    muDoubleComplex { re: -v.re, im: -v.im }
+                })
+            }
+            UnaryKernel::Abs => {
+                cpu_unary_cplx_abs::<muDoubleComplex, f64>(a, c, shape, a_strides)
+            }
+            _ => unreachable!("complex unary whitelist: neg/abs only"),
+        },
+        _ => unreachable!("dtype already validated as float32/float64/complex64/complex128"),
+    }
+}
+
+/// 实数标量（abs(complex) 输出类型：c64→f32 / c128→f64）。
+trait CplxReal: Copy {
+    fn from_f64(x: f64) -> Self;
+}
+
+impl CplxReal for f32 {
+    fn from_f64(x: f64) -> f32 {
+        x as f32
+    }
+}
+
+impl CplxReal for f64 {
+    fn from_f64(x: f64) -> f64 {
+        x
+    }
+}
+
+/// 泛型 CPU complex abs（输出 real：c64→f32 / c128→f64）。
+fn cpu_unary_cplx_abs<T: CplxScalar, R: CplxReal>(
+    a: Option<NonNull<u8>>,
+    c: Option<NonNull<u8>>,
+    shape: &[usize],
+    a_strides: &[isize],
+) {
+    let n: usize = shape.iter().product();
+    if n == 0 {
+        return;
+    }
+    let (Some(ap), Some(cp)) = (a, c) else {
+        return;
+    };
+    unsafe {
+        let base_a = ap.as_ptr() as *const T;
+        let base_c = cp.as_ptr() as *mut R;
+        for idx in 0..n {
+            let a_off = cpu_offset_nd(idx, shape, a_strides);
+            let v = *base_a.offset(a_off);
+            let re = v.cplx_re();
+            let im = v.cplx_im();
+            *base_c.add(idx) = R::from_f64((re * re + im * im).sqrt());
+        }
     }
 }
 
@@ -1795,9 +2071,91 @@ fn cpu_cast(
         Dtype::Uint16 => dispatch_cast_dst!(u16, a, c, shape, a_strides, dst),
         Dtype::Uint32 => dispatch_cast_dst!(u32, a, c, shape, a_strides, dst),
         Dtype::Uint64 => dispatch_cast_dst!(u64, a, c, shape, a_strides, dst),
-        Dtype::Float32 => dispatch_cast_dst!(f32, a, c, shape, a_strides, dst),
-        Dtype::Float64 => dispatch_cast_dst!(f64, a, c, shape, a_strides, dst),
+        Dtype::Float32 => match dst {
+            Dtype::Complex64 => cpu_cast_cplx::<f32, muComplex>(a, c, shape, a_strides),
+            Dtype::Complex128 => cpu_cast_cplx::<f32, muDoubleComplex>(a, c, shape, a_strides),
+            _ => dispatch_cast_dst!(f32, a, c, shape, a_strides, dst),
+        },
+        Dtype::Float64 => match dst {
+            Dtype::Complex64 => cpu_cast_cplx::<f64, muComplex>(a, c, shape, a_strides),
+            Dtype::Complex128 => cpu_cast_cplx::<f64, muDoubleComplex>(a, c, shape, a_strides),
+            _ => dispatch_cast_dst!(f64, a, c, shape, a_strides, dst),
+        },
+        Dtype::Complex64 => match dst {
+            Dtype::Complex128 => cpu_cast_c64_c128(a, c, shape, a_strides),
+            _ => unreachable!("cast source already validated"),
+        },
         _ => unreachable!("cast source already validated"),
+    }
+}
+
+/// CPU c64 → c128 宽度提升（re/im 各 f32→f64，无精度损失）。
+fn cpu_cast_c64_c128(
+    a: Option<NonNull<u8>>,
+    c: Option<NonNull<u8>>,
+    shape: &[usize],
+    a_strides: &[isize],
+) {
+    let n: usize = shape.iter().product();
+    if n == 0 {
+        return;
+    }
+    let (Some(ap), Some(cp)) = (a, c) else {
+        return;
+    };
+    unsafe {
+        let base_a = ap.as_ptr() as *const muComplex;
+        let base_c = cp.as_ptr() as *mut muDoubleComplex;
+        for idx in 0..n {
+            let off = cpu_offset_nd(idx, shape, a_strides);
+            let v = *base_a.offset(off);
+            *base_c.add(idx) = muDoubleComplex {
+                re: v.re as f64,
+                im: v.im as f64,
+            };
+        }
+    }
+}
+
+/// real 标量 → f64（cpu_cast_cplx 的源标量统一入口）。
+trait CplxCastReal: Copy {
+    fn as_f64(self) -> f64;
+}
+
+impl CplxCastReal for f32 {
+    fn as_f64(self) -> f64 {
+        self as f64
+    }
+}
+
+impl CplxCastReal for f64 {
+    fn as_f64(self) -> f64 {
+        self
+    }
+}
+
+/// 泛型 CPU real→complex cast（Phase 5：re=src, im=0；`as` 不支持 struct 目标）。
+fn cpu_cast_cplx<S: CplxCastReal, C: CplxScalar>(
+    a: Option<NonNull<u8>>,
+    c: Option<NonNull<u8>>,
+    shape: &[usize],
+    a_strides: &[isize],
+) {
+    let n: usize = shape.iter().product();
+    if n == 0 {
+        return;
+    }
+    let (Some(ap), Some(cp)) = (a, c) else {
+        return;
+    };
+    unsafe {
+        let base_a = ap.as_ptr() as *const S;
+        let base_c = cp.as_ptr() as *mut C;
+        for idx in 0..n {
+            let off = cpu_offset_nd(idx, shape, a_strides);
+            let v = (*base_a.offset(off)).as_f64();
+            *base_c.add(idx) = C::cplx_from_parts(v, 0.0);
+        }
     }
 }
 

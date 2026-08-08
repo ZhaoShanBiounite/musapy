@@ -603,11 +603,32 @@ fn bytes_to_pylist(py: Python<'_>, bytes: &[u8], n: usize, dtype: Dtype) -> PyRe
         Dtype::Uint64 => to_list!(u64),
         Dtype::Float32 => to_list!(f32),
         Dtype::Float64 => to_list!(f64),
-        Dtype::Float16 | Dtype::Bfloat16 | Dtype::Complex64 | Dtype::Complex128 => {
-            Err(pyo3::exceptions::PyNotImplementedError::new_err(format!(
-                "tolist not yet supported for dtype {}",
-                dtype
-            )))
+        Dtype::Float16 | Dtype::Bfloat16 => Err(pyo3::exceptions::PyNotImplementedError::new_err(format!(
+            "tolist not yet supported for dtype {}",
+            dtype
+        ))),
+        // complex（Phase 5，ADR-003 003-D5）：interleaved re/im → Python complex 列表
+        Dtype::Complex64 => {
+            let v: &[f32] =
+                unsafe { std::slice::from_raw_parts(bytes.as_ptr() as *const f32, n * 2) };
+            let list = PyList::empty(py);
+            for i in 0..n {
+                list.append(pyo3::types::PyComplex::from_doubles(
+                    py,
+                    v[2 * i] as f64,
+                    v[2 * i + 1] as f64,
+                ))?;
+            }
+            return Ok(list.into());
+        }
+        Dtype::Complex128 => {
+            let v: &[f64] =
+                unsafe { std::slice::from_raw_parts(bytes.as_ptr() as *const f64, n * 2) };
+            let list = PyList::empty(py);
+            for i in 0..n {
+                list.append(pyo3::types::PyComplex::from_doubles(py, v[2 * i], v[2 * i + 1]))?;
+            }
+            return Ok(list.into());
         }
     }
 }
@@ -634,11 +655,20 @@ fn bytes_to_scalar(py: Python<'_>, bytes: &[u8], dtype: Dtype) -> PyResult<PyObj
         Dtype::Uint64 => to_scalar!(u64),
         Dtype::Float32 => to_scalar!(f32),
         Dtype::Float64 => to_scalar!(f64),
-        Dtype::Float16 | Dtype::Bfloat16 | Dtype::Complex64 | Dtype::Complex128 => {
-            Err(pyo3::exceptions::PyNotImplementedError::new_err(format!(
-                "item not yet supported for dtype {}",
-                dtype
-            )))
+        Dtype::Float16 | Dtype::Bfloat16 => Err(pyo3::exceptions::PyNotImplementedError::new_err(format!(
+            "item not yet supported for dtype {}",
+            dtype
+        ))),
+        // complex（Phase 5）：interleaved re/im → Python complex
+        Dtype::Complex64 => {
+            let re = unsafe { std::ptr::read_unaligned(bytes.as_ptr() as *const f32) };
+            let im = unsafe { std::ptr::read_unaligned(bytes.as_ptr().add(4) as *const f32) };
+            return Ok(pyo3::types::PyComplex::from_doubles(py, re as f64, im as f64).into());
+        }
+        Dtype::Complex128 => {
+            let re = unsafe { std::ptr::read_unaligned(bytes.as_ptr() as *const f64) };
+            let im = unsafe { std::ptr::read_unaligned(bytes.as_ptr().add(8) as *const f64) };
+            return Ok(pyo3::types::PyComplex::from_doubles(py, re, im).into());
         }
     }
 }

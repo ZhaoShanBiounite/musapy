@@ -104,8 +104,9 @@ from ._core import (
     LinAlgError,
 )
 
-# 命名空间子模块（ADR-003 003-D7）：ms.random（Phase 4）
+# 命名空间子模块（ADR-003 003-D7）：ms.random（Phase 4）/ ms.fft（Phase 5）
 from . import random
+from . import fft
 
 __all__ = [
     # version + startup

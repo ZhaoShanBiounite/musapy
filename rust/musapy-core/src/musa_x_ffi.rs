@@ -720,6 +720,32 @@ mod real {
             ftype: mufftType,
             batch: c_int,
         ) -> mufftResult;
+        // ── muFFT 执行例程（Phase 5，mufft.h 实测签名）──
+        // mufftComplex ≡ muComplex、mufftDoubleComplex ≡ muDoubleComplex
+        // （mufft.h:123/127 typedef），interleaved re/im buffer 直接透传指针。
+        // C2C/Z2Z：direction = MUFFT_FORWARD(-1) / MUFFT_INVERSE(1)
+        pub fn mufftExecC2C(
+            plan: mufftHandle,
+            idata: *mut muComplex,
+            odata: *mut muComplex,
+            direction: c_int,
+        ) -> mufftResult;
+        pub fn mufftExecR2C(
+            plan: mufftHandle,
+            idata: *mut f32,
+            odata: *mut muComplex,
+        ) -> mufftResult;
+        pub fn mufftExecZ2Z(
+            plan: mufftHandle,
+            idata: *mut muDoubleComplex,
+            odata: *mut muDoubleComplex,
+            direction: c_int,
+        ) -> mufftResult;
+        pub fn mufftExecD2Z(
+            plan: mufftHandle,
+            idata: *mut f64,
+            odata: *mut muDoubleComplex,
+        ) -> mufftResult;
 
         // ── muSPARSE(musparse-auxiliary.h;生命周期)──
         pub fn musparseCreate(handle: *mut musparseHandle_t) -> musparseStatus_t;
@@ -742,6 +768,8 @@ mod real {
 #[cfg(musapy_mock_musa)]
 mod mock {
     use super::*;
+    use std::collections::HashMap;
+    use std::sync::Mutex;
     use std::sync::atomic::{AtomicUsize, Ordering};
 
     /// dummy 句柄计数器(mock 下句柄只需非空且可区分)。
@@ -1962,6 +1990,66 @@ mod mock {
 
     // ── muFFT ──
 
+    /// mock mufft plan 记录（Exec 数值仿真需要知道长度/方向）。
+    /// 只记 Plan1d 的 nx/type；Plan2d/3d/Many 记首维 nx（fft.rs 当前只走 Plan1d）。
+    struct MockFftPlan {
+        nx: i32,
+        ftype: mufftType,
+    }
+
+    static MOCK_MUFFT_PLANS: Mutex<HashMap<mufftHandle, MockFftPlan>> = Mutex::new(HashMap::new());
+
+    fn register_plan(plan: *mut mufftHandle, nx: i32, ftype: mufftType) {
+        unsafe { *plan = next_handle() };
+        MOCK_MUFFT_PLANS.lock().unwrap().insert(
+            *plan,
+            MockFftPlan { nx, ftype },
+        );
+    }
+
+    /// naive O(N²) real DFT（R2C/D2Z 用；forward，输出 N//2+1）。
+    fn naive_dft_real(input: &[f64]) -> Vec<muDoubleComplex> {
+        let n = input.len();
+        let out_len = n / 2 + 1;
+        let mut out = vec![
+            muDoubleComplex { re: 0.0, im: 0.0 };
+            out_len
+        ];
+        for k in 0..out_len {
+            let mut re = 0.0f64;
+            let mut im = 0.0f64;
+            for (j, x) in input.iter().enumerate() {
+                let angle = -2.0 * std::f64::consts::PI * (k * j) as f64 / n as f64;
+                re += x * angle.cos();
+                im += x * angle.sin();
+            }
+            out[k] = muDoubleComplex { re, im };
+        }
+        out
+    }
+
+    /// naive O(N²) complex DFT（C2C/Z2Z 用；direction=-1 forward，+1 inverse）。
+    fn naive_dft_cplx(input: &[muDoubleComplex], inverse: bool) -> Vec<muDoubleComplex> {
+        let n = input.len();
+        let sign = if inverse { 1.0 } else { -1.0 };
+        let mut out = vec![
+            muDoubleComplex { re: 0.0, im: 0.0 };
+            n
+        ];
+        for k in 0..n {
+            let mut re = 0.0f64;
+            let mut im = 0.0f64;
+            for (j, x) in input.iter().enumerate() {
+                let angle = sign * 2.0 * std::f64::consts::PI * (k * j) as f64 / n as f64;
+                let (c, s) = (angle.cos(), angle.sin());
+                re += x.re * c - x.im * s;
+                im += x.re * s + x.im * c;
+            }
+            out[k] = muDoubleComplex { re, im };
+        }
+        out
+    }
+
     pub unsafe fn mufftCreate(plan: *mut mufftHandle) -> mufftResult {
         if plan.is_null() {
             return 1;
@@ -1974,6 +2062,7 @@ mod mock {
         if plan.is_null() {
             return 1;
         }
+        MOCK_MUFFT_PLANS.lock().unwrap().remove(&plan);
         MUFFT_SUCCESS
     }
 
@@ -1994,61 +2083,152 @@ mod mock {
 
     pub unsafe fn mufftPlan1d(
         plan: *mut mufftHandle,
-        _nx: c_int,
-        _ftype: mufftType,
+        nx: c_int,
+        ftype: mufftType,
         _batch: c_int,
     ) -> mufftResult {
         if plan.is_null() {
             return 1;
         }
-        unsafe { *plan = next_handle() };
+        register_plan(plan, nx, ftype);
         MUFFT_SUCCESS
     }
 
     pub unsafe fn mufftPlan2d(
         plan: *mut mufftHandle,
-        _nx: c_int,
+        nx: c_int,
         _ny: c_int,
-        _ftype: mufftType,
+        ftype: mufftType,
     ) -> mufftResult {
         if plan.is_null() {
             return 1;
         }
-        unsafe { *plan = next_handle() };
+        register_plan(plan, nx, ftype);
         MUFFT_SUCCESS
     }
 
     pub unsafe fn mufftPlan3d(
         plan: *mut mufftHandle,
-        _nx: c_int,
+        nx: c_int,
         _ny: c_int,
         _nz: c_int,
-        _ftype: mufftType,
+        ftype: mufftType,
     ) -> mufftResult {
         if plan.is_null() {
             return 1;
         }
-        unsafe { *plan = next_handle() };
+        register_plan(plan, nx, ftype);
         MUFFT_SUCCESS
     }
 
     pub unsafe fn mufftPlanMany(
         plan: *mut mufftHandle,
-        _rank: c_int,
-        _n: *mut c_int,
+        rank: c_int,
+        n: *mut c_int,
         _inembed: *mut c_int,
         _istride: c_int,
         _idist: c_int,
         _onembed: *mut c_int,
         _ostride: c_int,
         _odist: c_int,
-        _ftype: mufftType,
+        ftype: mufftType,
         _batch: c_int,
     ) -> mufftResult {
         if plan.is_null() {
             return 1;
         }
-        unsafe { *plan = next_handle() };
+        let nx = if rank > 0 && !n.is_null() { unsafe { *n } } else { 0 };
+        register_plan(plan, nx, ftype);
+        MUFFT_SUCCESS
+    }
+
+    // ── mock muFFT 执行（naive DFT 数值仿真）──
+
+    pub unsafe fn mufftExecC2C(
+        plan: mufftHandle,
+        idata: *mut muComplex,
+        odata: *mut muComplex,
+        direction: c_int,
+    ) -> mufftResult {
+        if plan.is_null() || idata.is_null() || odata.is_null() {
+            return 1;
+        }
+        let n = MOCK_MUFFT_PLANS.lock().unwrap().get(&plan).map(|p| p.nx).unwrap_or(0) as usize;
+        let input: Vec<muDoubleComplex> = (0..n)
+            .map(|i| {
+                let v = unsafe { *idata.add(i) };
+                muDoubleComplex {
+                    re: v.re as f64,
+                    im: v.im as f64,
+                }
+            })
+            .collect();
+        let vals = naive_dft_cplx(&input, direction == MUFFT_INVERSE);
+        for (i, v) in vals.iter().enumerate() {
+            unsafe {
+                *odata.add(i) = muComplex {
+                    re: v.re as f32,
+                    im: v.im as f32,
+                };
+            }
+        }
+        MUFFT_SUCCESS
+    }
+
+    pub unsafe fn mufftExecR2C(
+        plan: mufftHandle,
+        idata: *mut f32,
+        odata: *mut muComplex,
+    ) -> mufftResult {
+        if plan.is_null() || idata.is_null() || odata.is_null() {
+            return 1;
+        }
+        let n = MOCK_MUFFT_PLANS.lock().unwrap().get(&plan).map(|p| p.nx).unwrap_or(0) as usize;
+        let input: Vec<f64> = (0..n).map(|i| unsafe { *idata.add(i) } as f64).collect();
+        let vals = naive_dft_real(&input);
+        for (i, v) in vals.iter().enumerate() {
+            unsafe {
+                *odata.add(i) = muComplex {
+                    re: v.re as f32,
+                    im: v.im as f32,
+                };
+            }
+        }
+        MUFFT_SUCCESS
+    }
+
+    pub unsafe fn mufftExecZ2Z(
+        plan: mufftHandle,
+        idata: *mut muDoubleComplex,
+        odata: *mut muDoubleComplex,
+        direction: c_int,
+    ) -> mufftResult {
+        if plan.is_null() || idata.is_null() || odata.is_null() {
+            return 1;
+        }
+        let n = MOCK_MUFFT_PLANS.lock().unwrap().get(&plan).map(|p| p.nx).unwrap_or(0) as usize;
+        let input: Vec<muDoubleComplex> = (0..n).map(|i| unsafe { *idata.add(i) }).collect();
+        let vals = naive_dft_cplx(&input, direction == MUFFT_INVERSE);
+        for (i, v) in vals.iter().enumerate() {
+            unsafe { *odata.add(i) = *v };
+        }
+        MUFFT_SUCCESS
+    }
+
+    pub unsafe fn mufftExecD2Z(
+        plan: mufftHandle,
+        idata: *mut f64,
+        odata: *mut muDoubleComplex,
+    ) -> mufftResult {
+        if plan.is_null() || idata.is_null() || odata.is_null() {
+            return 1;
+        }
+        let n = MOCK_MUFFT_PLANS.lock().unwrap().get(&plan).map(|p| p.nx).unwrap_or(0) as usize;
+        let input: Vec<f64> = (0..n).map(|i| unsafe { *idata.add(i) }).collect();
+        let vals = naive_dft_real(&input);
+        for (i, v) in vals.iter().enumerate() {
+            unsafe { *odata.add(i) = *v };
+        }
         MUFFT_SUCCESS
     }
 

@@ -904,3 +904,550 @@ COMPARE_V2(ge)
 #undef COMPARE_V2
 
 } // extern "C"
+
+// ════════════════════════════════════════════════════════════════
+// ── complex 支持（v0.3 Phase 5，ADR-003 003-D5）────────────────
+//
+// complex64/128 的 elementwise 实例化：binary add/sub/mul/div +
+// unary neg/abs + comparison eq/ne。语义规则（003-D5）：
+//   - 逐元素按 re/im 分量公式计算（mcc 3.1.0 已实测支持 struct kernel，
+//     2026-08-08 冒烟通过；不用 C++ 运算符重载，显式公式更稳）。
+//   - abs(complex) 输出 **real**（NumPy：np.abs(complex) → float32/64）。
+//   - eq/ne 支持 complex（re 与 im 全等才相等）；lt/gt/le/ge 对 complex
+//     永久拒绝（complex 无全序）——由 Rust 侧白名单把关，本文件不实例化。
+//   - 不启用 vec4/scalar fast-path（complex 为新面，收敛实现范围）。
+//
+// ABI：complex buffer 的 interleaved re/im 布局与 C 的
+// `struct { T re; T im; }` 一一对应（muComplex/muDoubleComplex，
+// musa_x_ffi.rs:65-78），wrapper 直接透传 buffer 指针，无打包/解包。
+
+// ── complex 标量类型 ────────────────────────────────────────────
+typedef struct c64 { float re; float im; } c64;
+typedef struct c128 { double re; double im; } c128;
+
+// ── complex binary kernel 模板（nd + flat）─────────────────────
+// RE_EXPR / IM_EXPR 用局部变量 av/bv（避免 nd/flat 索引变量名差异）。
+
+#define CPLX_BINARY_TEMPLATES(OP, RE_EXPR, IM_EXPR)                         \
+template <typename T>                                                       \
+__global__ void musapy_##OP##_cplx_kernel_v2(                               \
+    const T* __restrict__ a, const T* __restrict__ b, T* __restrict__ c,    \
+    NdMeta meta, size_t n                                                    \
+) {                                                                         \
+    size_t idx = blockIdx.x * blockDim.x + threadIdx.x;                     \
+    if (idx < n) {                                                          \
+        size_t a_off = offset_nd(idx, meta.shape, meta.a_strides, meta.ndim);\
+        size_t b_off = offset_nd(idx, meta.shape, meta.b_strides, meta.ndim);\
+        T av = a[a_off];                                                    \
+        T bv = b[b_off];                                                    \
+        c[idx].re = (RE_EXPR);                                              \
+        c[idx].im = (IM_EXPR);                                              \
+    }                                                                       \
+}                                                                           \
+template <typename T>                                                       \
+__global__ void musapy_##OP##_cplx_flat_v2(                                 \
+    const T* __restrict__ a, const T* __restrict__ b, T* __restrict__ c,    \
+    size_t n                                                                 \
+) {                                                                         \
+    size_t idx = blockIdx.x * blockDim.x + threadIdx.x;                     \
+    if (idx < n) {                                                          \
+        T av = a[idx];                                                      \
+        T bv = b[idx];                                                      \
+        c[idx].re = (RE_EXPR);                                              \
+        c[idx].im = (IM_EXPR);                                              \
+    }                                                                       \
+}
+
+CPLX_BINARY_TEMPLATES(add, (av.re + bv.re), (av.im + bv.im))
+CPLX_BINARY_TEMPLATES(sub, (av.re - bv.re), (av.im - bv.im))
+CPLX_BINARY_TEMPLATES(mul,
+    (av.re * bv.re - av.im * bv.im),
+    (av.re * bv.im + av.im * bv.re))
+CPLX_BINARY_TEMPLATES(div,
+    ((av.re * bv.re + av.im * bv.im) / (bv.re * bv.re + bv.im * bv.im)),
+    ((av.im * bv.re - av.re * bv.im) / (bv.re * bv.re + bv.im * bv.im)))
+
+#undef CPLX_BINARY_TEMPLATES
+
+// ── complex unary：neg（T 泛型，输出同 complex）────────────────
+
+template <typename T>
+__global__ void musapy_neg_cplx_kernel_v2(
+    const T* __restrict__ a, T* __restrict__ c, NdMetaUnary meta, size_t n
+) {
+    size_t idx = blockIdx.x * blockDim.x + threadIdx.x;
+    if (idx < n) {
+        size_t a_off = offset_nd(idx, meta.shape, meta.a_strides, meta.ndim);
+        c[idx].re = -a[a_off].re;
+        c[idx].im = -a[a_off].im;
+    }
+}
+
+template <typename T>
+__global__ void musapy_neg_cplx_flat_v2(
+    const T* __restrict__ a, T* __restrict__ c, size_t n
+) {
+    size_t idx = blockIdx.x * blockDim.x + threadIdx.x;
+    if (idx < n) {
+        c[idx].re = -a[idx].re;
+        c[idx].im = -a[idx].im;
+    }
+}
+
+// ── complex unary：abs（输出 real，c64→float / c128→double）────
+
+#define CPLX_ABS_KERNEL(CT, RT, SQRTFN)                                       \
+__global__ void musapy_abs_cplx_kernel_v2_##CT(                               \
+    const CT* __restrict__ a, RT* __restrict__ c, NdMetaUnary meta, size_t n  \
+) {                                                                           \
+    size_t idx = blockIdx.x * blockDim.x + threadIdx.x;                       \
+    if (idx < n) {                                                            \
+        size_t a_off = offset_nd(idx, meta.shape, meta.a_strides, meta.ndim); \
+        RT re = (RT)a[a_off].re;                                              \
+        RT im = (RT)a[a_off].im;                                              \
+        c[idx] = SQRTFN(re * re + im * im);                                   \
+    }                                                                         \
+}                                                                             \
+__global__ void musapy_abs_cplx_flat_v2_##CT(                                 \
+    const CT* __restrict__ a, RT* __restrict__ c, size_t n                    \
+) {                                                                           \
+    size_t idx = blockIdx.x * blockDim.x + threadIdx.x;                       \
+    if (idx < n) {                                                            \
+        RT re = (RT)a[idx].re;                                                \
+        RT im = (RT)a[idx].im;                                                \
+        c[idx] = SQRTFN(re * re + im * im);                                   \
+    }                                                                         \
+}
+
+CPLX_ABS_KERNEL(c64, float, sqrtf)
+CPLX_ABS_KERNEL(c128, double, sqrt)
+
+#undef CPLX_ABS_KERNEL
+
+// ── complex comparison eq/ne（输出 uint8_t；re 与 im 全等才相等）─
+
+#define CPLX_COMPARE_TEMPLATES(OP, EXPR)                                      \
+template <typename T>                                                         \
+__global__ void musapy_##OP##_cplx_kernel_v2(                                 \
+    const T* __restrict__ a, const T* __restrict__ b, uint8_t* __restrict__ c,\
+    NdMeta meta, size_t n                                                      \
+) {                                                                           \
+    size_t idx = blockIdx.x * blockDim.x + threadIdx.x;                       \
+    if (idx < n) {                                                            \
+        size_t a_off = offset_nd(idx, meta.shape, meta.a_strides, meta.ndim); \
+        size_t b_off = offset_nd(idx, meta.shape, meta.b_strides, meta.ndim); \
+        T av = a[a_off];                                                      \
+        T bv = b[b_off];                                                      \
+        c[idx] = (uint8_t)(EXPR);                                             \
+    }                                                                         \
+}                                                                             \
+template <typename T>                                                         \
+__global__ void musapy_##OP##_cplx_flat_v2(                                   \
+    const T* __restrict__ a, const T* __restrict__ b, uint8_t* __restrict__ c,\
+    size_t n                                                                   \
+) {                                                                           \
+    size_t idx = blockIdx.x * blockDim.x + threadIdx.x;                       \
+    if (idx < n) {                                                            \
+        T av = a[idx];                                                        \
+        T bv = b[idx];                                                        \
+        c[idx] = (uint8_t)(EXPR);                                             \
+    }                                                                         \
+}
+
+CPLX_COMPARE_TEMPLATES(eq, (av.re == bv.re && av.im == bv.im))
+CPLX_COMPARE_TEMPLATES(ne, (av.re != bv.re || av.im != bv.im))
+
+#undef CPLX_COMPARE_TEMPLATES
+
+// ── extern "C" complex 符号 ────────────────────────────────────
+// wrapper：contiguous → flat fast-path；否则 → stride-aware nd。
+// 无 scalar/vec4 fast-path（收敛实现面，complex 场景低频）。
+
+extern "C" {
+
+// binary wrapper（c64/c128 各一份）
+#define CPLX_BINARY_WRAPPER(OP, CT)                                          \
+void musapy_##OP##_##CT##_v2(                                                \
+    const CT* __restrict__ a, const CT* __restrict__ b,                     \
+    CT* __restrict__ c, int ndim, const size_t* shape,                      \
+    const ssize_t* a_strides, const ssize_t* b_strides, musaStream_t stream  \
+) {                                                                          \
+    size_t n = 1;                                                            \
+    for (int i = 0; i < ndim; i++) n *= shape[i];                          \
+    if (is_contiguous_strides(shape, a_strides, ndim) &&                     \
+        is_contiguous_strides(shape, b_strides, ndim)) {                     \
+        musapy_##OP##_cplx_flat_v2<CT><<<grid_size_1d(n), 256, 0,             \
+            stream>>>(a, b, c, n);                                           \
+    } else {                                                                 \
+        NdMeta meta;                                                         \
+        meta.ndim = ndim;                                                    \
+        for (int i = 0; i < ndim; i++) {                                    \
+            meta.shape[i] = shape[i];                                        \
+            meta.a_strides[i] = a_strides[i];                                \
+            meta.b_strides[i] = b_strides[i];                                \
+        }                                                                    \
+        musapy_##OP##_cplx_kernel_v2<CT><<<grid_size_1d(n), 256, 0,           \
+            stream>>>(a, b, c, meta, n);                                     \
+    }                                                                        \
+}
+
+#define CPLX_BINARY_V2(OP) \
+    CPLX_BINARY_WRAPPER(OP, c64) \
+    CPLX_BINARY_WRAPPER(OP, c128)
+
+CPLX_BINARY_V2(add)
+CPLX_BINARY_V2(sub)
+CPLX_BINARY_V2(mul)
+CPLX_BINARY_V2(div)
+
+#undef CPLX_BINARY_WRAPPER
+#undef CPLX_BINARY_V2
+
+// neg wrapper（c64/c128 各一份，输出同 complex）
+#define CPLX_NEG_WRAPPER(CT)                                                  \
+void musapy_neg_##CT##_v2(                                                    \
+    const CT* __restrict__ a, CT* __restrict__ c,                            \
+    int ndim, const size_t* shape, const ssize_t* a_strides,                  \
+    musaStream_t stream                                                       \
+) {                                                                          \
+    size_t n = 1;                                                            \
+    for (int i = 0; i < ndim; i++) n *= shape[i];                          \
+    if (is_contiguous_strides(shape, a_strides, ndim)) {                     \
+        musapy_neg_cplx_flat_v2<CT><<<grid_size_1d(n), 256, 0, stream>>>(     \
+            a, c, n);                                                        \
+    } else {                                                                 \
+        NdMetaUnary meta;                                                    \
+        meta.ndim = ndim;                                                    \
+        for (int i = 0; i < ndim; i++) {                                    \
+            meta.shape[i] = shape[i];                                        \
+            meta.a_strides[i] = a_strides[i];                                \
+        }                                                                    \
+        musapy_neg_cplx_kernel_v2<CT><<<grid_size_1d(n), 256, 0, stream>>>(   \
+            a, c, meta, n);                                                  \
+    }                                                                        \
+}
+
+CPLX_NEG_WRAPPER(c64)
+CPLX_NEG_WRAPPER(c128)
+
+#undef CPLX_NEG_WRAPPER
+
+// abs wrapper（输出 real：c64→float / c128→double）
+#define CPLX_ABS_WRAPPER(CT, RT)                                              \
+void musapy_abs_##CT##_v2(                                                    \
+    const CT* __restrict__ a, RT* __restrict__ c,                            \
+    int ndim, const size_t* shape, const ssize_t* a_strides,                  \
+    musaStream_t stream                                                       \
+) {                                                                          \
+    size_t n = 1;                                                            \
+    for (int i = 0; i < ndim; i++) n *= shape[i];                          \
+    if (is_contiguous_strides(shape, a_strides, ndim)) {                     \
+        musapy_abs_cplx_flat_v2_##CT<<<grid_size_1d(n), 256, 0, stream>>>(    \
+            a, c, n);                                                        \
+    } else {                                                                 \
+        NdMetaUnary meta;                                                    \
+        meta.ndim = ndim;                                                    \
+        for (int i = 0; i < ndim; i++) {                                    \
+            meta.shape[i] = shape[i];                                        \
+            meta.a_strides[i] = a_strides[i];                                \
+        }                                                                    \
+        musapy_abs_cplx_kernel_v2_##CT<<<grid_size_1d(n), 256, 0, stream>>>(  \
+            a, c, meta, n);                                                  \
+    }                                                                        \
+}
+
+CPLX_ABS_WRAPPER(c64, float)
+CPLX_ABS_WRAPPER(c128, double)
+
+#undef CPLX_ABS_WRAPPER
+
+// comparison wrapper（c64/c128 各一份，输出 uint8_t）
+#define CPLX_COMPARE_WRAPPER(OP, CT)                                         \
+void musapy_##OP##_##CT##_v2(                                                \
+    const CT* __restrict__ a, const CT* __restrict__ b,                     \
+    uint8_t* __restrict__ c, int ndim, const size_t* shape,                 \
+    const ssize_t* a_strides, const ssize_t* b_strides, musaStream_t stream  \
+) {                                                                          \
+    size_t n = 1;                                                            \
+    for (int i = 0; i < ndim; i++) n *= shape[i];                          \
+    if (is_contiguous_strides(shape, a_strides, ndim) &&                     \
+        is_contiguous_strides(shape, b_strides, ndim)) {                     \
+        musapy_##OP##_cplx_flat_v2<CT><<<grid_size_1d(n), 256, 0,             \
+            stream>>>(a, b, c, n);                                           \
+    } else {                                                                 \
+        NdMeta meta;                                                         \
+        meta.ndim = ndim;                                                    \
+        for (int i = 0; i < ndim; i++) {                                    \
+            meta.shape[i] = shape[i];                                        \
+            meta.a_strides[i] = a_strides[i];                                \
+            meta.b_strides[i] = b_strides[i];                                \
+        }                                                                    \
+        musapy_##OP##_cplx_kernel_v2<CT><<<grid_size_1d(n), 256, 0,           \
+            stream>>>(a, b, c, meta, n);                                     \
+    }                                                                        \
+}
+
+CPLX_COMPARE_WRAPPER(eq, c64)
+CPLX_COMPARE_WRAPPER(eq, c128)
+CPLX_COMPARE_WRAPPER(ne, c64)
+CPLX_COMPARE_WRAPPER(ne, c128)
+
+#undef CPLX_COMPARE_WRAPPER
+
+// ── complex cast（real → complex，Phase 5）────────────────────
+// 4 对：f32→c64 / f32→c128 / f64→c64 / f64→c128（re=src, im=0）。
+// fft real 输入扩展 + 混合运算类型提升（real + complex → 宽 complex）共用。
+
+#define CPLX_CAST_KERNELS(SRC_T, CT, SUFFIX)                                  \
+__global__ void musapy_cast_##SUFFIX##_cplx_kernel_v2(                        \
+    const SRC_T* __restrict__ a, CT* __restrict__ c, NdMetaUnary meta,        \
+    size_t n                                                                    \
+) {                                                                           \
+    size_t idx = blockIdx.x * blockDim.x + threadIdx.x;                       \
+    if (idx < n) {                                                            \
+        size_t a_off = offset_nd(idx, meta.shape, meta.a_strides, meta.ndim); \
+        c[idx].re = a[a_off];                                                 \
+        c[idx].im = (SRC_T)0;                                                 \
+    }                                                                         \
+}                                                                             \
+__global__ void musapy_cast_##SUFFIX##_cplx_flat_v2(                          \
+    const SRC_T* __restrict__ a, CT* __restrict__ c, size_t n                 \
+) {                                                                           \
+    size_t idx = blockIdx.x * blockDim.x + threadIdx.x;                       \
+    if (idx < n) {                                                            \
+        c[idx].re = a[idx];                                                   \
+        c[idx].im = (SRC_T)0;                                                 \
+    }                                                                         \
+}
+
+CPLX_CAST_KERNELS(float, c64, f32_c64)
+CPLX_CAST_KERNELS(float, c128, f32_c128)
+CPLX_CAST_KERNELS(double, c64, f64_c64)
+CPLX_CAST_KERNELS(double, c128, f64_c128)
+
+#undef CPLX_CAST_KERNELS
+
+// ── complex 宽度提升（c64 → c128，Phase 5）────────────────────
+// 跨类别提升（f64+c64→c128 等）时窄 complex 需扩宽；re/im 各 f32→f64，无精度损失。
+
+__global__ void musapy_cast_c64_c128_cplx_kernel_v2(
+    const c64* __restrict__ a, c128* __restrict__ c, NdMetaUnary meta, size_t n
+) {
+    size_t idx = blockIdx.x * blockDim.x + threadIdx.x;
+    if (idx < n) {
+        size_t a_off = offset_nd(idx, meta.shape, meta.a_strides, meta.ndim);
+        c[idx].re = (double)a[a_off].re;
+        c[idx].im = (double)a[a_off].im;
+    }
+}
+
+__global__ void musapy_cast_c64_c128_cplx_flat_v2(
+    const c64* __restrict__ a, c128* __restrict__ c, size_t n
+) {
+    size_t idx = blockIdx.x * blockDim.x + threadIdx.x;
+    if (idx < n) {
+        c[idx].re = (double)a[idx].re;
+        c[idx].im = (double)a[idx].im;
+    }
+}
+
+// ── real → complex cast wrapper（f32/f64 → c64/c128）──────────
+#define CPLX_CAST_WRAPPER(SRC_T, CT, SUFFIX)                                  \
+void musapy_cast_##SUFFIX##_v2(                                               \
+    const SRC_T* __restrict__ a, CT* __restrict__ c,                         \
+    int ndim, const size_t* shape, const ssize_t* a_strides,                  \
+    musaStream_t stream                                                       \
+) {                                                                          \
+    size_t n = 1;                                                            \
+    for (int i = 0; i < ndim; i++) n *= shape[i];                          \
+    if (is_contiguous_strides(shape, a_strides, ndim)) {                     \
+        musapy_cast_##SUFFIX##_cplx_flat_v2<<<grid_size_1d(n), 256, 0,        \
+            stream>>>(a, c, n);                                              \
+    } else {                                                                 \
+        NdMetaUnary meta;                                                    \
+        meta.ndim = ndim;                                                    \
+        for (int i = 0; i < ndim; i++) {                                    \
+            meta.shape[i] = shape[i];                                        \
+            meta.a_strides[i] = a_strides[i];                                \
+        }                                                                    \
+        musapy_cast_##SUFFIX##_cplx_kernel_v2<<<grid_size_1d(n), 256, 0,      \
+            stream>>>(a, c, meta, n);                                        \
+    }                                                                        \
+}
+
+// 符号名对齐既有惯例：musapy_cast_<src>_<dst>_v2
+CPLX_CAST_WRAPPER(float, c64, f32_c64)
+CPLX_CAST_WRAPPER(float, c128, f32_c128)
+CPLX_CAST_WRAPPER(double, c64, f64_c64)
+CPLX_CAST_WRAPPER(double, c128, f64_c128)
+
+#undef CPLX_CAST_WRAPPER
+
+// c64→c128 wrapper（complex 宽度提升）
+void musapy_cast_c64_c128_v2(
+    const c64* __restrict__ a, c128* __restrict__ c,
+    int ndim, const size_t* shape, const ssize_t* a_strides,
+    musaStream_t stream
+) {
+    size_t n = 1;
+    for (int i = 0; i < ndim; i++) n *= shape[i];
+    if (is_contiguous_strides(shape, a_strides, ndim)) {
+        musapy_cast_c64_c128_cplx_flat_v2<<<grid_size_1d(n), 256, 0, stream>>>(
+            a, c, n);
+    } else {
+        NdMetaUnary meta;
+        meta.ndim = ndim;
+        for (int i = 0; i < ndim; i++) {
+            meta.shape[i] = shape[i];
+            meta.a_strides[i] = a_strides[i];
+        }
+        musapy_cast_c64_c128_cplx_kernel_v2<<<grid_size_1d(n), 256, 0, stream>>>(
+            a, c, meta, n);
+    }
+}
+
+// ── complex resize（截断/补零，Phase 5 fft 的 n 参数）──────────
+// 输入 complex 数组 shape=[..., n_in]（stride-aware），输出连续
+// shape=[..., n_out]；k < n_in 拷贝，否则补零。逐输出元素。
+#define CPLX_RESIZE_KERNEL(CT, ZERO_T)                                        \
+__global__ void musapy_resize_##CT##_kernel_v2(                               \
+    const CT* __restrict__ a, CT* __restrict__ c,                             \
+    NdMetaUnary meta, size_t n_in, size_t n_out, size_t outer                  \
+) {                                                                           \
+    size_t total = outer * n_out;                                             \
+    size_t idx = blockIdx.x * blockDim.x + threadIdx.x;                       \
+    if (idx < total) {                                                        \
+        size_t outer_idx = idx / n_out;                                       \
+        size_t k = idx % n_out;                                               \
+        if (k < n_in) {                                                       \
+            size_t in_linear = outer_idx * n_in + k;                          \
+            size_t a_off = offset_nd(in_linear, meta.shape, meta.a_strides,   \
+                meta.ndim);                                                   \
+            c[idx] = a[a_off];                                                \
+        } else {                                                              \
+            c[idx].re = (ZERO_T)0;                                            \
+            c[idx].im = (ZERO_T)0;                                            \
+        }                                                                     \
+    }                                                                         \
+}
+
+CPLX_RESIZE_KERNEL(c64, float)
+CPLX_RESIZE_KERNEL(c128, double)
+
+#undef CPLX_RESIZE_KERNEL
+
+// ── real resize（截断/补零，Phase 5 rfft 的 n 参数）────────────
+// 与 complex resize 同构，但输入输出为 real（R2C/D2Z 的输入必须是 real buffer）。
+
+#define REAL_RESIZE_KERNEL(RT)                                                \
+__global__ void musapy_resize_##RT##_real_kernel_v2(                          \
+    const RT* __restrict__ a, RT* __restrict__ c,                             \
+    NdMetaUnary meta, size_t n_in, size_t n_out, size_t outer                  \
+) {                                                                           \
+    size_t total = outer * n_out;                                             \
+    size_t idx = blockIdx.x * blockDim.x + threadIdx.x;                       \
+    if (idx < total) {                                                        \
+        size_t outer_idx = idx / n_out;                                       \
+        size_t k = idx % n_out;                                               \
+        if (k < n_in) {                                                       \
+            size_t in_linear = outer_idx * n_in + k;                          \
+            size_t a_off = offset_nd(in_linear, meta.shape, meta.a_strides,   \
+                meta.ndim);                                                   \
+            c[idx] = a[a_off];                                                \
+        } else {                                                              \
+            c[idx] = (RT)0;                                                   \
+        }                                                                     \
+    }                                                                         \
+}
+
+REAL_RESIZE_KERNEL(float)
+REAL_RESIZE_KERNEL(double)
+
+#undef REAL_RESIZE_KERNEL
+
+// ── complex 就地缩放（real 标量，Phase 5 fft 归一化）───────────
+// 输出 buffer 恒连续（fft 骨架保证），无需 stride。
+#define CPLX_SCALE_KERNEL(CT)                                                 \
+__global__ void musapy_scale_##CT##_kernel_v2(                                \
+    CT* __restrict__ c, double factor, size_t n                               \
+) {                                                                           \
+    size_t idx = blockIdx.x * blockDim.x + threadIdx.x;                       \
+    if (idx < n) {                                                            \
+        c[idx].re *= (float)factor;                                           \
+        c[idx].im *= (float)factor;                                           \
+    }                                                                         \
+}
+
+CPLX_SCALE_KERNEL(c64)
+CPLX_SCALE_KERNEL(c128)
+
+#undef CPLX_SCALE_KERNEL
+
+// ── extern "C"：resize / scale ────────────────────────────────
+
+extern "C" {
+
+#define CPLX_RESIZE_WRAPPER(CT)                                               \
+void musapy_resize_##CT##_v2(                                                 \
+    const CT* __restrict__ a, CT* __restrict__ c,                             \
+    int ndim, const size_t* shape, const ssize_t* a_strides,                  \
+    size_t n_in, size_t n_out, musaStream_t stream                             \
+) {                                                                           \
+    size_t outer = 1;                                                         \
+    for (int i = 0; i < ndim - 1; i++) outer *= shape[i];                    \
+    NdMetaUnary meta;                                                         \
+    meta.ndim = ndim;                                                         \
+    for (int i = 0; i < ndim; i++) {                                          \
+        meta.shape[i] = shape[i];                                             \
+        meta.a_strides[i] = a_strides[i];                                     \
+    }                                                                         \
+    musapy_resize_##CT##_kernel_v2<<<grid_size_1d(outer * n_out), 256, 0,     \
+        stream>>>(a, c, meta, n_in, n_out, outer);                            \
+}
+
+CPLX_RESIZE_WRAPPER(c64)
+CPLX_RESIZE_WRAPPER(c128)
+
+#undef CPLX_RESIZE_WRAPPER
+
+// real resize wrapper（f32/f64，rfft n 参数用）
+#define REAL_RESIZE_WRAPPER(RT, SUFFIX)                                       \
+void musapy_resize_##SUFFIX##_real_v2(                                        \
+    const RT* __restrict__ a, RT* __restrict__ c,                             \
+    int ndim, const size_t* shape, const ssize_t* a_strides,                  \
+    size_t n_in, size_t n_out, musaStream_t stream                             \
+) {                                                                           \
+    size_t outer = 1;                                                         \
+    for (int i = 0; i < ndim - 1; i++) outer *= shape[i];                    \
+    NdMetaUnary meta;                                                         \
+    meta.ndim = ndim;                                                         \
+    for (int i = 0; i < ndim; i++) {                                          \
+        meta.shape[i] = shape[i];                                             \
+        meta.a_strides[i] = a_strides[i];                                     \
+    }                                                                         \
+    musapy_resize_##RT##_real_kernel_v2<<<grid_size_1d(outer * n_out), 256,   \
+        0, stream>>>(a, c, meta, n_in, n_out, outer);                         \
+}
+
+REAL_RESIZE_WRAPPER(float, f32)
+REAL_RESIZE_WRAPPER(double, f64)
+
+#undef REAL_RESIZE_WRAPPER
+
+// scale wrapper（输出 buffer 恒连续；c64/c128 为 .mu 内 typedef，
+// ABI ≡ musa_x_ffi.rs 的 muComplex/muDoubleComplex）
+void musapy_scale_c64_v2(
+    c64* __restrict__ c, double factor, size_t n, musaStream_t stream
+) {
+    musapy_scale_c64_kernel_v2<<<grid_size_1d(n), 256, 0, stream>>>(c, factor, n);
+}
+
+void musapy_scale_c128_v2(
+    c128* __restrict__ c, double factor, size_t n, musaStream_t stream
+) {
+    musapy_scale_c128_kernel_v2<<<grid_size_1d(n), 256, 0, stream>>>(c, factor, n);
+}
+
+} // extern "C" (resize/scale)
+
+} // extern "C" (complex)
