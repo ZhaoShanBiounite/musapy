@@ -53,13 +53,17 @@ __device__ static inline size_t reduce_offset(
     return offset;
 }
 
-// ── Partial kernel 向量化辅助（P2）───────────────────────────
+// ── Partial kernel 向量化辅助（P2/P-A1）───────────────────────
 //
-// 每线程处理 REDUCE_ITEMS=4 个连续 axis 元素（原为 1 个），线程数降为
-// 1/4。host 侧 tiles_per_output = ceil(axis_len / (256 * REDUCE_ITEMS))。
+// 每线程处理 REDUCE_ITEMS=4 个连续 axis 元素。
+// host 侧 tiles_per_output = ceil(axis_len / (256 * REDUCE_ITEMS))。
 // 注意：float4 显式向量加载在本编译器上会与 warp shuffle 组合出病态
 // 代码（实测 47× 变慢，2026-08 基准探针），故只用标量循环——连续线程
 // 访问连续元素，合并效果等价，实测与 float4 路径同速。
+// P-A1（2026-08-08）探索注记：REDUCE_ITEMS=8 实测严重退化（64M sum
+// 1.176→4106ms，~3500×）——mcc 对 8 元素 unroll + 边界检查生成病态
+// 代码（与 float4+shuffle 同族编译器问题），已回退 4。arg* 连续化
+// （每线程 strided 1 元素 → 连续 4 元素）是本次唯一确认收益（+7%）。
 
 #define REDUCE_ITEMS 4
 
@@ -840,13 +844,24 @@ __global__ void musapy_argmax_partial_kernel_v2(
     size_t total_threads = tiles_per_output * blockDim.x;
     size_t global_tid = tile_idx * blockDim.x + threadIdx.x;
 
+    // P-A1（2026-08-08）：连续读 REDUCE_ITEMS=4 元素（对齐 PARTIAL_BODY），
+    // 替代原 strided 单元素步进——同一 warp 内连续线程访问连续元素，
+    // 访存合并度更高（arg* 原为每线程 strided 访问，64M 实测 161 GB/s
+    // 落后 sum 的 219 GB/s，属访存模式而非归约逻辑）。
     T best_val = a[base];
     int64_t best_idx = 0;
-    for (size_t k = global_tid; k < meta.axis_len; k += total_threads) {
-        T val = a[base + (size_t)((ssize_t)k * axis_stride)];
-        if (val > best_val) {
-            best_val = val;
-            best_idx = (int64_t)k;
+    for (size_t k0 = global_tid * REDUCE_ITEMS; k0 < meta.axis_len;
+         k0 += total_threads * REDUCE_ITEMS) {
+        _Pragma("unroll")
+        for (int j = 0; j < REDUCE_ITEMS; j++) {
+            size_t k = k0 + j;
+            if (k < meta.axis_len) {
+                T val = a[base + (size_t)((ssize_t)k * axis_stride)];
+                if (val > best_val) {
+                    best_val = val;
+                    best_idx = (int64_t)k;
+                }
+            }
         }
     }
 
@@ -887,13 +902,21 @@ __global__ void musapy_argmin_partial_kernel_v2(
     size_t total_threads = tiles_per_output * blockDim.x;
     size_t global_tid = tile_idx * blockDim.x + threadIdx.x;
 
+    // P-A1：连续读 REDUCE_ITEMS=4 元素（同 argmax）
     T best_val = a[base];
     int64_t best_idx = 0;
-    for (size_t k = global_tid; k < meta.axis_len; k += total_threads) {
-        T val = a[base + (size_t)((ssize_t)k * axis_stride)];
-        if (val < best_val) {
-            best_val = val;
-            best_idx = (int64_t)k;
+    for (size_t k0 = global_tid * REDUCE_ITEMS; k0 < meta.axis_len;
+         k0 += total_threads * REDUCE_ITEMS) {
+        _Pragma("unroll")
+        for (int j = 0; j < REDUCE_ITEMS; j++) {
+            size_t k = k0 + j;
+            if (k < meta.axis_len) {
+                T val = a[base + (size_t)((ssize_t)k * axis_stride)];
+                if (val < best_val) {
+                    best_val = val;
+                    best_idx = (int64_t)k;
+                }
+            }
         }
     }
 
