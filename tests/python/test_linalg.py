@@ -34,16 +34,19 @@ class TestMathHandleSmoke:
             assert r["versions"][lib] > 0, f"{lib} version should be positive"
 
     def test_handle_cycle_mem_flat(self):
-        """1e3 次句柄创建/销毁循环后 mem_stats 持平、销毁队列归零。"""
+        """1e3 次句柄创建/销毁循环后 mem_stats 不增长、销毁队列归零。"""
         before = _core._math_handle_smoke(device="musa:0", iters=0)
         r = _core._math_handle_smoke(device="musa:0", iters=1000)
 
         # 延迟销毁队列必须清空（synchronize 触发 reclaim_destroys）
         assert r["pending_destroys_after"] == 0
 
-        # musapy 记账的设备内存回到循环前水平（无泄漏）
-        assert r["mem_allocated_bytes_after"] == r["mem_allocated_bytes_before"]
-        assert r["mem_allocated_buffers_after"] == r["mem_allocated_buffers_before"]
+        # musapy 记账的设备内存循环后不增长（无泄漏）。
+        # 注意：允许「减少」——前置测试（如 sparse）留下的 workspace 桶缓存
+        # 会被本循环的 evict_device 回收（record_dealloc），after 可小于 before；
+        # 泄漏表现为增长（after > before）。
+        assert r["mem_allocated_bytes_after"] <= r["mem_allocated_bytes_before"]
+        assert r["mem_allocated_buffers_after"] <= r["mem_allocated_buffers_before"]
         # deferred-free 队列不残留
         assert r["mem_cached_bytes_after"] == 0
         _ = before  # iters=0 仅用于显式首次初始化

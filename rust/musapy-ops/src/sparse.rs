@@ -21,7 +21,7 @@ use musapy_core::{
     Array, Buffer, BufferRef, Device, Dtype, Layout, Result, Stream, musa_x_ffi,
 };
 use musapy_core::musa_x_ffi::{
-    MUSA_R_32F, MUSA_R_64F, MUSPARSE_INDEX_32I, MUSPARSE_INDEX_BASE_ZERO,
+    MUSA_R_32F, MUSA_R_64F,
     MUSPARSE_OPERATION_NON_TRANSPOSE, MUSPARSE_ORDER_ROW, MUSPARSE_SPMM_ALG_DEFAULT,
     MUSPARSE_SPMM_STAGE_AUTO, MUSPARSE_SPMV_ALG_DEFAULT,
 };
@@ -334,15 +334,46 @@ pub fn spmv(mat: &CsrMatrix, vec: &Array) -> Result<Array> {
     let beta_f32 = 0.0f32;
     let alpha_f64 = 1.0f64;
     let beta_f64 = 0.0f64;
-    let (rows_i, cols_i, nnz_i) = (
-        rows as i64,
-        cols as i64,
-        mat.nnz as i64,
-    );
+    let (rows_i, cols_i) = (rows as i64, cols as i64);
 
-    let result = math_handle::with_musparse_handle(&mat.device, &out_stream, |handle| {
-        // 描述符创建
-        let mut spmat: musa_x_ffi::musparseSpMatDescr_t = std::ptr::null_mut();
+    // P-A3（2026-08-08）：CSR 描述符走 math_handle 池化缓存（with_musparse_csr），
+    // 避免每调用 create/destroy；DnVec 仍每调用创建（轻量描述符）。
+    let indptr_ptr = mat.indptr.buffer().ptr().ok_or_else(|| {
+        musapy_core::error::MusapyError::Device(
+            musapy_core::error::DeviceError::MathLibCallFailed(
+                "spmv: null indptr pointer".into(),
+            ),
+        )
+    })?;
+    let indices_ptr = mat.indices.buffer().ptr().ok_or_else(|| {
+        musapy_core::error::MusapyError::Device(
+            musapy_core::error::DeviceError::MathLibCallFailed(
+                "spmv: null indices pointer".into(),
+            ),
+        )
+    })?;
+    let data_ptr = mat.data.buffer().ptr().ok_or_else(|| {
+        musapy_core::error::MusapyError::Device(
+            musapy_core::error::DeviceError::MathLibCallFailed(
+                "spmv: null data pointer".into(),
+            ),
+        )
+    })?;
+    let spec = math_handle::MusparseSpMatSpec {
+        rows,
+        cols,
+        nnz: mat.nnz,
+        data_ptr: data_ptr.as_ptr() as usize,
+        indices_ptr: indices_ptr.as_ptr() as usize,
+        indptr_ptr: indptr_ptr.as_ptr() as usize,
+        dtype_code,
+    };
+    let data_ptr = data_ptr.as_ptr() as *mut std::ffi::c_void;
+    let indices_ptr = indices_ptr.as_ptr() as *mut std::ffi::c_void;
+    let indptr_ptr = indptr_ptr.as_ptr() as *mut std::ffi::c_void;
+
+    let result = math_handle::with_musparse_csr(&mat.device, &out_stream, &spec, data_ptr, indices_ptr, indptr_ptr, |handle, spmat| {
+        // DnVec 描述符每调用创建（轻量）
         let mut vec_x: musa_x_ffi::musparseDnVecDescr_t = std::ptr::null_mut();
         let mut vec_y: musa_x_ffi::musparseDnVecDescr_t = std::ptr::null_mut();
 
@@ -353,46 +384,7 @@ pub fn spmv(mat: &CsrMatrix, vec: &Array) -> Result<Array> {
                 ),
             )
         })?;
-        let indptr_ptr = mat.indptr.buffer().ptr().ok_or_else(|| {
-            musapy_core::error::MusapyError::Device(
-                musapy_core::error::DeviceError::MathLibCallFailed(
-                    "spmv: null indptr pointer".into(),
-                ),
-            )
-        })?;
-        let indices_ptr = mat.indices.buffer().ptr().ok_or_else(|| {
-            musapy_core::error::MusapyError::Device(
-                musapy_core::error::DeviceError::MathLibCallFailed(
-                    "spmv: null indices pointer".into(),
-                ),
-            )
-        })?;
-        let data_ptr = mat.data.buffer().ptr().ok_or_else(|| {
-            musapy_core::error::MusapyError::Device(
-                musapy_core::error::DeviceError::MathLibCallFailed(
-                    "spmv: null data pointer".into(),
-                ),
-            )
-        })?;
 
-        musa_x_ffi::check_musparse(
-            unsafe {
-                musa_x_ffi::musparseCreateCsr(
-                    &mut spmat,
-                    rows_i,
-                    cols_i,
-                    nnz_i,
-                    indptr_ptr.as_ptr() as *mut std::ffi::c_void,
-                    indices_ptr.as_ptr() as *mut std::ffi::c_void,
-                    data_ptr.as_ptr() as *mut std::ffi::c_void,
-                    MUSPARSE_INDEX_32I,
-                    MUSPARSE_INDEX_32I,
-                    MUSPARSE_INDEX_BASE_ZERO,
-                    dtype_code,
-                )
-            },
-            "musparseCreateCsr",
-        )?;
         musa_x_ffi::check_musparse(
             unsafe {
                 musa_x_ffi::musparseCreateDnVec(
@@ -469,10 +461,9 @@ pub fn spmv(mat: &CsrMatrix, vec: &Array) -> Result<Array> {
             "musparseSpMV",
         )?;
 
-        // 描述符销毁
+        // DnVec 描述符销毁（spmat 走缓存池，不销毁）
         let _ = unsafe { musa_x_ffi::musparseDestroyDnVec(vec_y) };
         let _ = unsafe { musa_x_ffi::musparseDestroyDnVec(vec_x) };
-        let _ = unsafe { musa_x_ffi::musparseDestroySpMat(spmat) };
         Ok(())
     });
 
@@ -595,15 +586,44 @@ pub fn spmm(mat: &CsrMatrix, dense: &Array) -> Result<Array> {
     let beta_f32 = 0.0f32;
     let alpha_f64 = 1.0f64;
     let beta_f64 = 0.0f64;
-    let (rows_i, cols_i, nnz_i, dc_i) = (
-        rows as i64,
-        cols as i64,
-        mat.nnz as i64,
-        dc as i64,
-    );
+    let (rows_i, cols_i, dc_i) = (rows as i64, cols as i64, dc as i64);
 
-    let result = math_handle::with_musparse_handle(&mat.device, &out_stream, |handle| {
-        let mut spmat: musa_x_ffi::musparseSpMatDescr_t = std::ptr::null_mut();
+    // P-A3：CSR 描述符走 math_handle 池化缓存（同 spmv）；DnMat 每调用创建
+    let indptr_ptr = mat.indptr.buffer().ptr().ok_or_else(|| {
+        musapy_core::error::MusapyError::Device(
+            musapy_core::error::DeviceError::MathLibCallFailed(
+                "spmm: null indptr pointer".into(),
+            ),
+        )
+    })?;
+    let indices_ptr = mat.indices.buffer().ptr().ok_or_else(|| {
+        musapy_core::error::MusapyError::Device(
+            musapy_core::error::DeviceError::MathLibCallFailed(
+                "spmm: null indices pointer".into(),
+            ),
+        )
+    })?;
+    let data_ptr = mat.data.buffer().ptr().ok_or_else(|| {
+        musapy_core::error::MusapyError::Device(
+            musapy_core::error::DeviceError::MathLibCallFailed(
+                "spmm: null data pointer".into(),
+            ),
+        )
+    })?;
+    let spec = math_handle::MusparseSpMatSpec {
+        rows,
+        cols,
+        nnz: mat.nnz,
+        data_ptr: data_ptr.as_ptr() as usize,
+        indices_ptr: indices_ptr.as_ptr() as usize,
+        indptr_ptr: indptr_ptr.as_ptr() as usize,
+        dtype_code,
+    };
+    let data_ptr = data_ptr.as_ptr() as *mut std::ffi::c_void;
+    let indices_ptr = indices_ptr.as_ptr() as *mut std::ffi::c_void;
+    let indptr_ptr = indptr_ptr.as_ptr() as *mut std::ffi::c_void;
+
+    let result = math_handle::with_musparse_csr(&mat.device, &out_stream, &spec, data_ptr, indices_ptr, indptr_ptr, |handle, spmat| {
         let mut dnb: musa_x_ffi::musparseDnMatDescr_t = std::ptr::null_mut();
         let mut dnc: musa_x_ffi::musparseDnMatDescr_t = std::ptr::null_mut();
 
@@ -614,46 +634,7 @@ pub fn spmm(mat: &CsrMatrix, dense: &Array) -> Result<Array> {
                 ),
             )
         })?;
-        let indptr_ptr = mat.indptr.buffer().ptr().ok_or_else(|| {
-            musapy_core::error::MusapyError::Device(
-                musapy_core::error::DeviceError::MathLibCallFailed(
-                    "spmm: null indptr pointer".into(),
-                ),
-            )
-        })?;
-        let indices_ptr = mat.indices.buffer().ptr().ok_or_else(|| {
-            musapy_core::error::MusapyError::Device(
-                musapy_core::error::DeviceError::MathLibCallFailed(
-                    "spmm: null indices pointer".into(),
-                ),
-            )
-        })?;
-        let data_ptr = mat.data.buffer().ptr().ok_or_else(|| {
-            musapy_core::error::MusapyError::Device(
-                musapy_core::error::DeviceError::MathLibCallFailed(
-                    "spmm: null data pointer".into(),
-                ),
-            )
-        })?;
 
-        musa_x_ffi::check_musparse(
-            unsafe {
-                musa_x_ffi::musparseCreateCsr(
-                    &mut spmat,
-                    rows_i,
-                    cols_i,
-                    nnz_i,
-                    indptr_ptr.as_ptr() as *mut std::ffi::c_void,
-                    indices_ptr.as_ptr() as *mut std::ffi::c_void,
-                    data_ptr.as_ptr() as *mut std::ffi::c_void,
-                    MUSPARSE_INDEX_32I,
-                    MUSPARSE_INDEX_32I,
-                    MUSPARSE_INDEX_BASE_ZERO,
-                    dtype_code,
-                )
-            },
-            "musparseCreateCsr",
-        )?;
         musa_x_ffi::check_musparse(
             unsafe {
                 musa_x_ffi::musparseCreateDnMat(
@@ -739,9 +720,9 @@ pub fn spmm(mat: &CsrMatrix, dense: &Array) -> Result<Array> {
             "musparseSpMM",
         )?;
 
+        // DnMat 描述符销毁（spmat 走缓存池，不销毁）
         let _ = unsafe { musa_x_ffi::musparseDestroyDnMat(dnc) };
         let _ = unsafe { musa_x_ffi::musparseDestroyDnMat(dnb) };
-        let _ = unsafe { musa_x_ffi::musparseDestroySpMat(spmat) };
         Ok(())
     });
 

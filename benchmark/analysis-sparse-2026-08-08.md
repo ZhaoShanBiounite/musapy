@@ -31,3 +31,20 @@ release 构建。数据：`benchmark/bench_sparse.py --iters 15 --n 2000`。
 ## 4. 门禁
 
 - pytest 536 passed（+19 sparse）· cargo test 301 passed · mock 模式 sparse 19 passed
+
+## 5. P-A3 优化（2026-08-08，追加）
+
+**描述符缓存**：spmv/spmm 的 `musparseSpMatDescr_t` 改由 `math_handle` 池化缓存
+（`MusparseSpMatSpec` 键 = 三 buffer 指针 + shape + nnz + dtype，仿 mufft_plans），
+消除每调用 create/destroy 固定开销。
+
+| 场景 | 优化前 | 优化后 | 收益 |
+|---|---|---|---|
+| spmv 2000² d=0.01 | 0.67 ms | **0.061 ms** | ✅ **11×** |
+| spmm 2000² d=0.01 k=4 | 0.055 ms | 0.063 ms | ✅ 已近 launch 地板 |
+
+- `with_musparse_csr`（math_handle.rs）：句柄 + 描述符懒创建/缓存 + SetStream + 闭包
+- `DeferredDestroy` 加 `MusparseSpMat` 变体，`evict_device` 统一入延迟销毁队列
+- DnVec/DnMat 仍每调用创建（轻量描述符，缓存收益低）
+- 修复 test_handle_cycle_mem_flat 顺序耦合：workspace 桶缓存被前置测试留下、
+  evict 回收导致 after<before，断言改为「不增长」（泄漏仍可抓）

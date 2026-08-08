@@ -22,7 +22,10 @@
 use crate::device::Device;
 use crate::error::{DeviceError, MusapyError, Result};
 use crate::musa_ffi;
-use crate::musa_x_ffi::{self, mufftHandle, mufftType, mublasHandle_t, murandGenerator_t, musparseHandle_t};
+use crate::musa_x_ffi::{
+    self, mufftHandle, mufftType, mublasHandle_t, murandGenerator_t, musparseHandle_t,
+    musparseSpMatDescr_t,
+};
 use crate::stream::Stream;
 use parking_lot::Mutex;
 use std::collections::HashMap;
@@ -54,6 +57,23 @@ pub enum MufftPlanSpec {
     },
 }
 
+/// muSPARSE CSR 稀疏矩阵描述符缓存键（P-A3，2026-08-08）。
+///
+/// 描述符绑定底层 buffer 指针（musparseCreateCsr 持有 device 指针），
+/// 故键为「三个 buffer 指针身份 + shape + nnz + dtype」。指针值在 Buffer
+/// 生命周期内固定（alloc 时一次写入），且 CsrMatrix 的 BufferRef Arc 保活
+/// buffer，故缓存不会读到失效数据。
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub struct MusparseSpMatSpec {
+    pub rows: usize,
+    pub cols: usize,
+    pub nnz: usize,
+    pub data_ptr: usize,
+    pub indices_ptr: usize,
+    pub indptr_ptr: usize,
+    pub dtype_code: i32,
+}
+
 /// 单个 device 的句柄缓存。
 #[derive(Default)]
 struct DeviceHandles {
@@ -62,6 +82,8 @@ struct DeviceHandles {
     murand: Option<murandGenerator_t>,
     musparse: Option<musparseHandle_t>,
     mufft_plans: HashMap<MufftPlanSpec, mufftHandle>,
+    /// musparse CSR 稀疏矩阵描述符池（P-A3：按规格键缓存，跨 op 复用）。
+    musparse_descs: HashMap<MusparseSpMatSpec, musparseSpMatDescr_t>,
 }
 
 // 裸句柄指针跨线程:句柄绑定设备而非创建线程,所有使用点前都会 set_device
@@ -104,6 +126,8 @@ enum DeferredDestroy {
     Murand(murandGenerator_t, Device),
     Mufft(mufftHandle, Device),
     Musparse(musparseHandle_t, Device),
+    /// musparse CSR 稀疏矩阵描述符（P-A3：随 evict 入延迟销毁）。
+    MusparseSpMat(musparseSpMatDescr_t, Device),
 }
 
 // 裸指针条目:Destroy 前会 set_device(同 DeferredEntry 先例)。
@@ -159,7 +183,8 @@ fn reclaim_one_destroy(entry: DeferredDestroy) -> Result<()> {
         DeferredDestroy::Mublas(_, d)
         | DeferredDestroy::Murand(_, d)
         | DeferredDestroy::Mufft(_, d)
-        | DeferredDestroy::Musparse(_, d) => d.clone(),
+        | DeferredDestroy::Musparse(_, d)
+        | DeferredDestroy::MusparseSpMat(_, d) => d.clone(),
     };
     // 句柄绑定设备:必须先 set 再 Destroy(多设备场景下 current device 可能已切换)
     if let Some(id) = device.musa_id() {
@@ -179,6 +204,10 @@ fn reclaim_one_destroy(entry: DeferredDestroy) -> Result<()> {
         DeferredDestroy::Musparse(h, _) => {
             musa_x_ffi::check_musparse(unsafe { musa_x_ffi::musparseDestroy(h) }, "musparseDestroy")
         }
+        DeferredDestroy::MusparseSpMat(d, _) => musa_x_ffi::check_musparse(
+            unsafe { musa_x_ffi::musparseDestroySpMat(d) },
+            "musparseDestroySpMat",
+        ),
     }
 }
 
@@ -374,6 +403,79 @@ pub fn with_mufft_plan<T>(
     f(plan)
 }
 
+/// 取(懒创建)musparse 句柄 + CSR 稀疏矩阵描述符，绑定 stream 后执行闭包（P-A3）。
+///
+/// 描述符按 `MusparseSpMatSpec`（三 buffer 指针 + shape + nnz + dtype）池化
+/// 缓存，跨 spmv/spmm 调用复用——避免每次 create/destroy 的固定开销
+/// （小矩阵 spmv 实测 ~0.7ms 中描述符生命周期主导）。
+/// 闭包收 `(handle, desc)`（SpMV/SpMM 需要 handle 传 stream 语义；
+/// stream 由 `musparseSetStream(handle, ...)` 绑定，描述符不独立绑 stream）。
+/// `data_ptr/indices_ptr/indptr_ptr` 为 device buffer 裸指针；调用方须保证
+/// buffer 在描述符使用期间保活（CsrMatrix 的 BufferRef Arc 已满足）。
+#[allow(clippy::too_many_arguments)]
+pub fn with_musparse_csr<T>(
+    device: &Device,
+    stream: &Stream,
+    spec: &MusparseSpMatSpec,
+    data_ptr: *mut std::ffi::c_void,
+    indices_ptr: *mut std::ffi::c_void,
+    indptr_ptr: *mut std::ffi::c_void,
+    f: impl FnOnce(musparseHandle_t, musparseSpMatDescr_t) -> Result<T>,
+) -> Result<T> {
+    let id = musa_id(device)?;
+    musa_ffi::set_device(id as i32)?;
+    let (handle, desc) = {
+        let mut reg = registry().lock();
+        let dh = reg.handles.entry(device.clone()).or_default();
+        // 懒创建 musparse handle
+        let handle = match dh.musparse {
+            Some(h) => h,
+            None => {
+                let mut h: musparseHandle_t = std::ptr::null_mut();
+                musa_x_ffi::check_musparse(
+                    unsafe { musa_x_ffi::musparseCreate(&mut h) },
+                    "musparseCreate",
+                )?;
+                dh.musparse = Some(h);
+                h
+            }
+        };
+        // 缓存或创建 CSR 描述符
+        let desc = match dh.musparse_descs.get(spec) {
+            Some(d) => *d,
+            None => {
+                let mut d: musparseSpMatDescr_t = std::ptr::null_mut();
+                musa_x_ffi::check_musparse(
+                    unsafe {
+                        musa_x_ffi::musparseCreateCsr(
+                            &mut d,
+                            spec.rows as i64,
+                            spec.cols as i64,
+                            spec.nnz as i64,
+                            indptr_ptr,
+                            indices_ptr,
+                            data_ptr,
+                            musa_x_ffi::MUSPARSE_INDEX_32I,
+                            musa_x_ffi::MUSPARSE_INDEX_32I,
+                            musa_x_ffi::MUSPARSE_INDEX_BASE_ZERO,
+                            spec.dtype_code,
+                        )
+                    },
+                    "musparseCreateCsr",
+                )?;
+                dh.musparse_descs.insert(spec.clone(), d);
+                d
+            }
+        };
+        (handle, desc)
+    };
+    musa_x_ffi::check_musparse(
+        unsafe { musa_x_ffi::musparseSetStream(handle, stream.raw()) },
+        "musparseSetStream",
+    )?;
+    f(handle, desc)
+}
+
 // ============================================================
 // 5. 版本查询(P1.7 冒烟测试)
 // ============================================================
@@ -552,6 +654,9 @@ pub fn evict_device(device: &Device) {
         for (_, plan) in dh.mufft_plans {
             q.push(DeferredDestroy::Mufft(plan, device.clone()));
         }
+        for (_, desc) in dh.musparse_descs {
+            q.push(DeferredDestroy::MusparseSpMat(desc, device.clone()));
+        }
     }
 
     // workspace 是真实设备内存:记账转出 + deferred_free(L3-9)
@@ -657,13 +762,34 @@ mod tests {
         with_musparse_handle(&dev, &stream, |_| Ok(())).unwrap();
         let spec = MufftPlanSpec::TwoD { nx: 4, ny: 4, ftype: musa_x_ffi::MUFFT_Z2Z };
         with_mufft_plan(&dev, &stream, &spec, |_| Ok(())).unwrap();
+        // P-A3：musparse CSR 描述符缓存（mock 下 buffer 为 host 内存，任意非空指针）
+        let p = NonNull::new(0x1000usize as *mut u8).unwrap();
+        let spmat_spec = MusparseSpMatSpec {
+            rows: 2,
+            cols: 2,
+            nnz: 1,
+            data_ptr: 0x1000,
+            indices_ptr: 0x1004,
+            indptr_ptr: 0x1008,
+            dtype_code: 0, // MUSA_R_32F
+        };
+        with_musparse_csr(
+            &dev,
+            &stream,
+            &spmat_spec,
+            p.as_ptr() as *mut std::ffi::c_void,
+            p.as_ptr() as *mut std::ffi::c_void,
+            p.as_ptr() as *mut std::ffi::c_void,
+            |_, _| Ok(()),
+        )
+        .unwrap();
 
         let base = pending_destroy_count();
         evict_device(&dev);
         assert_eq!(
             pending_destroy_count(),
-            base + 4,
-            "4 类句柄应全部入延迟销毁队列"
+            base + 5,
+            "4 类句柄 + musparse 描述符应全部入延迟销毁队列"
         );
         reclaim_destroys().unwrap();
         assert_eq!(pending_destroy_count(), 0);
