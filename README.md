@@ -134,7 +134,7 @@ MUSAPY_MOCK_MUSA=1 maturin develop
 MUSAPY_MOCK_MUSA=1 cargo test
 ```
 
-详细安装指南见 [docs/getting-started.md](docs/getting-started.md)。
+详细安装指南见 [docs/getting-started.md](docs/archive/getting-started.md)。
 
 ---
 
@@ -175,7 +175,7 @@ ms.clamp(a, lo, hi, out=None)   # min(max(x, lo), hi)
 a.astype(dtype)                  # 显式 dtype 转换（接受 'f32' 字符串或 Dtype）
 ```
 
-### v0.3 数学库算子（GPU-only，详见 [operators-reference.md](docs/operators-reference.md)）
+### v0.3 数学库算子（GPU-only，详见 [operators-reference.md](docs/archive/operators-reference.md)）
 
 ```python
 # linalg（muBLAS + muSOLVER）
@@ -245,7 +245,7 @@ ms.memory_summary(device="musa:0")     # allocated / cached / peak / VRAM
 | int64 | float64 | float64 |
 | int32 | int64 | int64（CPU JAX 表）/ int32（GPU 窄优先） |
 
-> 完整规则见 [operators-reference.md](./docs/operators-reference.md) 类型提升一节与 ADR L1-14。
+> 完整规则见 [operators-reference.md](./docs/archive/operators-reference.md) 类型提升一节与 ADR L1-14。
 
 ---
 
@@ -383,11 +383,11 @@ add 16M → 620 GB/s（≈ DRAM 峰值 89%），64M → 655 GB/s
 
 ## 文档
 
-- [快速上手](docs/getting-started.md)
-- [已实现算子参考](docs/operators-reference.md)
+- [快速上手](docs/archive/getting-started.md)
+- [已实现算子参考](docs/archive/operators-reference.md)
 - [架构决策记录（ADR）](docs/ADR-zh.md)
 - [v0.3.0-alpha 发布说明](docs/v0.3-alpha-release-note.md)
-- [SDK 3.1.0 已知限制](docs/sdk-3.1.0-limitations.md)
+- [SDK 3.1.0 已知限制](docs/archive/sdk-3.1.0-limitations.md)
 - [Benchmark 数据报告](repo.md)
 - [v0.2 实现计划](docs/archive/v0.2-alpha-plan-zh.md)
 - [v0.1 发布说明](docs/v0.1-alpha-release-note.md)

@@ -2,7 +2,7 @@
 
 > **日期**:2026-08-06
 > **SDK**:MUSA 3.1.0(`/usr/local/musa` → `/usr/local/musa-3.1.0`,mp_21/mp_22,与 MTT S4000 匹配)
-> **依据**:[v0.3-alpha-plan-zh.md](docs/archive/v0.3-alpha-plan-zh.md) §2 前置条件 + Phase 1 P1.1;
+> **依据**:[v0.3-alpha-plan-zh.md](./archive/v0.3-alpha-plan-zh.md) §2 前置条件 + Phase 1 P1.1;
 > [ADR-003-zh.md](./ADR-003-zh.md) 003-D2(句柄模型)
 
 本清单是 v0.3 全部数学库阶段的符号级前置验证,分两级完成:
@@ -94,5 +94,5 @@ cufft 同构 API:
 - 已知边界(非缺口,设计已吸收):`gesdd` 不存在(svd 用 gesvd);`orgqr` 仅 S/D
   (复数 `cungqr`);`syevd` 仅 S/D(eigh 本就推迟 v0.4);musolver 共享句柄。
 - **行为缺陷/运行期依赖**(getrf 不写 info、gesvd SINGULAR 模式 U 损坏、V 输出即 Vᵀ、
-  libomp 依赖等)汇总见 **[sdk-3.1.0-limitations.md](./sdk-3.1.0-limitations.md)**。
+  libomp 依赖等)汇总见 **[sdk-3.1.0-limitations.md](./archive/sdk-3.1.0-limitations.md)**。
 - 复测命令:`./tools/check_musax_symbols.sh [SDK路径]`(退出码非 0 即有 MISS)。

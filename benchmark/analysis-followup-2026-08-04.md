@@ -72,7 +72,7 @@ f32 vs f64 gather（+50% 流量）耗时几乎不变 → 计算受限而非内�
 ## 语义变更记录（文档已同步）
 
 - gather/scatter GPU 越界：kernel 内检查 + device 错误槽，异常延迟到
-  下一次流同步抛出 `ShapeError`，流不毒化（P1，`operators-reference.md`
+  下一次流同步抛出 `ShapeError`，流不毒化（P1，`../docs/archive/operators-reference.md`
   已新增 Indexing 算子节）。
 - cumsum 容量上限：256³ ≈ 16.7M 元素/轴，超限报错（P0）。
 - 小 axis 归约路径：naive 仅剩 axis_len ≤ 16 与 arg*（P2）。

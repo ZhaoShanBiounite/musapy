@@ -5,10 +5,10 @@
 > **目的**:把散落在 ADR-003（003-D2/D3/D8）、v0.3 计划 §2/§16 风险表、
 > sdk-3.1.0-musax-coverage.md、linalg.rs 注释中的 SDK 限制/怪异行为集中到本文件,
 > 作为实现与部署的单一查询入口。
-> **相关文档**:[sdk-3.1.0-musax-coverage.md](./sdk-3.1.0-musax-coverage.md)（符号覆盖清单）、
-> [ADR-003-zh.md](./ADR-003-zh.md)（003-D2 句柄模型 / 003-D3 错误模型 / 003-D8 探针修正）、
-> [v0.3-alpha-plan-zh.md](docs/archive/v0.3-alpha-plan-zh.md) §16 风险登记表、
-> [benchmark/analysis-2026-08-07.md](../benchmark/analysis-2026-08-07.md)（性能归因与实测数据）。
+> **相关文档**:[sdk-3.1.0-musax-coverage.md](../sdk-3.1.0-musax-coverage.md))（符号覆盖清单）、
+> [ADR-003-zh.md](../ADR-003-zh.md))（003-D2 句柄模型 / 003-D3 错误模型 / 003-D8 探针修正）、
+> [v0.3-alpha-plan-zh.md](./v0.3-alpha-plan-zh.md)) §16 风险登记表、
+> [benchmark/analysis-2026-08-07.md](../../benchmark/analysis-2026-08-07.md))（性能归因与实测数据）。
 
 ---
 

@@ -288,7 +288,7 @@ fft 套件（v0.3 新算子族）GPU-only（`fft_impl` 首段 `require_musa`）�
 
 **影响**：linalg.rs `svd` 的实现约束；文档注明 SDK 3.1.0 SINGULAR 模式不可用
 （升级 SDK 后可评估改回 SINGULAR 以省显存）。全部 SDK 3.1.0 限制/缺陷汇总见
-[sdk-3.1.0-limitations.md](./sdk-3.1.0-limitations.md)。
+[sdk-3.1.0-limitations.md](./archive/sdk-3.1.0-limitations.md)。
 
 ---
 
