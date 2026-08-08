@@ -4,7 +4,7 @@ build-backend = "maturin"
 
 [project]
 name = "musapy"
-version = "0.1.0-alpha"
+version = "0.3.0-alpha"
 description = "Python + Rust + MUSA scientific computing library"
 readme = "README.md"
 license = { text = "MIT" }
