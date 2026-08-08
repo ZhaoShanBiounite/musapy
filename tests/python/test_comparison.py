@@ -20,7 +20,7 @@ class TestComparison:
         a = ms.array([1.0, 2.0, 3.0], device="cpu")
         b = ms.array([1.0, 5.0, 3.0], device="cpu")
         c = ms.eq(a, b)
-        assert c.dtype == ms.bool_
+        assert c.dtype == 'b1'
         assert c.tolist() == [True, False, True]
 
     def test_ne(self):
@@ -51,8 +51,8 @@ class TestComparison:
     def test_output_dtype_bool(self):
         a = ms.array([1.0, 2.0], device="cpu")
         b = ms.array([1.0, 3.0], device="cpu")
-        assert ms.eq(a, b).dtype == ms.bool_
-        assert ms.lt(a, b).dtype == ms.bool_
+        assert ms.eq(a, b).dtype == 'b1'
+        assert ms.lt(a, b).dtype == 'b1'
 
     def test_broadcast(self):
         """(3,1) vs (4,) → (3,4) bool"""
@@ -66,10 +66,10 @@ class TestComparison:
 
     def test_type_promotion(self):
         """int64 vs float64 → promote then compare"""
-        a = ms.array([1, 2, 3], dtype=ms.int64, device="cpu")
-        b = ms.array([1.0, 2.5, 3.0], dtype=ms.float64, device="cpu")
+        a = ms.array([1, 2, 3], dtype='i64', device="cpu")
+        b = ms.array([1.0, 2.5, 3.0], dtype='f64', device="cpu")
         c = ms.eq(a, b)
-        assert c.dtype == ms.bool_
+        assert c.dtype == 'b1'
         assert c.tolist() == [True, False, True]
 
     def test_2d(self):
@@ -82,7 +82,7 @@ class TestComparison:
     def test_out_param(self):
         a = ms.array([1.0, 2.0, 3.0], device="cpu")
         b = ms.array([3.0, 2.0, 1.0], device="cpu")
-        out = ms.array([False, False, False], dtype=ms.bool_, device="cpu")
+        out = ms.array([False, False, False], dtype='b1', device="cpu")
         result = ms.gt(a, b, out=out)
         assert result.tolist() == [False, False, True]
 
@@ -169,7 +169,7 @@ class TestComparisonMusa:
         b = ms.array([3.0, 2.0, 1.0])
         assert (a > b).tolist() == [False, False, True]
         assert (a == b).tolist() == [False, True, False]
-        assert (a >= b).dtype == ms.bool_
+        assert (a >= b).dtype == 'b1'
 
     def test_broadcast_musa(self):
         ms.set_default_device("musa:0")
@@ -186,4 +186,4 @@ class TestComparisonMusa:
         b = ms.array([3.0, 2.0, 1.0])
         assert (a > b).tolist() == [False, False, True]
         assert (a == b).tolist() == [False, True, False]
-        assert (a >= b).dtype == ms.bool_
+        assert (a >= b).dtype == 'b1'

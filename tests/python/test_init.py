@@ -29,7 +29,7 @@ class TestZeros:
     def test_zeros_1d(self):
         a = ms.zeros(5)
         assert a.shape == (5,)
-        assert a.dtype == ms.float32
+        assert a.dtype == 'f32'
         assert a.tolist() == [0.0] * 5
 
     def test_zeros_2d(self):
@@ -38,18 +38,18 @@ class TestZeros:
         assert a.tolist() == [[0.0, 0.0, 0.0], [0.0, 0.0, 0.0]]
 
     def test_zeros_dtype_i64(self):
-        a = ms.zeros(4, dtype=ms.int64)
-        assert a.dtype == ms.int64
+        a = ms.zeros(4, dtype='i64')
+        assert a.dtype == 'i64'
         assert a.tolist() == [0, 0, 0, 0]
 
     def test_zeros_dtype_f64(self):
-        a = ms.zeros(3, dtype=ms.float64)
-        assert a.dtype == ms.float64
+        a = ms.zeros(3, dtype='f64')
+        assert a.dtype == 'f64'
         assert a.tolist() == [0.0, 0.0, 0.0]
 
     def test_zeros_dtype_u8(self):
-        a = ms.zeros(3, dtype=ms.uint8)
-        assert a.dtype == ms.uint8
+        a = ms.zeros(3, dtype='u8')
+        assert a.dtype == 'u8'
         assert a.tolist() == [0, 0, 0]
 
     def test_zeros_empty(self):
@@ -60,7 +60,7 @@ class TestZeros:
     def test_zeros_default_dtype_is_float32(self):
         """L0-7 级 5 兜底：无 dtype 参数时默认 float32。"""
         a = ms.zeros((2, 2))
-        assert a.dtype == ms.float32
+        assert a.dtype == 'f32'
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -79,13 +79,13 @@ class TestOnes:
         assert a.tolist() == [[1.0, 1.0], [1.0, 1.0]]
 
     def test_ones_dtype_f64(self):
-        a = ms.ones(3, dtype=ms.float64)
-        assert a.dtype == ms.float64
+        a = ms.ones(3, dtype='f64')
+        assert a.dtype == 'f64'
         assert a.tolist() == [1.0, 1.0, 1.0]
 
     def test_ones_dtype_i32(self):
-        a = ms.ones(3, dtype=ms.int32)
-        assert a.dtype == ms.int32
+        a = ms.ones(3, dtype='i32')
+        assert a.dtype == 'i32'
         assert a.tolist() == [1, 1, 1]
 
 
@@ -104,8 +104,8 @@ class TestFull:
                 assert abs(v - 3.14) < 1e-5
 
     def test_full_int(self):
-        a = ms.full(5, 42, dtype=ms.int64)
-        assert a.dtype == ms.int64
+        a = ms.full(5, 42, dtype='i64')
+        assert a.dtype == 'i64'
         assert a.tolist() == [42, 42, 42, 42, 42]
 
     def test_full_negative(self):
@@ -127,7 +127,7 @@ class TestEye:
     def test_eye_3x3(self):
         a = ms.eye(3)
         assert a.shape == (3, 3)
-        assert a.dtype == ms.float32
+        assert a.dtype == 'f32'
         assert a.tolist() == [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]]
 
     def test_eye_rectangular(self):
@@ -156,8 +156,8 @@ class TestEye:
         assert a.tolist() == [[0.0, 0.0, 0.0], [0.0, 0.0, 0.0], [0.0, 0.0, 0.0]]
 
     def test_eye_dtype_i64(self):
-        a = ms.eye(2, dtype=ms.int64)
-        assert a.dtype == ms.int64
+        a = ms.eye(2, dtype='i64')
+        assert a.dtype == 'i64'
         assert a.tolist() == [[1, 0], [0, 1]]
 
     def test_eye_1x1(self):
@@ -175,25 +175,25 @@ class TestArange:
     def test_arange_single_arg_int(self):
         """arange(5) → [0,1,2,3,4]，dtype=int64。"""
         a = ms.arange(5)
-        assert a.dtype == ms.int64
+        assert a.dtype == 'i64'
         assert a.tolist() == [0, 1, 2, 3, 4]
 
     def test_arange_single_arg_float(self):
         """arange(5.0) → float64。"""
         a = ms.arange(5.0)
-        assert a.dtype == ms.float64
+        assert a.dtype == 'f64'
         assert a.tolist() == [0.0, 1.0, 2.0, 3.0, 4.0]
 
     def test_arange_two_args(self):
         """arange(2, 7) → [2,3,4,5,6]。"""
         a = ms.arange(2, 7)
-        assert a.dtype == ms.int64
+        assert a.dtype == 'i64'
         assert a.tolist() == [2, 3, 4, 5, 6]
 
     def test_arange_three_args_float(self):
         """arange(0, 1, 0.25) → float64。"""
         a = ms.arange(0, 1, 0.25)
-        assert a.dtype == ms.float64
+        assert a.dtype == 'f64'
         vals = a.tolist()
         assert len(vals) == 4
         assert abs(vals[0] - 0.0) < 1e-10
@@ -210,8 +210,8 @@ class TestArange:
         assert a.size == 0
 
     def test_arange_explicit_dtype(self):
-        a = ms.arange(0, 4, 1, dtype=ms.float32)
-        assert a.dtype == ms.float32
+        a = ms.arange(0, 4, 1, dtype='f32')
+        assert a.dtype == 'f32'
         assert a.tolist() == [0.0, 1.0, 2.0, 3.0]
 
     def test_arange_step_zero_errors(self):
@@ -221,7 +221,7 @@ class TestArange:
     def test_arange_float_step_int_bounds(self):
         """浮点 step → float64 推断。"""
         a = ms.arange(0, 2, 0.5)
-        assert a.dtype == ms.float64
+        assert a.dtype == 'f64'
         assert len(a.tolist()) == 4
 
 
@@ -234,7 +234,7 @@ class TestLinspace:
 
     def test_linspace_basic(self):
         a = ms.linspace(0.0, 1.0, 5)
-        assert a.dtype == ms.float64
+        assert a.dtype == 'f64'
         vals = a.tolist()
         assert len(vals) == 5
         assert abs(vals[0] - 0.0) < 1e-10
@@ -259,11 +259,11 @@ class TestLinspace:
     def test_linspace_default_dtype_float64(self):
         """NumPy 行为：linspace 默认 float64。"""
         a = ms.linspace(0, 1, 3)
-        assert a.dtype == ms.float64
+        assert a.dtype == 'f64'
 
     def test_linspace_explicit_f32(self):
-        a = ms.linspace(0.0, 1.0, 3, dtype=ms.float32)
-        assert a.dtype == ms.float32
+        a = ms.linspace(0.0, 1.0, 3, dtype='f32')
+        assert a.dtype == 'f32'
         vals = a.tolist()
         assert abs(vals[1] - 0.5) < 1e-6
 
@@ -290,39 +290,39 @@ class TestZerosLike:
     """zeros_like 继承输入属性。"""
 
     def test_zeros_like_shape_dtype(self):
-        a = ms.ones((2, 3), dtype=ms.float64)
+        a = ms.ones((2, 3), dtype='f64')
         z = ms.zeros_like(a)
         assert z.shape == (2, 3)
-        assert z.dtype == ms.float64
+        assert z.dtype == 'f64'
         assert z.tolist() == [[0.0, 0.0, 0.0], [0.0, 0.0, 0.0]]
 
     def test_zeros_like_int(self):
-        a = ms.ones(4, dtype=ms.int64)
+        a = ms.ones(4, dtype='i64')
         z = ms.zeros_like(a)
-        assert z.dtype == ms.int64
+        assert z.dtype == 'i64'
         assert z.tolist() == [0, 0, 0, 0]
 
     def test_zeros_like_i8(self):
         """ADR L3-18: 继承输入 dtype，忽略全局默认。"""
-        a = ms.ones(3, dtype=ms.int8)
+        a = ms.ones(3, dtype='i8')
         z = ms.zeros_like(a)
-        assert z.dtype == ms.int8
+        assert z.dtype == 'i8'
 
 
 class TestOnesLike:
     """ones_like 继承输入属性。"""
 
     def test_ones_like_shape_dtype(self):
-        a = ms.zeros((3, 2), dtype=ms.float32)
+        a = ms.zeros((3, 2), dtype='f32')
         o = ms.ones_like(a)
         assert o.shape == (3, 2)
-        assert o.dtype == ms.float32
+        assert o.dtype == 'f32'
         assert o.tolist() == [[1.0, 1.0], [1.0, 1.0], [1.0, 1.0]]
 
     def test_ones_like_int(self):
-        a = ms.zeros(5, dtype=ms.int32)
+        a = ms.zeros(5, dtype='i32')
         o = ms.ones_like(a)
-        assert o.dtype == ms.int32
+        assert o.dtype == 'i32'
         assert o.tolist() == [1, 1, 1, 1, 1]
 
 
@@ -346,15 +346,15 @@ class TestCreationResolution:
 
     def test_dtype_context(self):
         """with ms.dtype() context 生效。"""
-        with ms.dtype(ms.float64):
+        with ms.dtype('f64'):
             a = ms.zeros(3)
-            assert a.dtype == ms.float64
+            assert a.dtype == 'f64'
 
     def test_dtype_arg_overrides_context(self):
         """显式 dtype= 优先于 context。"""
-        with ms.dtype(ms.float64):
-            a = ms.zeros(3, dtype=ms.float32)
-            assert a.dtype == ms.float32
+        with ms.dtype('f64'):
+            a = ms.zeros(3, dtype='f32')
+            assert a.dtype == 'f32'
 
     def test_no_device_configured_errors(self):
         """无默认 device 时创建应报错（L0-9）。"""
@@ -418,13 +418,13 @@ class TestAcceptance:
     """Phase 5 验收标准。"""
 
     def test_zeros_default_float32(self):
-        assert ms.zeros((2, 3)).dtype == ms.float32
+        assert ms.zeros((2, 3)).dtype == 'f32'
 
     def test_arange_int_inference(self):
-        assert ms.arange(5).dtype == ms.int64
+        assert ms.arange(5).dtype == 'i64'
 
     def test_arange_float_inference(self):
-        assert ms.arange(5.0).dtype == ms.float64
+        assert ms.arange(5.0).dtype == 'f64'
 
     def test_linspace_values(self):
         assert ms.linspace(0.0, 1.0, 5).tolist() == [
@@ -439,4 +439,4 @@ class TestAcceptance:
         assert ms.eye(3).tolist()[0] == [1.0, 0.0, 0.0]
 
     def test_ones_like_inherits_dtype(self):
-        assert ms.ones_like(ms.zeros((2,), dtype=ms.int8)).dtype == ms.int8
+        assert ms.ones_like(ms.zeros((2,), dtype='i8')).dtype == 'i8'

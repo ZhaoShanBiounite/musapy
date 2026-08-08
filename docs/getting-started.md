@@ -63,7 +63,7 @@ ms.set_default_device("musa:0")  # 有 GPU 时
 
 # ── 创建（init 套件）──
 a = ms.array([[1.0], [2.0], [3.0]])                    # (3,1) float32
-b = ms.array([10, 20, 30, 40], dtype=ms.int64)         # (4,) int64
+b = ms.array([10, 20, 30, 40], dtype='i64')            # (4,) int64（v0.3 字符串 dtype 语法）
 z = ms.zeros((2, 3))                                   # float32（默认 dtype）
 r = ms.arange(5)                                       # int64（NumPy 推断）
 lin = ms.linspace(0.0, 1.0, 5)                         # float64
@@ -72,18 +72,18 @@ eye = ms.eye(3)
 # ── 广播 + 类型提升 ──
 c = a + b                # 广播 (3,1)+(4,) → (3,4)
 assert c.shape == (3, 4)
-assert c.dtype == ms.float32   # i64 + f32 → f32（整数不因位宽升级浮点）
+assert c.dtype == 'f32'   # i64 + f32 → f32（整数不因位宽升级浮点）
 
 # ── elementwise ──
 # 二元/一元操作数必须是 Array（标量请用 ms.array([x]) 包一层）；
 # clamp 的 lo/hi 是 Python 标量
 d = ms.sin(c) * ms.exp(ms.array(0.1))
 f = ms.clamp(d, 0.0, 1.0)
-g = c.astype(ms.float32)   # 显式转换
+g = c.astype('f32')   # 显式转换（astype 也接受字符串）
 
 # ── comparison（输出 bool 数组）──
 mask = c > ms.array(15.0)            # (3,4) bool
-assert mask.dtype == ms.bool_
+assert mask.dtype == 'b1'
 
 # ── reduction（axis/keepdims/argmax/cumsum）──
 s = ms.sum(c)                        # 0-dim 标量，全 reduce
@@ -98,7 +98,7 @@ t = ms.transpose(c)                  # view (4,3)，零拷贝共享 buffer
 sl = c[0:2, ::2]                     # view (2,2)
 fl = ms.flip(c, axis=1)              # view
 # gather/scatter 的 indices 必须是 int64 1D（整数列表请显式指定 dtype）
-gg = ms.gather(c, ms.array([0, 2], dtype=ms.int64), axis=1)  # copy (3,2)
+gg = ms.gather(c, ms.array([0, 2], dtype='i64'), axis=1)  # copy (3,2)
 ct = ms.contiguous(t)                # 物化为连续布局（copy）
 
 # ── 同步 + 回读 ──
@@ -259,12 +259,28 @@ a.name             # None（可选命名）
 # 方法
 a.set_name("w")    # 命名（OpContext 归因用）
 a.clear_name()
-a.astype(ms.float64)
+a.astype('f64')    # 类型转换（接受字符串或 Dtype）
 a.tolist()         # 同步 + 回读为嵌套列表（GPU 越界错误在此抛出）
 a.item()           # 0-dim / 单元素 → Python 标量
 ```
 
-### 9. Dtype 常量
+### 9. Dtype
+
+v0.3 主推**字符串 dtype 语法**（短别名）：
+
+```python
+ms.array([1.0], dtype='f32')     # float32（等价：'float32'/'single'）
+ms.zeros(4, dtype='i64')         # int64（等价：'int64'）
+ms.array([1 + 2j], dtype='c64')  # complex64（等价：'complex64'）
+with ms.dtype('f64'):            # dtype context 也接受字符串
+    ...
+ms.set_default_dtype('f64')      # 全局默认 dtype 同理
+a.astype('f32')
+```
+
+所有 `dtype` 参数均接受三种形式：字符串短别名（`'f32'`/`'i64'`/`'c64'`/`'b1'`/…）、字符串全名（`'float32'`/`'int64'`/…，大小写不敏感）、Dtype 实例（`ms.float32` 常量或 `Dtype("f32")`，向后兼容）。
+
+常量仍可用（`a.dtype == ms.float32` 与 `a.dtype == 'f32'` 等价，`a.dtype` 可与字符串比较）：
 
 ```python
 ms.bool_            # bool（注意不是 ms.bool）

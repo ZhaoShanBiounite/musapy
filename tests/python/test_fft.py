@@ -46,35 +46,35 @@ class TestFftGpu:
     # ── fft / ifft ──
 
     def test_fft_c128(self):
-        x = ms.array([1.0, 2.0, 3.0, 4.0], dtype=ms.complex128)
+        x = ms.array([1.0, 2.0, 3.0, 4.0], dtype='c128')
         y = ms.fft.fft(x)
-        assert y.dtype == ms.complex128
+        assert y.dtype == 'c128'
         assert np.allclose(_as_np(y), np.fft.fft([1, 2, 3, 4]), atol=1e-10)
 
     def test_fft_c64(self):
-        x = ms.array([1.0 + 1j, 2.0 - 1j, 3.0, 4.0], dtype=ms.complex64)
+        x = ms.array([1.0 + 1j, 2.0 - 1j, 3.0, 4.0], dtype='c64')
         y = ms.fft.fft(x)
-        assert y.dtype == ms.complex64
+        assert y.dtype == 'c64'
         assert np.allclose(_as_np(y), np.fft.fft(np.array(x.tolist(), dtype=complex)), atol=1e-5)
 
     def test_fft_real_f64(self):
-        y = ms.fft.fft(ms.array([1.0, 2.0, 3.0, 4.0], dtype=ms.float64))
-        assert y.dtype == ms.complex128
+        y = ms.fft.fft(ms.array([1.0, 2.0, 3.0, 4.0], dtype='f64'))
+        assert y.dtype == 'c128'
         assert np.allclose(_as_np(y), np.fft.fft([1, 2, 3, 4]), atol=1e-10)
 
     def test_fft_real_f32(self):
-        y = ms.fft.fft(ms.array([1.0, 2.0, 3.0, 4.0], dtype=ms.float32))
-        assert y.dtype == ms.complex64
+        y = ms.fft.fft(ms.array([1.0, 2.0, 3.0, 4.0], dtype='f32'))
+        assert y.dtype == 'c64'
         assert np.allclose(
             _as_np(y), np.fft.fft(np.array([1, 2, 3, 4], dtype=np.float32)), atol=1e-5
         )
 
     def test_ifft_roundtrip(self):
-        x = ms.array([1.0, 2.0, 3.0, 4.0], dtype=ms.complex128)
+        x = ms.array([1.0, 2.0, 3.0, 4.0], dtype='c128')
         assert np.allclose(_as_np(ms.fft.ifft(ms.fft.fft(x))), [1, 2, 3, 4], atol=1e-10)
 
     def test_fft_2d_rows(self):
-        m = ms.array([[1.0 + 0j, 2.0, 3.0], [4.0, 5.0, 6.0]], dtype=ms.complex128)
+        m = ms.array([[1.0 + 0j, 2.0, 3.0], [4.0, 5.0, 6.0]], dtype='c128')
         y = ms.fft.fft(m)
         assert y.shape == (2, 3)
         assert np.allclose(
@@ -82,7 +82,7 @@ class TestFftGpu:
         )
 
     def test_norm_values(self):
-        x = ms.array([1.0, 2.0, 3.0, 4.0], dtype=ms.complex128)
+        x = ms.array([1.0, 2.0, 3.0, 4.0], dtype='c128')
         for norm in ("backward", "ortho", "forward"):
             y = ms.fft.fft(x, norm=norm)
             assert np.allclose(
@@ -94,7 +94,7 @@ class TestFftGpu:
             ), norm
 
     def test_n_pad_and_truncate(self):
-        x = ms.array([1.0, 2.0, 3.0, 4.0], dtype=ms.complex128)
+        x = ms.array([1.0, 2.0, 3.0, 4.0], dtype='c128')
         # 补零
         y = ms.fft.fft(x, n=8)
         assert y.shape == (8,)
@@ -107,20 +107,20 @@ class TestFftGpu:
     # ── rfft ──
 
     def test_rfft_shape_and_values(self):
-        y = ms.fft.rfft(ms.array([1.0, 2.0, 3.0, 4.0, 5.0, 6.0], dtype=ms.float64))
+        y = ms.fft.rfft(ms.array([1.0, 2.0, 3.0, 4.0, 5.0, 6.0], dtype='f64'))
         assert y.shape == (4,), "N//2+1 = 4"
-        assert y.dtype == ms.complex128
+        assert y.dtype == 'c128'
         assert np.allclose(_as_np(y), np.fft.rfft([1.0, 2, 3, 4, 5, 6]), atol=1e-10)
 
     def test_rfft_f32(self):
-        y = ms.fft.rfft(ms.array([1.0, 2.0, 3.0, 4.0, 5.0, 6.0], dtype=ms.float32))
-        assert y.dtype == ms.complex64
+        y = ms.fft.rfft(ms.array([1.0, 2.0, 3.0, 4.0, 5.0, 6.0], dtype='f32'))
+        assert y.dtype == 'c64'
         assert np.allclose(
             _as_np(y), np.fft.rfft(np.array([1.0, 2, 3, 4, 5, 6], dtype=np.float32)), atol=1e-5
         )
 
     def test_rfft_2d(self):
-        m = ms.array([[1.0, 2, 3, 4], [5, 6, 7, 8]], dtype=ms.float64)
+        m = ms.array([[1.0, 2, 3, 4], [5, 6, 7, 8]], dtype='f64')
         y = ms.fft.rfft(m, norm="ortho")
         assert y.shape == (2, 3)
         assert np.allclose(
@@ -128,24 +128,24 @@ class TestFftGpu:
         )
 
     def test_rfft_n_pad(self):
-        y = ms.fft.rfft(ms.array([1.0, 2, 3, 4], dtype=ms.float64), n=8)
+        y = ms.fft.rfft(ms.array([1.0, 2, 3, 4], dtype='f64'), n=8)
         assert y.shape == (5,), "8//2+1 = 5"
         assert np.allclose(_as_np(y), np.fft.rfft([1.0, 2, 3, 4], n=8), atol=1e-10)
 
     # ── 错误路径 ──
 
     def test_invalid_norm_rejected(self):
-        x = ms.array([1.0, 2.0, 3.0, 4.0], dtype=ms.complex128)
+        x = ms.array([1.0, 2.0, 3.0, 4.0], dtype='c128')
         with pytest.raises(ms.ShapeError):
             ms.fft.fft(x, norm="bogus")
 
     def test_axis_not_last_rejected(self):
-        m = ms.array([[1.0, 2.0], [3.0, 4.0]], dtype=ms.complex128)
+        m = ms.array([[1.0, 2.0], [3.0, 4.0]], dtype='c128')
         with pytest.raises(ms.ShapeError):
             ms.fft.fft(m, axis=0)
 
     def test_rfft_complex_rejected(self):
-        x = ms.array([1.0, 2.0, 3.0, 4.0], dtype=ms.complex128)
+        x = ms.array([1.0, 2.0, 3.0, 4.0], dtype='c128')
         with pytest.raises(ms.DtypeError):
             ms.fft.rfft(x)
 
@@ -157,8 +157,8 @@ class TestFftGpu:
     # ── out= ──
 
     def test_out(self):
-        x = ms.array([1.0, 2.0, 3.0, 4.0], dtype=ms.complex128)
-        out = ms.array([0.0 + 0j] * 4, dtype=ms.complex128)
+        x = ms.array([1.0, 2.0, 3.0, 4.0], dtype='c128')
+        out = ms.array([0.0 + 0j] * 4, dtype='c128')
         y = ms.fft.fft(x, out=out)
         assert np.allclose(_as_np(y), np.fft.fft([1, 2, 3, 4]), atol=1e-10)
         # out 被就地写入
@@ -169,7 +169,7 @@ class TestFftCpuRejected:
     """v0.3 GPU-only（003-D4）：CPU 设备输入必须拒绝（DeviceError）。"""
 
     def test_fft_cpu_rejected(self):
-        x = ms.array([1.0, 2.0, 3.0, 4.0], dtype=ms.complex128, device="cpu")
+        x = ms.array([1.0, 2.0, 3.0, 4.0], dtype='c128', device="cpu")
         with pytest.raises(ms.DeviceError):
             ms.fft.fft(x)
 

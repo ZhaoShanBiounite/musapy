@@ -129,11 +129,11 @@ class TestBroadcast:
 
     def test_broadcast_f64(self):
         """float64 广播"""
-        a = ms.array([[1.0], [2.0]], dtype=ms.float64, device="cpu")
-        b = ms.array([0.1, 0.2, 0.3], dtype=ms.float64, device="cpu")
+        a = ms.array([[1.0], [2.0]], dtype='f64', device="cpu")
+        b = ms.array([0.1, 0.2, 0.3], dtype='f64', device="cpu")
         c = ms.add(a, b)
         assert c.shape == (2, 3)
-        assert c.dtype == ms.float64
+        assert c.dtype == 'f64'
         row0 = c.tolist()[0]
         assert abs(row0[0] - 1.1) < 1e-10
         assert abs(row0[1] - 1.2) < 1e-10
@@ -304,10 +304,10 @@ class TestBinaryOps:
         assert result.tolist() == [4.0, 10.0, 18.0]
 
     def test_binary_f64(self):
-        a = ms.array([1.0, 2.0], dtype=ms.float64, device="cpu")
-        b = ms.array([0.1, 0.2], dtype=ms.float64, device="cpu")
+        a = ms.array([1.0, 2.0], dtype='f64', device="cpu")
+        b = ms.array([0.1, 0.2], dtype='f64', device="cpu")
         c = ms.add(a, b)
-        assert c.dtype == ms.float64
+        assert c.dtype == 'f64'
         assert abs(c.tolist()[0] - 1.1) < 1e-10
 
 
@@ -373,9 +373,9 @@ class TestUnaryOps:
         assert abs(result.tolist()[1] - math.log(4.0)) < 1e-5
 
     def test_unary_f64(self):
-        a = ms.array([0.0, 1.0], dtype=ms.float64, device="cpu")
+        a = ms.array([0.0, 1.0], dtype='f64', device="cpu")
         c = ms.exp(a)
-        assert c.dtype == ms.float64
+        assert c.dtype == 'f64'
         assert abs(c.tolist()[0] - 1.0) < 1e-12
 
 
@@ -406,9 +406,9 @@ class TestClamp:
         assert c.tolist() == [[0.0, 5.0], [0.5, 10.0]]
 
     def test_clamp_f64(self):
-        a = ms.array([-1.0, 0.5, 2.0], dtype=ms.float64, device="cpu")
+        a = ms.array([-1.0, 0.5, 2.0], dtype='f64', device="cpu")
         c = ms.clamp(a, 0.0, 1.0)
-        assert c.dtype == ms.float64
+        assert c.dtype == 'f64'
         assert c.tolist() == [0.0, 0.5, 1.0]
 
 
@@ -417,52 +417,52 @@ class TestTypePromotion:
 
     def test_i64_plus_f64(self):
         """int64 + float64 → float64"""
-        a = ms.array([1, 2, 3], dtype=ms.int64, device="cpu")
-        b = ms.array([0.5, 0.5, 0.5], dtype=ms.float64, device="cpu")
+        a = ms.array([1, 2, 3], dtype='i64', device="cpu")
+        b = ms.array([0.5, 0.5, 0.5], dtype='f64', device="cpu")
         c = ms.add(a, b)
-        assert c.dtype == ms.float64
+        assert c.dtype == 'f64'
         assert c.tolist() == [1.5, 2.5, 3.5]
 
     def test_i32_plus_f32(self):
         """int32 + float32 → float32"""
-        a = ms.array([1, 2, 3], dtype=ms.int32, device="cpu")
-        b = ms.array([0.5, 0.5, 0.5], dtype=ms.float32, device="cpu")
+        a = ms.array([1, 2, 3], dtype='i32', device="cpu")
+        b = ms.array([0.5, 0.5, 0.5], dtype='f32', device="cpu")
         c = ms.add(a, b)
-        assert c.dtype == ms.float32
+        assert c.dtype == 'f32'
         result = c.tolist()
         assert abs(result[0] - 1.5) < 1e-6
 
     def test_i64_plus_f32(self):
         """int64 + float32 → float32（JAX 语义：整数不因位宽升级浮点，
         对齐 v0.2 计划 §1.3 与 ADR L1-14 扩展表；2026-08 修正自 f64）"""
-        a = ms.array([1, 2, 3], dtype=ms.int64, device="cpu")
-        b = ms.array([0.5, 0.5, 0.5], dtype=ms.float32, device="cpu")
+        a = ms.array([1, 2, 3], dtype='i64', device="cpu")
+        b = ms.array([0.5, 0.5, 0.5], dtype='f32', device="cpu")
         c = ms.add(a, b)
-        assert c.dtype == ms.float32
+        assert c.dtype == 'f32'
         result = c.tolist()
         assert abs(result[0] - 1.5) < 1e-6
 
     def test_f32_plus_f64(self):
         """float32 + float64 → float64"""
-        a = ms.array([1.0, 2.0], dtype=ms.float32, device="cpu")
-        b = ms.array([0.1, 0.2], dtype=ms.float64, device="cpu")
+        a = ms.array([1.0, 2.0], dtype='f32', device="cpu")
+        b = ms.array([0.1, 0.2], dtype='f64', device="cpu")
         c = ms.add(a, b)
-        assert c.dtype == ms.float64
+        assert c.dtype == 'f64'
 
     def test_same_dtype_no_promotion(self):
         """同 dtype 不触发 cast"""
-        a = ms.array([1.0, 2.0], dtype=ms.float32, device="cpu")
-        b = ms.array([3.0, 4.0], dtype=ms.float32, device="cpu")
+        a = ms.array([1.0, 2.0], dtype='f32', device="cpu")
+        b = ms.array([3.0, 4.0], dtype='f32', device="cpu")
         c = ms.add(a, b)
-        assert c.dtype == ms.float32
+        assert c.dtype == 'f32'
         assert c.tolist() == [4.0, 6.0]
 
     def test_promotion_sub(self):
         """sub 也支持类型提升"""
-        a = ms.array([10, 20], dtype=ms.int64, device="cpu")
-        b = ms.array([0.5, 1.5], dtype=ms.float64, device="cpu")
+        a = ms.array([10, 20], dtype='i64', device="cpu")
+        b = ms.array([0.5, 1.5], dtype='f64', device="cpu")
         c = ms.sub(a, b)
-        assert c.dtype == ms.float64
+        assert c.dtype == 'f64'
         assert c.tolist() == [9.5, 18.5]
 
 
@@ -470,40 +470,40 @@ class TestAstype:
     """astype 测试（CPU）"""
 
     def test_f32_to_f64(self):
-        a = ms.array([1.0, 2.0, 3.0], dtype=ms.float32, device="cpu")
-        b = a.astype(ms.float64)
-        assert b.dtype == ms.float64
+        a = ms.array([1.0, 2.0, 3.0], dtype='f32', device="cpu")
+        b = a.astype('f64')
+        assert b.dtype == 'f64'
         assert b.tolist() == [1.0, 2.0, 3.0]
 
     def test_f64_to_f32(self):
-        a = ms.array([1.5, 2.5], dtype=ms.float64, device="cpu")
-        b = a.astype(ms.float32)
-        assert b.dtype == ms.float32
+        a = ms.array([1.5, 2.5], dtype='f64', device="cpu")
+        b = a.astype('f32')
+        assert b.dtype == 'f32'
         assert abs(b.tolist()[0] - 1.5) < 1e-6
 
     def test_i64_to_f32(self):
-        a = ms.array([1, 2, 3], dtype=ms.int64, device="cpu")
-        b = a.astype(ms.float32)
-        assert b.dtype == ms.float32
+        a = ms.array([1, 2, 3], dtype='i64', device="cpu")
+        b = a.astype('f32')
+        assert b.dtype == 'f32'
         assert b.tolist() == [1.0, 2.0, 3.0]
 
     def test_i32_to_f64(self):
-        a = ms.array([10, 20], dtype=ms.int32, device="cpu")
-        b = a.astype(ms.float64)
-        assert b.dtype == ms.float64
+        a = ms.array([10, 20], dtype='i32', device="cpu")
+        b = a.astype('f64')
+        assert b.dtype == 'f64'
         assert b.tolist() == [10.0, 20.0]
 
     def test_astype_preserves_shape(self):
-        a = ms.array([[1.0, 2.0], [3.0, 4.0]], dtype=ms.float32, device="cpu")
-        b = a.astype(ms.float64)
+        a = ms.array([[1.0, 2.0], [3.0, 4.0]], dtype='f32', device="cpu")
+        b = a.astype('f64')
         assert b.shape == (2, 2)
         assert b.tolist() == [[1.0, 2.0], [3.0, 4.0]]
 
     def test_astype_same_dtype_copy(self):
         """同 dtype astype 返回深拷贝"""
-        a = ms.array([1.0, 2.0], dtype=ms.float32, device="cpu")
-        b = a.astype(ms.float32)
-        assert b.dtype == ms.float32
+        a = ms.array([1.0, 2.0], dtype='f32', device="cpu")
+        b = a.astype('f32')
+        assert b.dtype == 'f32'
         assert b.tolist() == [1.0, 2.0]
 
 
@@ -629,17 +629,17 @@ class TestElementwiseMusa:
 
     def test_type_promotion_musa(self):
         ms.set_default_device("musa:0")
-        a = ms.array([1, 2, 3], dtype=ms.int64)
-        b = ms.array([0.5, 0.5, 0.5], dtype=ms.float64)
+        a = ms.array([1, 2, 3], dtype='i64')
+        b = ms.array([0.5, 0.5, 0.5], dtype='f64')
         c = ms.add(a, b)
-        assert c.dtype == ms.float64
+        assert c.dtype == 'f64'
         assert c.tolist() == [1.5, 2.5, 3.5]
 
     def test_astype_musa(self):
         ms.set_default_device("musa:0")
-        a = ms.array([1.0, 2.0, 3.0], dtype=ms.float32)
-        b = a.astype(ms.float64)
-        assert b.dtype == ms.float64
+        a = ms.array([1.0, 2.0, 3.0], dtype='f32')
+        b = a.astype('f64')
+        assert b.dtype == 'f64'
         assert b.tolist() == [1.0, 2.0, 3.0]
 
     def test_phase2_acceptance(self):
@@ -658,8 +658,8 @@ class TestElementwiseMusa:
         e = ms.clamp(ms.array([-1.0, 0.5, 2.0]), 0.0, 1.0)
         assert e.tolist() == [0.0, 0.5, 1.0]
         # promotion
-        f = ms.mul(ms.array([2, 3], dtype=ms.int64), ms.array([1.5, 2.5], dtype=ms.float64))
-        assert f.dtype == ms.float64
+        f = ms.mul(ms.array([2, 3], dtype='i64'), ms.array([1.5, 2.5], dtype='f64'))
+        assert f.dtype == 'f64'
         assert f.tolist() == [3.0, 7.5]
 
     # ── P3: float4 向量化路径 ─────────────────────────────────

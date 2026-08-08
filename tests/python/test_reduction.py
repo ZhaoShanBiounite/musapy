@@ -120,43 +120,43 @@ class TestReductionDtype:
 
     def test_sum_int_accumulates_i64(self):
         """整数输入 sum → int64 输出。"""
-        a = ms.array([1, 2, 3], dtype=ms.int64)
+        a = ms.array([1, 2, 3], dtype='i64')
         result = ms.sum(a)
-        assert result.dtype == ms.int64
+        assert result.dtype == 'i64'
         assert result.item() == 6
 
     def test_sum_int8_accumulates_i64(self):
         """int8 输入 sum → int64 输出（cast + 累加）。"""
-        a = ms.array([1, 2, 3], dtype=ms.int8)
+        a = ms.array([1, 2, 3], dtype='i8')
         result = ms.sum(a)
-        assert result.dtype == ms.int64
+        assert result.dtype == 'i64'
         assert result.item() == 6
 
     def test_mean_int_gives_float64(self):
         """整数输入 mean → float64 输出。"""
-        a = ms.array([1, 2, 3, 4], dtype=ms.int64)
+        a = ms.array([1, 2, 3, 4], dtype='i64')
         result = ms.mean(a)
-        assert result.dtype == ms.float64
+        assert result.dtype == 'f64'
         assert result.item() == pytest.approx(2.5)
 
     def test_mean_f32_stays_f32(self):
         """float32 输入 mean → float32 输出。"""
-        a = ms.array([1.0, 2.0, 3.0], dtype=ms.float32)
+        a = ms.array([1.0, 2.0, 3.0], dtype='f32')
         result = ms.mean(a)
-        assert result.dtype == ms.float32
+        assert result.dtype == 'f32'
 
     def test_max_int_gives_i64(self):
         """整数输入 max → int64 输出（alpha 简化）。"""
-        a = ms.array([3, 1, 4], dtype=ms.int64)
+        a = ms.array([3, 1, 4], dtype='i64')
         result = ms.max(a)
-        assert result.dtype == ms.int64
+        assert result.dtype == 'i64'
         assert result.item() == 4
 
     def test_sum_f32_stays_f32(self):
         """float32 输入 sum → float32 输出。"""
-        a = ms.array([1.0, 2.0, 3.0], dtype=ms.float32)
+        a = ms.array([1.0, 2.0, 3.0], dtype='f32')
         result = ms.sum(a)
-        assert result.dtype == ms.float32
+        assert result.dtype == 'f32'
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -170,7 +170,7 @@ class TestArgReduce:
         a = ms.array([1.0, 5.0, 3.0, 2.0])
         result = ms.argmax(a)
         assert result.item() == 1
-        assert result.dtype == ms.int64
+        assert result.dtype == 'i64'
 
     def test_argmin_global(self):
         a = ms.array([3.0, 1.0, 4.0, 0.5])
@@ -193,7 +193,7 @@ class TestArgReduce:
         assert result.shape == (2,)
 
     def test_argmax_int_input(self):
-        a = ms.array([10, 30, 20], dtype=ms.int64)
+        a = ms.array([10, 30, 20], dtype='i64')
         result = ms.argmax(a)
         assert result.item() == 1
 
@@ -245,9 +245,9 @@ class TestCumsum:
         ]
 
     def test_cumsum_int_gives_i64(self):
-        a = ms.array([1, 2, 3], dtype=ms.int64)
+        a = ms.array([1, 2, 3], dtype='i64')
         result = ms.cumsum(a, axis=0)
-        assert result.dtype == ms.int64
+        assert result.dtype == 'i64'
         assert result.tolist() == [1, 3, 6]
 
 
@@ -276,7 +276,7 @@ class TestReductionErrors:
 
     def test_out_dtype_mismatch(self):
         a = ms.array([1.0, 2.0, 3.0])
-        out = ms.array([0, 0], dtype=ms.int64)  # wrong dtype for float sum
+        out = ms.array([0, 0], dtype='i64')  # wrong dtype for float sum
         with pytest.raises(Exception):
             ms.sum(a, axis=0, out=out)
 
@@ -309,9 +309,9 @@ class TestReductionMusa:
         assert result.tolist() == [1, 1]
 
     def test_acceptance_int8_sum(self):
-        a = ms.array([1, 2, 3], dtype=ms.int8, device="musa:0")
+        a = ms.array([1, 2, 3], dtype='i8', device="musa:0")
         result = ms.sum(a)
-        assert result.dtype == ms.int64
+        assert result.dtype == 'i64'
         assert result.item() == 6
 
     def test_gpu_mean(self):
@@ -338,30 +338,30 @@ class TestReductionMusa:
     def test_gpu_cumsum_boundary_65536(self):
         """axis_len = 65536（blocks_per_row = 256，单级路径上限）。"""
         n = 65536
-        a = ms.ones(n, dtype=ms.int64, device="musa:0")
+        a = ms.ones(n, dtype='i64', device="musa:0")
         result = ms.cumsum(a, axis=0)
         # cumsum(ones) = [1..n]：总和 + 末元素抽查
         assert ms.sum(result).item() == n * (n + 1) // 2
-        idx = ms.array([n - 1], dtype=ms.int64, device="musa:0")
+        idx = ms.array([n - 1], dtype='i64', device="musa:0")
         assert ms.gather(result, idx, axis=0).item() == n
 
     def test_gpu_cumsum_hierarchical_65537(self):
         """axis_len = 65537（blocks_per_row = 257，进入分层路径的首例）。"""
         n = 65537
-        a = ms.ones(n, dtype=ms.int64, device="musa:0")
+        a = ms.ones(n, dtype='i64', device="musa:0")
         result = ms.cumsum(a, axis=0)
         assert ms.sum(result).item() == n * (n + 1) // 2
-        idx = ms.array([n - 1], dtype=ms.int64, device="musa:0")
+        idx = ms.array([n - 1], dtype='i64', device="musa:0")
         assert ms.gather(result, idx, axis=0).item() == n
 
     def test_gpu_cumsum_1m_i64(self):
         """axis_len = 1M（blocks_per_row = 3907；P0 报告中的 benchmark 规模）。"""
         n = 1_000_000
-        a = ms.ones(n, dtype=ms.int64, device="musa:0")
+        a = ms.ones(n, dtype='i64', device="musa:0")
         result = ms.cumsum(a, axis=0)
         assert ms.sum(result).item() == n * (n + 1) // 2
         # 抽查：单级边界末位、分层路径首位、末元素
-        idx = ms.array([65535, 65536, n - 1], dtype=ms.int64, device="musa:0")
+        idx = ms.array([65535, 65536, n - 1], dtype='i64', device="musa:0")
         assert ms.gather(result, idx, axis=0).tolist() == [65536, 65537, n]
 
     def test_gpu_cumsum_long_axis_random_f32(self):
@@ -370,7 +370,7 @@ class TestReductionMusa:
 
         rng = np.random.default_rng(42)
         data = rng.random(100000, dtype=np.float32)
-        a = ms.array(data.tolist(), dtype=ms.float32, device="musa:0")
+        a = ms.array(data.tolist(), dtype='f32', device="musa:0")
         result = ms.cumsum(a, axis=0)
         got = np.array(result.tolist(), dtype=np.float32)
         assert np.allclose(got, np.cumsum(data), rtol=1e-3, atol=1e-3)
@@ -381,7 +381,7 @@ class TestReductionMusa:
 
         rng = np.random.default_rng(43)
         data = rng.random(100000, dtype=np.float64)
-        a = ms.array(data.tolist(), dtype=ms.float64, device="musa:0")
+        a = ms.array(data.tolist(), dtype='f64', device="musa:0")
         result = ms.cumsum(a, axis=0)
         got = np.array(result.tolist(), dtype=np.float64)
         assert np.allclose(got, np.cumsum(data), rtol=1e-9, atol=1e-9)
@@ -392,7 +392,7 @@ class TestReductionMusa:
 
         rng = np.random.default_rng(7)
         data = rng.random((3, 70000), dtype=np.float32)
-        a = ms.array(data.tolist(), dtype=ms.float32, device="musa:0")
+        a = ms.array(data.tolist(), dtype='f32', device="musa:0")
         result = ms.cumsum(a, axis=1)
         got = np.array(result.tolist(), dtype=np.float32)
         assert got.shape == (3, 70000)
@@ -409,7 +409,7 @@ class TestReductionMusa:
         for n in (1300, 1537):  # bpr = 6, 7
             rng = np.random.default_rng(n)
             data = rng.random(n, dtype=np.float32)
-            a = ms.array(data.tolist(), dtype=ms.float32, device="musa:0")
+            a = ms.array(data.tolist(), dtype='f32', device="musa:0")
             result = ms.cumsum(a, axis=0)
             got = np.array(result.tolist(), dtype=np.float32)
             assert np.allclose(got, np.cumsum(data), rtol=1e-3, atol=1e-3), (
@@ -419,7 +419,7 @@ class TestReductionMusa:
     def test_gpu_cumsum_axis_too_long_raises(self):
         """axis_len > 256^3 超出分层扫描容量，应明确报错。"""
         n = 256**3 + 1  # 16777217
-        a = ms.ones(n, dtype=ms.float32, device="musa:0")
+        a = ms.ones(n, dtype='f32', device="musa:0")
         with pytest.raises(Exception):
             ms.cumsum(a, axis=0)
 
@@ -459,7 +459,7 @@ class TestReductionMusa:
         """i64 小 axis（ReduceLimits 单位元路径）。"""
         rng = np.random.default_rng(9)
         data = rng.integers(-1000, 1000, (256, 256))
-        a = ms.array(data.tolist(), dtype=ms.int64, device="musa:0")
+        a = ms.array(data.tolist(), dtype='i64', device="musa:0")
         for op, wf in ((ms.sum, np.sum), (ms.prod, np.prod),
                        (ms.max, np.max), (ms.min, np.min)):
             for ax in (0, 1):
@@ -509,14 +509,14 @@ class TestReductionMultiAxis:
     """axis=tuple 多轴归约（P7.1）：sum/prod/max/min/mean 逐轴迭代，
     argmax/argmin transpose+合并轴。CPU + MUSA 双路径。"""
 
-    @pytest.mark.parametrize("dtype", [ms.float32, ms.float64])
+    @pytest.mark.parametrize("dtype", ['f32', 'f64'])
     @pytest.mark.parametrize("axes", [(0, 1), (1, 2), (0, 2), (0, 1, 2), (-1, 0)])
     def test_multi_axis_reduce_ops(self, dtype, axes):
         rng = np.random.default_rng(21)
         data = rng.normal(size=(2, 3, 4)).astype(
-            np.float32 if dtype == ms.float32 else np.float64
+            np.float32 if dtype == 'f32' else np.float64
         )
-        tol = 1e-4 if dtype == ms.float32 else 1e-10
+        tol = 1e-4 if dtype == 'f32' else 1e-10
         for dev in ("cpu", "musa:0"):
             x = ms.array(data.tolist(), dtype=dtype, device=dev)
             for name, f in [("sum", ms.sum), ("mean", ms.mean), ("prod", ms.prod),
@@ -540,7 +540,7 @@ class TestReductionMultiAxis:
         merged = t.reshape(t.shape[:3 - len(norm)] + (-1,))
         exp = np.argmax(merged, axis=-1)
         for dev in ("cpu", "musa:0"):
-            x = ms.array(data.tolist(), dtype=ms.float64, device=dev)
+            x = ms.array(data.tolist(), dtype='f64', device=dev)
             got = np.array(ms.argmax(x, axis=axes).tolist())
             assert np.allclose(got, exp), (dev, axes, got, exp)
 
@@ -548,7 +548,7 @@ class TestReductionMultiAxis:
         """argmax 多轴 keepdims：被归约轴处恢复为 1。"""
         rng = np.random.default_rng(23)
         data = rng.normal(size=(2, 3, 4))
-        x = ms.array(data.tolist(), dtype=ms.float64)
+        x = ms.array(data.tolist(), dtype='f64')
         got = ms.argmax(x, axis=(0, 1), keepdims=True)
         assert got.shape == (1, 1, 4)
         # 参照：合并轴 argmax 后 reshape 回 (1,1,4)
@@ -558,7 +558,7 @@ class TestReductionMultiAxis:
         assert np.allclose(got.tolist(), exp), (got.tolist(), exp)
 
     def test_multi_axis_errors(self):
-        x = ms.array(np.zeros((2, 3, 4)).tolist(), dtype=ms.float64)
+        x = ms.array(np.zeros((2, 3, 4)).tolist(), dtype='f64')
         with pytest.raises(ms.ShapeError):
             ms.sum(x, axis=(0, 0))  # 重复轴
         with pytest.raises(ms.ShapeError):
@@ -566,8 +566,8 @@ class TestReductionMultiAxis:
 
     def test_multi_axis_out_rejected(self):
         """多轴 + out= 暂不支持（中间轮 shape 不同）。"""
-        x = ms.array(np.zeros((2, 3)).tolist(), dtype=ms.float64)
-        out = ms.array(np.zeros(2).tolist(), dtype=ms.float64)
+        x = ms.array(np.zeros((2, 3)).tolist(), dtype='f64')
+        out = ms.array(np.zeros(2).tolist(), dtype='f64')
         with pytest.raises(ms.ShapeError):
             ms.sum(x, axis=(0, 1), out=out)
 
@@ -575,13 +575,13 @@ class TestReductionMultiAxis:
 class TestReductionComplex:
     """复数 sum/mean/prod（P7.2）；max/min/argmax/argmin 拒绝。CPU + MUSA。"""
 
-    @pytest.mark.parametrize("dtype", [ms.complex64, ms.complex128])
+    @pytest.mark.parametrize("dtype", ['c64', 'c128'])
     def test_complex_reduce_ops(self, dtype):
         rng = np.random.default_rng(24)
         data = (rng.normal(size=(3, 4)) + 1j * rng.normal(size=(3, 4))).astype(
-            np.complex64 if dtype == ms.complex64 else np.complex128
+            np.complex64 if dtype == 'c64' else np.complex128
         )
-        tol = 1e-4 if dtype == ms.complex64 else 1e-10
+        tol = 1e-4 if dtype == 'c64' else 1e-10
         for dev in ("cpu", "musa:0"):
             x = ms.array(data.tolist(), dtype=dtype, device=dev)
             for axes in (None, 0, 1, (0, 1), -1):
@@ -593,14 +593,14 @@ class TestReductionComplex:
 
     def test_complex_ordering_rejected(self):
         """复数 max/min/argmax/argmin 抛 DtypeError（复数无全序）。"""
-        x = ms.array(np.array([1 + 2j, 3 + 4j]).tolist(), dtype=ms.complex128)
+        x = ms.array(np.array([1 + 2j, 3 + 4j]).tolist(), dtype='c128')
         for f in (ms.max, ms.min, ms.argmax, ms.argmin):
             with pytest.raises(ms.DtypeError):
                 f(x)
 
     def test_complex_global_and_keepdims(self):
-        x = ms.array(np.array([1 + 2j, 3 + 4j]).tolist(), dtype=ms.complex128)
-        assert ms.sum(x).dtype == ms.complex128
+        x = ms.array(np.array([1 + 2j, 3 + 4j]).tolist(), dtype='c128')
+        assert ms.sum(x).dtype == 'c128'
         assert ms.sum(x).item() == 4 + 6j
         got = ms.mean(x, axis=0, keepdims=True)
         assert got.shape == (1,)

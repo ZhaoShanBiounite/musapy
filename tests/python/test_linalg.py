@@ -128,8 +128,8 @@ class TestLinalgGpu:
         A = rng.normal(size=(5, 3))
         B = rng.normal(size=(3, 4))
         got = ms.matmul(
-            ms.array(A.tolist(), dtype=ms.float64),
-            ms.array(B.tolist(), dtype=ms.float64),
+            ms.array(A.tolist(), dtype='f64'),
+            ms.array(B.tolist(), dtype='f64'),
         )
         assert np.allclose(got.tolist(), A @ B, atol=1e-10)
 
@@ -138,20 +138,20 @@ class TestLinalgGpu:
         A = rng.normal(size=(3, 7))
         B = rng.normal(size=(7, 2))
         got = ms.matmul(
-            ms.array(A.tolist(), dtype=ms.float32),
-            ms.array(B.tolist(), dtype=ms.float32),
+            ms.array(A.tolist(), dtype='f32'),
+            ms.array(B.tolist(), dtype='f32'),
         )
         assert np.allclose(got.tolist(), A @ B, atol=1e-5)
 
     def test_matmul_1d(self):
-        v = ms.array([1.0, 2.0, 3.0], dtype=ms.float64)
-        m = ms.array([[1.0, 0.0, 2.0], [0.0, 1.0, 3.0]], dtype=ms.float64)
+        v = ms.array([1.0, 2.0, 3.0], dtype='f64')
+        m = ms.array([[1.0, 0.0, 2.0], [0.0, 1.0, 3.0]], dtype='f64')
         r = ms.matmul(m, v)
         assert np.allclose(r.tolist(), [7.0, 11.0])
 
     def test_dot(self):
-        a = ms.array([1.0, 2.0, 3.0], dtype=ms.float64)
-        b = ms.array([4.0, 5.0, 6.0], dtype=ms.float64)
+        a = ms.array([1.0, 2.0, 3.0], dtype='f64')
+        b = ms.array([4.0, 5.0, 6.0], dtype='f64')
         assert abs(ms.dot(a, b).item() - 32.0) < 1e-10
 
     def test_solve_f64(self):
@@ -159,14 +159,14 @@ class TestLinalgGpu:
         A = rng.normal(size=(5, 5))
         B = rng.normal(size=(5, 2))
         x = ms.solve(
-            ms.array(A.tolist(), dtype=ms.float64),
-            ms.array(B.tolist(), dtype=ms.float64),
+            ms.array(A.tolist(), dtype='f64'),
+            ms.array(B.tolist(), dtype='f64'),
         )
         assert np.allclose(x.tolist(), np.linalg.solve(A, B), atol=1e-8)
 
     def test_solve_f32_singular(self):
-        a = ms.array([[1.0, 2.0], [2.0, 4.0]], dtype=ms.float32)
-        b = ms.array([1.0, 2.0], dtype=ms.float32)
+        a = ms.array([[1.0, 2.0], [2.0, 4.0]], dtype='f32')
+        b = ms.array([1.0, 2.0], dtype='f32')
         with pytest.raises(ms.LinAlgError):
             ms.solve(a, b)
 
@@ -175,8 +175,8 @@ class TestLinalgGpu:
         奇异检测走 LU 对角 D2H，2026-08-07 真机 C 探针实锤）。
         A = J + I 解析解 x = 1/(n+1)。"""
         n = 128
-        a = ms.add(ms.full([n, n], 1.0, dtype=ms.float64), ms.eye(n, dtype=ms.float64))
-        b = ms.ones([n], dtype=ms.float64)
+        a = ms.add(ms.full([n, n], 1.0, dtype='f64'), ms.eye(n, dtype='f64'))
+        b = ms.ones([n], dtype='f64')
         x = ms.solve(a, b)
         exp = 1.0 / (n + 1.0)
         assert np.allclose(x.tolist(), np.full(n, exp), atol=1e-9)
@@ -185,13 +185,13 @@ class TestLinalgGpu:
         big = np.ones((n, n)) + np.eye(n)
         big[-1] = big[0]
         with pytest.raises(ms.LinAlgError):
-            ms.solve(ms.array(big.tolist(), dtype=ms.float64), b)
+            ms.solve(ms.array(big.tolist(), dtype='f64'), b)
 
     def test_solve_large_2d_rhs(self):
         """n≥128 + 多 rhs：getrs 列主序拷贝路径大矩阵回归。"""
         n = 128
-        a = ms.add(ms.full([n, n], 1.0, dtype=ms.float64), ms.eye(n, dtype=ms.float64))
-        b = ms.ones([n, 4], dtype=ms.float64)
+        a = ms.add(ms.full([n, n], 1.0, dtype='f64'), ms.eye(n, dtype='f64'))
+        b = ms.ones([n, 4], dtype='f64')
         x = ms.solve(a, b)
         exp = 1.0 / (n + 1.0)
         assert x.shape == (n, 4)
@@ -242,7 +242,7 @@ class TestLinalgDecompGpu:
     def test_lu_f64(self):
         rng = np.random.default_rng(23)
         A = rng.normal(size=(5, 5))
-        lu, piv = ms.lu(ms.array(A.tolist(), dtype=ms.float64))
+        lu, piv = ms.lu(ms.array(A.tolist(), dtype='f64'))
         lu_np = np.array(lu.tolist())
         piv_np = np.array(piv.tolist())
 
@@ -250,7 +250,7 @@ class TestLinalgDecompGpu:
         # piv 为 1-based int64（LAPACK ipiv）
         assert lu.shape == (5, 5)
         assert piv.shape == (5,)
-        assert piv.dtype == ms.int64
+        assert piv.dtype == 'i64'
         assert np.all(piv_np >= 1) and np.all(piv_np <= 5)
 
         # 重建 a = P·L·U：按 getrf 语义逐 i 交换行 (i, piv[i]-1)
@@ -266,7 +266,7 @@ class TestLinalgDecompGpu:
     def test_lu_rectangular(self):
         rng = np.random.default_rng(25)
         A = rng.normal(size=(6, 3))
-        lu, piv = ms.lu(ms.array(A.tolist(), dtype=ms.float64))
+        lu, piv = ms.lu(ms.array(A.tolist(), dtype='f64'))
         assert lu.shape == (6, 3)
         assert piv.shape == (3,)
         k = 3
@@ -281,7 +281,7 @@ class TestLinalgDecompGpu:
     def test_lu_f32(self):
         rng = np.random.default_rng(27)
         A = rng.normal(size=(4, 4))
-        lu, piv = ms.lu(ms.array(A.tolist(), dtype=ms.float32))
+        lu, piv = ms.lu(ms.array(A.tolist(), dtype='f32'))
         k = 4
         L = np.tril(np.array(lu.tolist()), -1)[:, :k] + np.eye(4, k)
         U = np.triu(np.array(lu.tolist()))[:k, :]
@@ -294,7 +294,7 @@ class TestLinalgDecompGpu:
     def test_lu_singular_no_crash(self):
         """奇异矩阵不崩溃；piv 仍在合法范围（info 失效 SDK 缺陷见 solve 注释）。"""
         A = np.array([[1.0, 2.0], [2.0, 4.0]])
-        lu, piv = ms.lu(ms.array(A.tolist(), dtype=ms.float64))
+        lu, piv = ms.lu(ms.array(A.tolist(), dtype='f64'))
         assert lu.shape == (2, 2)
         p = np.array(piv.tolist())
         assert np.all(p >= 1) and np.all(p <= 2)
@@ -304,7 +304,7 @@ class TestLinalgDecompGpu:
     def test_qr_f64(self):
         rng = np.random.default_rng(29)
         A = rng.normal(size=(6, 4))
-        q, r = ms.qr(ms.array(A.tolist(), dtype=ms.float64))
+        q, r = ms.qr(ms.array(A.tolist(), dtype='f64'))
         Q = np.array(q.tolist())
         R = np.array(r.tolist())
         assert q.shape == (6, 4) and r.shape == (4, 4)
@@ -316,7 +316,7 @@ class TestLinalgDecompGpu:
     def test_qr_complete(self):
         rng = np.random.default_rng(33)
         A = rng.normal(size=(5, 3))
-        q, r = ms.qr(ms.array(A.tolist(), dtype=ms.float64), mode="complete")
+        q, r = ms.qr(ms.array(A.tolist(), dtype='f64'), mode="complete")
         Q = np.array(q.tolist())
         R = np.array(r.tolist())
         assert q.shape == (5, 5) and r.shape == (5, 3)
@@ -330,7 +330,7 @@ class TestLinalgDecompGpu:
         rng = np.random.default_rng(37)
         A = rng.normal(size=(3, 6))
         for mode, exp_q in (("reduced", (3, 3)), ("complete", (3, 3))):
-            q, r = ms.qr(ms.array(A.tolist(), dtype=ms.float64), mode=mode)
+            q, r = ms.qr(ms.array(A.tolist(), dtype='f64'), mode=mode)
             assert q.shape == exp_q and r.shape == (3, 6)
             Q = np.array(q.tolist())
             R = np.array(r.tolist())
@@ -339,7 +339,7 @@ class TestLinalgDecompGpu:
     def test_qr_f32(self):
         rng = np.random.default_rng(41)
         A = rng.normal(size=(8, 5))
-        q, r = ms.qr(ms.array(A.tolist(), dtype=ms.float32))
+        q, r = ms.qr(ms.array(A.tolist(), dtype='f32'))
         Q = np.array(q.tolist())
         R = np.array(r.tolist())
         assert np.allclose(Q @ R, A, atol=1e-4)
@@ -348,14 +348,14 @@ class TestLinalgDecompGpu:
     def test_qr_degenerate_zero_matrix(self):
         """零矩阵：geqrf tau=0 → Q 单位阵；R 全零，重构成立。"""
         A = np.zeros((4, 4))
-        q, r = ms.qr(ms.array(A.tolist(), dtype=ms.float64))
+        q, r = ms.qr(ms.array(A.tolist(), dtype='f64'))
         Q = np.array(q.tolist())
         R = np.array(r.tolist())
         assert np.allclose(Q.T @ Q, np.eye(4), atol=1e-5)
         assert np.allclose(Q @ R, A, atol=1e-5)
 
     def test_qr_bad_mode_rejected(self):
-        a = ms.array([[1.0, 2.0], [3.0, 4.0]], dtype=ms.float64)
+        a = ms.array([[1.0, 2.0], [3.0, 4.0]], dtype='f64')
         with pytest.raises(ms.ShapeError):
             ms.qr(a, mode="invalid")
 
@@ -364,7 +364,7 @@ class TestLinalgDecompGpu:
     def test_svd_f64(self):
         rng = np.random.default_rng(43)
         A = rng.normal(size=(5, 3))
-        u, s, vh = ms.svd(ms.array(A.tolist(), dtype=ms.float64))
+        u, s, vh = ms.svd(ms.array(A.tolist(), dtype='f64'))
         U = np.array(u.tolist())
         S = np.array(s.tolist())
         Vh = np.array(vh.tolist())
@@ -381,7 +381,7 @@ class TestLinalgDecompGpu:
     def test_svd_thin(self):
         rng = np.random.default_rng(47)
         A = rng.normal(size=(5, 3))
-        u, s, vh = ms.svd(ms.array(A.tolist(), dtype=ms.float64), full_matrices=False)
+        u, s, vh = ms.svd(ms.array(A.tolist(), dtype='f64'), full_matrices=False)
         U = np.array(u.tolist())
         S = np.array(s.tolist())
         Vh = np.array(vh.tolist())
@@ -392,7 +392,7 @@ class TestLinalgDecompGpu:
     def test_svd_wide_f64(self):
         rng = np.random.default_rng(53)
         A = rng.normal(size=(3, 5))
-        u, s, vh = ms.svd(ms.array(A.tolist(), dtype=ms.float64))
+        u, s, vh = ms.svd(ms.array(A.tolist(), dtype='f64'))
         U = np.array(u.tolist())
         S = np.array(s.tolist())
         Vh = np.array(vh.tolist())
@@ -400,7 +400,7 @@ class TestLinalgDecompGpu:
         # 宽矩阵：vh 取前 k 行重建
         assert np.allclose(U @ np.diag(S) @ Vh[:3, :], A, atol=1e-8)
         u2, s2, vh2 = ms.svd(
-            ms.array(A.tolist(), dtype=ms.float64), full_matrices=False
+            ms.array(A.tolist(), dtype='f64'), full_matrices=False
         )
         assert u2.shape == (3, 3) and vh2.shape == (3, 5)
         assert np.allclose(
@@ -412,7 +412,7 @@ class TestLinalgDecompGpu:
     def test_svd_compute_uv_false(self):
         rng = np.random.default_rng(59)
         A = rng.normal(size=(4, 6))
-        s = ms.svd(ms.array(A.tolist(), dtype=ms.float64), compute_uv=False)
+        s = ms.svd(ms.array(A.tolist(), dtype='f64'), compute_uv=False)
         # NumPy 语义：仅返回 s（非三元组）
         assert s.shape == (4,)
         assert np.allclose(s.tolist(), np.linalg.svd(A, compute_uv=False), atol=1e-8)
@@ -421,7 +421,7 @@ class TestLinalgDecompGpu:
     def test_svd_f32(self):
         rng = np.random.default_rng(61)
         A = rng.normal(size=(6, 4))
-        u, s, vh = ms.svd(ms.array(A.tolist(), dtype=ms.float32))
+        u, s, vh = ms.svd(ms.array(A.tolist(), dtype='f32'))
         S = np.array(s.tolist())
         assert np.allclose(S, np.linalg.svd(A)[1], atol=1e-3)
         assert np.allclose(
@@ -435,7 +435,7 @@ class TestLinalgDecompGpu:
         A = np.zeros((4, 4))
         A[0, 0] = 1.0
         A[1, 1] = 2.0  # rank 2
-        u, s, vh = ms.svd(ms.array(A.tolist(), dtype=ms.float64))
+        u, s, vh = ms.svd(ms.array(A.tolist(), dtype='f64'))
         S = np.array(s.tolist())
         assert S[0] > 1.9 and S[1] > 0.9 and S[2] < 1e-6 and S[3] < 1e-6
         assert np.allclose(
@@ -449,7 +449,7 @@ class TestLinalgDecompGpu:
         for shape in [(5, 3), (3, 5), (4, 4)]:
             m, n = shape
             k = min(m, n)
-            arr = ms.array(rng.normal(size=shape).tolist(), dtype=ms.float64)
+            arr = ms.array(rng.normal(size=shape).tolist(), dtype='f64')
             # lu
             lu, piv = ms.lu(arr)
             assert lu.shape == shape and piv.shape == (k,)

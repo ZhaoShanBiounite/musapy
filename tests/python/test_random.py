@@ -74,19 +74,19 @@ class TestRandomShapes:
         assert a.shape == ()
 
     def test_rand_dtype_matrix(self):
-        a32 = ms.random.rand(8, dtype=ms.float32)
-        a64 = ms.random.rand(8, dtype=ms.float64)
-        assert a32.dtype == ms.float32
-        assert a64.dtype == ms.float64
+        a32 = ms.random.rand(8, dtype='f32')
+        a64 = ms.random.rand(8, dtype='f64')
+        assert a32.dtype == 'f32'
+        assert a64.dtype == 'f64'
 
     def test_rand_bad_dtype_rejected(self):
         with pytest.raises(ms.DtypeError):
-            ms.random.rand(8, dtype=ms.int64)
+            ms.random.rand(8, dtype='i64')
 
     def test_randn_shape_dtype(self):
-        a = ms.random.randn(3, 4, dtype=ms.float64)
+        a = ms.random.randn(3, 4, dtype='f64')
         assert a.shape == (3, 4)
-        assert a.dtype == ms.float64
+        assert a.dtype == 'f64'
 
     def test_uniform_shape_and_defaults(self):
         a = ms.random.uniform(-1.0, 1.0, shape=(4, 4))
@@ -104,7 +104,7 @@ class TestRandomShapes:
     def test_bernoulli_bool_output(self):
         a = ms.random.bernoulli(p=0.5, shape=(6,))
         assert a.shape == (6,)
-        assert a.dtype == ms.bool_
+        assert a.dtype == 'b1'
         assert set(a.tolist()) <= {False, True}
         assert ms.random.bernoulli().shape == ()
 
@@ -123,25 +123,25 @@ class TestRandomReproducibility:
         yield
         ms.set_default_device("cpu")
 
-    @pytest.mark.parametrize("dtype", [ms.float32, ms.float64])
+    @pytest.mark.parametrize("dtype", ['f32', 'f64'])
     def test_rand_seed_reproducible(self, dtype):
         a1 = ms.random.rand(100, dtype=dtype, seed=42)
         a2 = ms.random.rand(100, dtype=dtype, seed=42)
         assert a1.tolist() == a2.tolist()
 
-    @pytest.mark.parametrize("dtype", [ms.float32, ms.float64])
+    @pytest.mark.parametrize("dtype", ['f32', 'f64'])
     def test_randn_seed_reproducible(self, dtype):
         a1 = ms.random.randn(100, dtype=dtype, seed=7)
         a2 = ms.random.randn(100, dtype=dtype, seed=7)
         assert a1.tolist() == a2.tolist()
 
-    @pytest.mark.parametrize("dtype", [ms.float32, ms.float64])
+    @pytest.mark.parametrize("dtype", ['f32', 'f64'])
     def test_uniform_seed_reproducible(self, dtype):
         a1 = ms.random.uniform(-2.0, 3.0, shape=(64,), dtype=dtype, seed=11)
         a2 = ms.random.uniform(-2.0, 3.0, shape=(64,), dtype=dtype, seed=11)
         assert a1.tolist() == a2.tolist()
 
-    @pytest.mark.parametrize("dtype", [ms.float32, ms.float64])
+    @pytest.mark.parametrize("dtype", ['f32', 'f64'])
     def test_normal_seed_reproducible(self, dtype):
         a1 = ms.random.normal(loc=2.0, scale=3.0, shape=(64,), dtype=dtype, seed=23)
         a2 = ms.random.normal(loc=2.0, scale=3.0, shape=(64,), dtype=dtype, seed=23)
@@ -177,22 +177,22 @@ class TestRandomDistribution:
     N = 1_000_000
 
     def test_uniform_stats_f64(self):
-        a = np.array(ms.random.rand(self.N, dtype=ms.float64, seed=1).tolist())
+        a = np.array(ms.random.rand(self.N, dtype='f64', seed=1).tolist())
         assert abs(a.mean() - 0.5) < 0.01          # 3σ ≈ 8.7e-4
         assert abs(a.var() - 1.0 / 12.0) < 0.005   # 3σ ≈ 7.3e-4
 
     def test_uniform_stats_f32(self):
-        a = np.array(ms.random.rand(self.N, dtype=ms.float32, seed=2).tolist())
+        a = np.array(ms.random.rand(self.N, dtype='f32', seed=2).tolist())
         assert abs(a.mean() - 0.5) < 0.02
         assert abs(a.var() - 1.0 / 12.0) < 0.01
 
     def test_randn_stats_f64(self):
-        a = np.array(ms.random.randn(self.N, dtype=ms.float64, seed=3).tolist())
+        a = np.array(ms.random.randn(self.N, dtype='f64', seed=3).tolist())
         assert abs(a.mean()) < 0.01                # 3σ ≈ 3e-3
         assert abs(a.var() - 1.0) < 0.01           # 3σ ≈ 4.2e-3
 
     def test_randn_stats_f32(self):
-        a = np.array(ms.random.randn(self.N, dtype=ms.float32, seed=4).tolist())
+        a = np.array(ms.random.randn(self.N, dtype='f32', seed=4).tolist())
         assert abs(a.mean()) < 0.02
         assert abs(a.var() - 1.0) < 0.02
 
@@ -200,7 +200,7 @@ class TestRandomDistribution:
         """uniform(low, high)：值域 [low, high) 且均值 (low+high)/2。"""
         low, high = -3.0, 5.0
         a = np.array(
-            ms.random.uniform(low, high, shape=(self.N,), dtype=ms.float64, seed=5).tolist()
+            ms.random.uniform(low, high, shape=(self.N,), dtype='f64', seed=5).tolist()
         )
         assert a.min() >= low and a.max() < high
         assert abs(a.mean() - (low + high) / 2.0) < 0.01
@@ -209,7 +209,7 @@ class TestRandomDistribution:
         """normal(loc, scale)：均值 loc、方差 scale²（原生 mean/stddev）。"""
         loc, scale = 4.0, 2.0
         a = np.array(
-            ms.random.normal(loc=loc, scale=scale, shape=(self.N,), dtype=ms.float64, seed=6).tolist()
+            ms.random.normal(loc=loc, scale=scale, shape=(self.N,), dtype='f64', seed=6).tolist()
         )
         assert abs(a.mean() - loc) < 0.02
         assert abs(a.var() - scale * scale) < 0.05

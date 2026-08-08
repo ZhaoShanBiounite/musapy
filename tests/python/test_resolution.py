@@ -26,7 +26,7 @@ class TestResolutionPriority:
     def test_level1_arg_wins_over_default(self):
         """显式 device 参数优先于全局默认。"""
         ms.set_default_device("cpu")
-        a = ms.array([1.0, 2.0], dtype=ms.float32, device="cpu")
+        a = ms.array([1.0, 2.0], dtype='f32', device="cpu")
         r = repr(a.device)
         # 显式参数 → source = arg
         assert "resolved from: arg" in r
@@ -34,7 +34,7 @@ class TestResolutionPriority:
     def test_level4_global_default(self):
         """无显式参数时用全局默认。"""
         ms.set_default_device("cpu")
-        a = ms.array([1.0, 2.0], dtype=ms.float32)
+        a = ms.array([1.0, 2.0], dtype='f32')
         r = repr(a.device)
         assert "resolved from: global_default" in r
 
@@ -42,26 +42,26 @@ class TestResolutionPriority:
         """context manager 优先于全局默认。"""
         ms.set_default_device("cpu")
         with ms.device("cpu"):
-            a = ms.array([1.0], dtype=ms.float32)
+            a = ms.array([1.0], dtype='f32')
             r = repr(a.device)
             # context 优先级高于 global_default
             assert "resolved from: context" in r
         # context 退出后恢复 global_default
-        b = ms.array([1.0], dtype=ms.float32)
+        b = ms.array([1.0], dtype='f32')
         assert "resolved from: global_default" in repr(b.device)
 
     def test_level1_arg_wins_over_context(self):
         """显式参数优先于 context。"""
         ms.set_default_device("cpu")
         with ms.device("cpu"):
-            a = ms.array([1.0], dtype=ms.float32, device="cpu")
+            a = ms.array([1.0], dtype='f32', device="cpu")
             assert "resolved from: arg" in repr(a.device)
 
     def test_dtype_float32_fallback(self):
         """dtype 未指定时兜底为 float32（L0-7）。"""
         ms.set_default_device("cpu")
         a = ms.array([1.0, 2.0])
-        assert a.dtype == ms.float32
+        assert a.dtype == 'f32'
 
 
 # ============================================================
@@ -112,46 +112,46 @@ class TestContextManagers:
 
     def test_device_context_enters_and_exits(self):
         ms.set_default_device("cpu")
-        before = ms.array([1.0], dtype=ms.float32)
+        before = ms.array([1.0], dtype='f32')
         assert "global_default" in repr(before.device)
 
         with ms.device("cpu"):
-            inside = ms.array([1.0], dtype=ms.float32)
+            inside = ms.array([1.0], dtype='f32')
             assert "context" in repr(inside.device)
 
-        after = ms.array([1.0], dtype=ms.float32)
+        after = ms.array([1.0], dtype='f32')
         assert "global_default" in repr(after.device)
 
     def test_dtype_context(self):
         ms.set_default_device("cpu")
-        with ms.dtype(ms.float64):
+        with ms.dtype('f64'):
             a = ms.array([1.0, 2.0])
-            assert a.dtype == ms.float64
+            assert a.dtype == 'f64'
             assert a.dtype_resolution_source == "context"
 
         # 退出后 dtype 兜底回 float32
         b = ms.array([1.0, 2.0])
-        assert b.dtype == ms.float32
+        assert b.dtype == 'f32'
 
     def test_stream_context(self):
         ms.set_default_device("cpu")
         s = Stream("cpu", priority=0)
         with ms.stream(s):
-            a = ms.array([1.0], dtype=ms.float32)
+            a = ms.array([1.0], dtype='f32')
             # stream context 不改变 device 解析，但绑定了 stream
             assert a.stream.priority == 0
 
     def test_nested_device_contexts(self):
         ms.set_default_device("cpu")
         with ms.device("cpu"):
-            a = ms.array([1.0], dtype=ms.float32)
+            a = ms.array([1.0], dtype='f32')
             assert "context" in repr(a.device)
             with ms.device("cpu"):
-                b = ms.array([1.0], dtype=ms.float32)
+                b = ms.array([1.0], dtype='f32')
                 assert "context" in repr(b.device)
-            c = ms.array([1.0], dtype=ms.float32)
+            c = ms.array([1.0], dtype='f32')
             assert "context" in repr(c.device)
-        d = ms.array([1.0], dtype=ms.float32)
+        d = ms.array([1.0], dtype='f32')
         assert "global_default" in repr(d.device)
 
 
@@ -265,7 +265,7 @@ class TestThreadIsolation:
 
         def worker():
             # 子线程应继承父线程的 cpu 默认
-            a = ms.array([1.0], dtype=ms.float32)
+            a = ms.array([1.0], dtype='f32')
             result["device"] = str(a.device)
             result["source"] = repr(a.device)
 
@@ -282,7 +282,7 @@ class TestThreadIsolation:
         def worker():
             # 子线程重新设置（对主线程无影响）
             ms.set_default_device("cpu")
-            a = ms.array([1.0], dtype=ms.float32)
+            a = ms.array([1.0], dtype='f32')
             assert "cpu" in str(a.device)
 
         t = threading.Thread(target=worker)
@@ -290,7 +290,7 @@ class TestThreadIsolation:
         t.join()
 
         # 主线程仍然是 cpu
-        a = ms.array([2.0], dtype=ms.float32)
+        a = ms.array([2.0], dtype='f32')
         assert "cpu" in str(a.device)
         assert "global_default" in repr(a.device)
 
@@ -302,13 +302,13 @@ class TestThreadIsolation:
 
         def worker(name):
             # 所有线程继承 cpu
-            a = ms.array([1.0], dtype=ms.float32)
+            a = ms.array([1.0], dtype='f32')
             results[f"{name}_before"] = str(a.device)
             # 同步点：确保所有线程都读了初始值
             barrier.wait()
             # 每个线程重新设置（不影响其他线程）
             ms.set_default_device("cpu")
-            b = ms.array([2.0], dtype=ms.float32)
+            b = ms.array([2.0], dtype='f32')
             results[f"{name}_after"] = str(b.device)
 
         threads = [
@@ -330,7 +330,7 @@ class TestThreadIsolation:
         ms.set_default_device("cpu")
 
         def task(idx):
-            a = ms.array([float(idx)], dtype=ms.float32)
+            a = ms.array([float(idx)], dtype='f32')
             return (idx, a.tolist()[0], str(a.device))
 
         with ThreadPoolExecutor(max_workers=4) as pool:
@@ -361,4 +361,4 @@ class TestThreadIsolation:
             t.join()
 
         for i in range(3):
-            assert results[f"t{i}_dtype"] == ms.float32
+            assert results[f"t{i}_dtype"] == 'f32'

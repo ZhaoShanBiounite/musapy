@@ -33,11 +33,11 @@ class TestAcceptanceV03:
 
     def test_linalg_end_to_end(self):
         """matmul/dot/solve/qr/svd/lu 端到端（对照 NumPy）。"""
-        a = ms.array([[1.0, 2.0], [3.0, 4.0]], dtype=ms.float64)
-        b = ms.array([[5.0, 6.0], [7.0, 8.0]], dtype=ms.float64)
+        a = ms.array([[1.0, 2.0], [3.0, 4.0]], dtype='f64')
+        b = ms.array([[5.0, 6.0], [7.0, 8.0]], dtype='f64')
         c = ms.matmul(a, b)
         assert np.allclose(c.tolist(), np.array([[1.,2.],[3.,4.]]) @ np.array([[5.,6.],[7.,8.]]), atol=1e-8)
-        x = ms.solve(a, ms.array([1.0, 2.0], dtype=ms.float64))
+        x = ms.solve(a, ms.array([1.0, 2.0], dtype='f64'))
         assert np.allclose(x.tolist(), np.linalg.solve([[1.,2.],[3.,4.]], [1.,2.]), atol=1e-8)
         q, r = ms.qr(a)
         assert np.allclose(np.array(q.tolist()) @ np.array(r.tolist()),
@@ -60,54 +60,54 @@ class TestAcceptanceV03:
         r3 = ms.random.uniform(-1.0, 1.0, shape=(4,))
         assert r3.shape == (4,) and all(-1 <= v <= 1 for v in r3.tolist())
         r4 = ms.random.bernoulli(0.5, (4,))
-        assert r4.dtype == ms.bool_
+        assert r4.dtype == 'b1'
 
     def test_fft_end_to_end(self):
         """fft/ifft/rfft 端到端。"""
-        f = ms.fft.fft(ms.array([1.0, 2.0, 3.0, 4.0], dtype=ms.float64))
-        assert f.dtype == ms.complex128
+        f = ms.fft.fft(ms.array([1.0, 2.0, 3.0, 4.0], dtype='f64'))
+        assert f.dtype == 'c128'
         g = ms.fft.ifft(f)
         assert np.allclose(g.tolist(), [1, 2, 3, 4], atol=1e-8)
-        rf = ms.fft.rfft(ms.array([1.0, 2.0, 3.0, 4.0], dtype=ms.float64))
+        rf = ms.fft.rfft(ms.array([1.0, 2.0, 3.0, 4.0], dtype='f64'))
         assert rf.shape == (3,)  # 4//2+1
 
     def test_sparse_end_to_end(self):
         """sparse：csr_matrix/@/toarray。"""
         csr = ms.sparse.csr_matrix(
-            (ms.array([1.0, 2.0, 3.0, 4.0, 5.0], dtype=ms.float64),
-             ms.array([0, 2, 1, 0, 2], dtype=ms.int32),
-             ms.array([0, 2, 3, 5], dtype=ms.int32)),
+            (ms.array([1.0, 2.0, 3.0, 4.0, 5.0], dtype='f64'),
+             ms.array([0, 2, 1, 0, 2], dtype='i32'),
+             ms.array([0, 2, 3, 5], dtype='i32')),
             shape=(3, 3),
         )
-        y = csr @ ms.array([1.0, 2.0, 3.0], dtype=ms.float64)
+        y = csr @ ms.array([1.0, 2.0, 3.0], dtype='f64')
         assert np.allclose(y.tolist(), [7.0, 6.0, 19.0])
         A = csr.toarray()
         assert np.allclose(A.tolist(), [[1.0, 0, 2], [0, 3, 0], [4, 0, 5]])
 
     def test_reduction_completion(self):
         """reduction 补全：axis=tuple + 复数 sum。"""
-        a = ms.array(np.arange(24.0).reshape(2, 3, 4).tolist(), dtype=ms.float64)
+        a = ms.array(np.arange(24.0).reshape(2, 3, 4).tolist(), dtype='f64')
         s2 = ms.sum(a, axis=(0, 1))
         assert np.allclose(s2.tolist(), np.arange(24.0).reshape(2,3,4).sum(axis=(0,1)))
         s3 = ms.sum(a, axis=(0,), keepdims=True)
         assert s3.shape == (1, 3, 4)
-        sc = ms.sum(ms.array([1 + 2j, 3 + 4j], dtype=ms.complex64))
+        sc = ms.sum(ms.array([1 + 2j, 3 + 4j], dtype='c64'))
         assert abs(sc.item() - (4 + 6j)) < 1e-5
 
     def test_advanced_indexing(self):
         """高级索引：mask + fancy。"""
-        a = ms.array([[1.0, 2.0, 3.0], [4.0, 5.0, 6.0]], dtype=ms.float64)
+        a = ms.array([[1.0, 2.0, 3.0], [4.0, 5.0, 6.0]], dtype='f64')
         # mask 索引（等形 mask 需显式构造；a > 2.0 标量比较暂不支持下轮）
-        m_full = ms.array([[True, False, True], [False, True, False]], dtype=ms.bool_)
+        m_full = ms.array([[True, False, True], [False, True, False]], dtype='b1')
         sel = a[m_full]
         assert sel.tolist() == [1.0, 3.0, 5.0]
-        m = ms.array([True, False], dtype=ms.bool_)
+        m = ms.array([True, False], dtype='b1')
         assert a[m].tolist() == [[1.0, 2.0, 3.0]]
-        fancy = a[ms.array([0, 1], dtype=ms.int64)]
+        fancy = a[ms.array([0, 1], dtype='i64')]
         assert fancy.tolist() == [[1.0, 2.0, 3.0], [4.0, 5.0, 6.0]]
         # 越界 IndexError
         with pytest.raises(IndexError):
-            a[ms.array([5], dtype=ms.int64)]
+            a[ms.array([5], dtype='i64')]
 
     def test_stream_synchronize(self):
         """Stream.synchronize 显式同步。"""

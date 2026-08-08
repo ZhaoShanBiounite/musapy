@@ -322,7 +322,7 @@ class TestGather:
     def test_gather_axis0(self):
         """axis=0 行选择。"""
         c = ms.array([[1.0, 2.0, 3.0], [4.0, 5.0, 6.0]])
-        idx = ms.array([1, 0], dtype=ms.int64)
+        idx = ms.array([1, 0], dtype='i64')
         g = ms.gather(c, idx, axis=0)
         assert g.shape == (2, 3)
         assert g.tolist() == [[4.0, 5.0, 6.0], [1.0, 2.0, 3.0]]
@@ -330,7 +330,7 @@ class TestGather:
     def test_gather_axis1(self):
         """axis=1 列选择（v0.2 plan 验收用例）。"""
         c = ms.array([[1.0, 2.0, 3.0], [4.0, 5.0, 6.0]])
-        idx = ms.array([0, 2], dtype=ms.int64)
+        idx = ms.array([0, 2], dtype='i64')
         g = ms.gather(c, idx, axis=1)
         assert g.shape == (2, 2)
         assert g.tolist() == [[1.0, 3.0], [4.0, 6.0]]
@@ -338,7 +338,7 @@ class TestGather:
     def test_gather_1d(self):
         """1D gather。"""
         a = ms.array([10.0, 20.0, 30.0, 40.0])
-        idx = ms.array([3, 1, 3], dtype=ms.int64)
+        idx = ms.array([3, 1, 3], dtype='i64')
         g = ms.gather(a, idx, axis=0)
         assert g.tolist() == [40.0, 20.0, 40.0]
 
@@ -346,7 +346,7 @@ class TestGather:
         """3D 中间轴 gather。"""
         a = ms.array([[[0.0, 1.0], [2.0, 3.0], [4.0, 5.0]],
                       [[6.0, 7.0], [8.0, 9.0], [10.0, 11.0]]])
-        idx = ms.array([2, 0], dtype=ms.int64)
+        idx = ms.array([2, 0], dtype='i64')
         g = ms.gather(a, idx, axis=1)
         assert g.shape == (2, 2, 2)
         assert g.tolist() == [[[4.0, 5.0], [0.0, 1.0]], [[10.0, 11.0], [6.0, 7.0]]]
@@ -355,18 +355,18 @@ class TestGather:
         """对 flip 视图 gather（负 stride 输入）。"""
         a = ms.array([[1.0, 2.0], [3.0, 4.0]])
         f = ms.flip(a, axis=1)  # [[2,1],[4,3]]
-        idx = ms.array([1], dtype=ms.int64)
+        idx = ms.array([1], dtype='i64')
         g = ms.gather(f, idx, axis=0)
         assert g.tolist() == [[4.0, 3.0]]
 
     def test_gather_errors(self):
         """错误输入。"""
         c = ms.array([[1.0, 2.0], [3.0, 4.0]])
-        idx = ms.array([0], dtype=ms.int64)
+        idx = ms.array([0], dtype='i64')
         with pytest.raises(Exception):  # axis 越界
             ms.gather(c, idx, axis=2)
         with pytest.raises(Exception):  # 索引越界
-            ms.gather(c, ms.array([2], dtype=ms.int64), axis=0)
+            ms.gather(c, ms.array([2], dtype='i64'), axis=0)
         with pytest.raises(Exception):  # indices 非 int64
             ms.gather(c, ms.array([0.0]), axis=0)
 
@@ -381,7 +381,7 @@ class TestScatter:
     def test_scatter_axis0(self):
         """axis=0 行写入。"""
         a = ms.array([[1.0, 2.0], [3.0, 4.0]])
-        idx = ms.array([1], dtype=ms.int64)
+        idx = ms.array([1], dtype='i64')
         vals = ms.array([[10.0, 11.0]])
         s = ms.scatter(a, idx, vals, axis=0)
         assert s.tolist() == [[1.0, 2.0], [10.0, 11.0]]
@@ -391,7 +391,7 @@ class TestScatter:
     def test_scatter_axis1(self):
         """axis=1 列写入。"""
         a = ms.array([[1.0, 2.0, 3.0], [4.0, 5.0, 6.0]])
-        idx = ms.array([0, 2], dtype=ms.int64)
+        idx = ms.array([0, 2], dtype='i64')
         vals = ms.array([[7.0, 8.0], [9.0, 10.0]])
         s = ms.scatter(a, idx, vals, axis=1)
         assert s.tolist() == [[7.0, 2.0, 8.0], [9.0, 5.0, 10.0]]
@@ -400,8 +400,8 @@ class TestScatter:
         """对 slice 视图 scatter（offset 输入）。"""
         a = ms.arange(5)  # int64 [0,1,2,3,4]
         s = a[1:4]  # [1,2,3]
-        idx = ms.array([1], dtype=ms.int64)
-        vals = ms.array([99], dtype=ms.int64)
+        idx = ms.array([1], dtype='i64')
+        vals = ms.array([99], dtype='i64')
         r = ms.scatter(s, idx, vals, axis=0)
         assert r.tolist() == [1, 99, 3]
         assert a.tolist() == [0, 1, 2, 3, 4]
@@ -409,14 +409,14 @@ class TestScatter:
     def test_scatter_errors(self):
         """错误输入。"""
         a = ms.array([[1.0, 2.0], [3.0, 4.0]])
-        idx = ms.array([0], dtype=ms.int64)
+        idx = ms.array([0], dtype='i64')
         vals = ms.array([[10.0, 11.0]])
         with pytest.raises(Exception):  # axis 越界
             ms.scatter(a, idx, vals, axis=2)
         with pytest.raises(Exception):  # values shape 不匹配
             ms.scatter(a, idx, ms.array([[10.0], [11.0]]), axis=0)
         with pytest.raises(Exception):  # 索引越界
-            ms.scatter(a, ms.array([2], dtype=ms.int64), vals, axis=0)
+            ms.scatter(a, ms.array([2], dtype='i64'), vals, axis=0)
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -466,7 +466,7 @@ class TestIndexingGPU:
     def test_gather_gpu(self):
         """GPU gather（kernel 路径）。"""
         c = ms.array([[1.0, 2.0, 3.0], [4.0, 5.0, 6.0]], device="musa:0")
-        idx = ms.array([0, 2], dtype=ms.int64)
+        idx = ms.array([0, 2], dtype='i64')
         g = ms.gather(c, idx, axis=1)
         assert g.tolist() == [[1.0, 3.0], [4.0, 6.0]]
 
@@ -474,7 +474,7 @@ class TestIndexingGPU:
     def test_gather_gpu_indices_upload(self):
         """GPU gather：indices 在 CPU 时自动上传。"""
         c = ms.array([[1.0, 2.0, 3.0], [4.0, 5.0, 6.0]], device="musa:0")
-        idx = ms.array([1, 0], dtype=ms.int64)  # CPU indices
+        idx = ms.array([1, 0], dtype='i64')  # CPU indices
         g = ms.gather(c, idx, axis=0)
         assert g.tolist() == [[4.0, 5.0, 6.0], [1.0, 2.0, 3.0]]
 
@@ -482,7 +482,7 @@ class TestIndexingGPU:
     def test_scatter_gpu(self):
         """GPU scatter（kernel 路径）。"""
         c = ms.array([[1.0, 2.0, 3.0], [4.0, 5.0, 6.0]], device="musa:0")
-        idx = ms.array([0, 2], dtype=ms.int64)
+        idx = ms.array([0, 2], dtype='i64')
         vals = ms.array([[7.0, 8.0], [9.0, 10.0]], device="musa:0")
         s = ms.scatter(c, idx, vals, axis=1)
         assert s.tolist() == [[7.0, 2.0, 8.0], [9.0, 5.0, 10.0]]
@@ -491,7 +491,7 @@ class TestIndexingGPU:
     def test_gather_gpu_oob_reports_at_sync(self):
         """P1 方案二：GPU 路径越界索引在下一次同步时报错（而非调用时）。"""
         c = ms.array([[1.0, 2.0], [3.0, 4.0]], device="musa:0")
-        g = ms.gather(c, ms.array([0, 5], dtype=ms.int64), axis=0)  # 5 越界
+        g = ms.gather(c, ms.array([0, 5], dtype='i64'), axis=0)  # 5 越界
         with pytest.raises(Exception):
             g.tolist()
 
@@ -499,7 +499,7 @@ class TestIndexingGPU:
     def test_gather_gpu_negative_index_reports_at_sync(self):
         """P1 方案二：负索引同样在同步时报错。"""
         c = ms.array([1.0, 2.0, 3.0], device="musa:0")
-        g = ms.gather(c, ms.array([0, -1], dtype=ms.int64), axis=0)
+        g = ms.gather(c, ms.array([0, -1], dtype='i64'), axis=0)
         with pytest.raises(Exception):
             g.tolist()
 
@@ -508,7 +508,7 @@ class TestIndexingGPU:
         """P1 方案二：scatter 越界在同步时报错。"""
         c = ms.array([[1.0, 2.0], [3.0, 4.0]], device="musa:0")
         vals = ms.array([[9.0, 9.0]], device="musa:0")
-        s = ms.scatter(c, ms.array([2], dtype=ms.int64), vals, axis=0)  # 2 越界
+        s = ms.scatter(c, ms.array([2], dtype='i64'), vals, axis=0)  # 2 越界
         with pytest.raises(Exception):
             s.tolist()
 
@@ -516,17 +516,17 @@ class TestIndexingGPU:
     def test_gpu_index_error_stream_reusable(self):
         """越界报错后流仍可用：错误槽复位、不毒化，后续合法 gather 正常。"""
         c = ms.array([1.0, 2.0, 3.0], device="musa:0")
-        bad = ms.gather(c, ms.array([7], dtype=ms.int64), axis=0)
+        bad = ms.gather(c, ms.array([7], dtype='i64'), axis=0)
         with pytest.raises(Exception):
             bad.tolist()
-        good = ms.gather(c, ms.array([2, 0], dtype=ms.int64), axis=0)
+        good = ms.gather(c, ms.array([2, 0], dtype='i64'), axis=0)
         assert good.tolist() == [3.0, 1.0]
 
     @musa_required
     def test_gpu_index_check_no_false_positive(self):
         """连续大量合法 gather（检查槽复用 + arena 扩容路径）不误报。"""
         c = ms.array([[1.0, 2.0, 3.0], [4.0, 5.0, 6.0]], device="musa:0")
-        idx = ms.array([0, 2], dtype=ms.int64)
+        idx = ms.array([0, 2], dtype='i64')
         g = None
         for _ in range(40):  # > arena 初始容量 16，覆盖扩容路径
             g = ms.gather(c, idx, axis=1)
@@ -551,11 +551,11 @@ class TestIndexingGPU:
         """tiled 转置各 dtype 实例化（f64/i32/i64）。"""
         rng = np.random.default_rng(32)
         d64 = rng.random((257, 63), dtype=np.float64)
-        a = ms.array(d64.tolist(), dtype=ms.float64, device="musa:0")
+        a = ms.array(d64.tolist(), dtype='f64', device="musa:0")
         np.testing.assert_allclose(
             np.array(ms.contiguous(ms.transpose(a)).tolist()), d64.T, rtol=1e-9)
         di = rng.integers(-1000, 1000, (63, 257))
-        for dtype in (ms.int64, ms.int32):
+        for dtype in ('i64', 'i32'):
             a = ms.array(di.tolist(), dtype=dtype, device="musa:0")
             assert ms.contiguous(ms.transpose(a)).tolist() == di.T.tolist()
 
@@ -630,7 +630,7 @@ class TestAcceptance:
     def test_acceptance_gather(self):
         """验收：gather（v0.2 plan）。"""
         c = ms.array([[1.0, 2.0, 3.0], [4.0, 5.0, 6.0]])
-        g = ms.gather(c, ms.array([0, 2], dtype=ms.int64), axis=1)
+        g = ms.gather(c, ms.array([0, 2], dtype='i64'), axis=1)
         assert g.tolist() == [[1.0, 3.0], [4.0, 6.0]]
 
 
@@ -643,36 +643,36 @@ class TestBooleanMask:
 
     @pytest.mark.parametrize("device", ["cpu", "musa:0"])
     def test_mask_1d(self, device):
-        a = ms.array([1.0, 2.0, 3.0, 4.0], dtype=ms.float64, device=device)
-        m = ms.array([True, False, True, False], dtype=ms.bool_, device=device)
+        a = ms.array([1.0, 2.0, 3.0, 4.0], dtype='f64', device=device)
+        m = ms.array([True, False, True, False], dtype='b1', device=device)
         got = a[m]
         assert got.tolist() == [1.0, 3.0]
 
     @pytest.mark.parametrize("device", ["cpu", "musa:0"])
     def test_mask_2d_prefix(self, device):
         """mask 匹配前 md 维（NumPy 语义）。"""
-        a = ms.array([[1.0, 2.0, 3.0], [4.0, 5.0, 6.0]], dtype=ms.float64, device=device)
-        m = ms.array([True, False], dtype=ms.bool_, device=device)
+        a = ms.array([[1.0, 2.0, 3.0], [4.0, 5.0, 6.0]], dtype='f64', device=device)
+        m = ms.array([True, False], dtype='b1', device=device)
         got = a[m]
         assert got.shape == (1, 3)
         assert got.tolist() == [[1.0, 2.0, 3.0]]
-        m_all = ms.array([[True, False, True], [False, True, False]], dtype=ms.bool_, device=device)
+        m_all = ms.array([[True, False, True], [False, True, False]], dtype='b1', device=device)
         got_all = a[m_all]
         assert got_all.tolist() == [1.0, 3.0, 5.0]
 
     @pytest.mark.parametrize("device", ["cpu", "musa:0"])
     def test_mask_is_copy(self, device):
         """mask 索引恒为 copy：改结果不影响原数组。"""
-        a = ms.array([1.0, 2.0, 3.0], dtype=ms.float64, device=device)
-        m = ms.array([True, True, False], dtype=ms.bool_, device=device)
+        a = ms.array([1.0, 2.0, 3.0], dtype='f64', device=device)
+        m = ms.array([True, True, False], dtype='b1', device=device)
         got = a[m]
         got2 = ms.array(got.tolist(), device=device)  # 模拟修改
-        got2 = ms.add(got2, ms.array([10.0, 10.0], dtype=ms.float64, device=device))
+        got2 = ms.add(got2, ms.array([10.0, 10.0], dtype='f64', device=device))
         assert a.tolist() == [1.0, 2.0, 3.0]
 
     def test_mask_shape_mismatch(self):
-        a = ms.array([[1.0, 2.0], [3.0, 4.0]], dtype=ms.float64)
-        m = ms.array([True, False, True], dtype=ms.bool_)  # 3 != 2
+        a = ms.array([[1.0, 2.0], [3.0, 4.0]], dtype='f64')
+        m = ms.array([True, False, True], dtype='b1')  # 3 != 2
         with pytest.raises(ms.ShapeError):
             a[m]
 
@@ -682,35 +682,35 @@ class TestFancyIndexing:
 
     @pytest.mark.parametrize("device", ["cpu", "musa:0"])
     def test_fancy_1d(self, device):
-        a = ms.array([10.0, 20.0, 30.0, 40.0], dtype=ms.float64, device=device)
-        idx = ms.array([0, 2], dtype=ms.int64, device=device)
+        a = ms.array([10.0, 20.0, 30.0, 40.0], dtype='f64', device=device)
+        idx = ms.array([0, 2], dtype='i64', device=device)
         assert a[idx].tolist() == [10.0, 30.0]
 
     @pytest.mark.parametrize("device", ["cpu", "musa:0"])
     def test_fancy_negative(self, device):
-        a = ms.array([10.0, 20.0, 30.0, 40.0], dtype=ms.float64, device=device)
-        idx = ms.array([-1, 0], dtype=ms.int64, device=device)
+        a = ms.array([10.0, 20.0, 30.0, 40.0], dtype='f64', device=device)
+        idx = ms.array([-1, 0], dtype='i64', device=device)
         assert a[idx].tolist() == [40.0, 10.0]
 
     @pytest.mark.parametrize("device", ["cpu", "musa:0"])
     def test_fancy_coords_pair(self, device):
-        a = ms.array([[1.0, 2.0], [3.0, 4.0]], dtype=ms.float64, device=device)
-        i0 = ms.array([0, 1], dtype=ms.int64, device=device)
-        i1 = ms.array([1, 0], dtype=ms.int64, device=device)
+        a = ms.array([[1.0, 2.0], [3.0, 4.0]], dtype='f64', device=device)
+        i0 = ms.array([0, 1], dtype='i64', device=device)
+        i1 = ms.array([1, 0], dtype='i64', device=device)
         assert a[i0, i1].tolist() == [2.0, 3.0]
 
     @pytest.mark.parametrize("device", ["cpu", "musa:0"])
     def test_fancy_broadcast_indices(self, device):
-        a = ms.array([[1.0, 2.0, 3.0], [4.0, 5.0, 6.0]], dtype=ms.float64, device=device)
-        i0 = ms.array([0], dtype=ms.int64, device=device)
-        i1 = ms.array([0, 2], dtype=ms.int64, device=device)
+        a = ms.array([[1.0, 2.0, 3.0], [4.0, 5.0, 6.0]], dtype='f64', device=device)
+        i0 = ms.array([0], dtype='i64', device=device)
+        i1 = ms.array([0, 2], dtype='i64', device=device)
         got = a[i0, i1]
         assert got.tolist() == [1.0, 3.0]
 
     @pytest.mark.parametrize("device", ["cpu", "musa:0"])
     def test_fancy_nd_index_array(self, device):
-        a = ms.array([[1.0, 2.0], [3.0, 4.0]], dtype=ms.float64, device=device)
-        idx = ms.array([[0, 1], [1, 0]], dtype=ms.int64, device=device)
+        a = ms.array([[1.0, 2.0], [3.0, 4.0]], dtype='f64', device=device)
+        idx = ms.array([[0, 1], [1, 0]], dtype='i64', device=device)
         got = a[idx]
         assert got.shape == (2, 2, 2)
         assert got.tolist() == [
@@ -719,14 +719,14 @@ class TestFancyIndexing:
         ]
 
     def test_fancy_list_index(self):
-        a = ms.array([10.0, 20.0, 30.0], dtype=ms.float64)
+        a = ms.array([10.0, 20.0, 30.0], dtype='f64')
         assert a[[0, 2]].tolist() == [10.0, 30.0]
 
     @pytest.mark.parametrize("device", ["cpu", "musa:0"])
     def test_fancy_oob_indexerror(self, device):
         """越界抛 Python 内置 IndexError（NumPy 兼容，非 MusapyError 子类）。"""
-        a = ms.array([1.0, 2.0, 3.0], dtype=ms.float64, device=device)
-        idx = ms.array([5], dtype=ms.int64, device=device)
+        a = ms.array([1.0, 2.0, 3.0], dtype='f64', device=device)
+        idx = ms.array([5], dtype='i64', device=device)
         with pytest.raises(IndexError):
             a[idx]
 
@@ -735,9 +735,9 @@ class TestFancyIndexing:
         """对照 NumPy（含顺序/形状）。"""
         rng = np.random.default_rng(31)
         data = rng.normal(size=(4, 5))
-        a = ms.array(data.tolist(), dtype=ms.float64, device=device)
-        i0 = ms.array([0, 2, 3], dtype=ms.int64, device=device)
-        i1 = ms.array([1], dtype=ms.int64, device=device)  # 广播到 len 3
+        a = ms.array(data.tolist(), dtype='f64', device=device)
+        i0 = ms.array([0, 2, 3], dtype='i64', device=device)
+        i1 = ms.array([1], dtype='i64', device=device)  # 广播到 len 3
         got = a[i0, i1]
         exp = data[np.array([0, 2, 3]), np.array([1])]
         assert np.allclose(got.tolist(), exp), (got.tolist(), exp)

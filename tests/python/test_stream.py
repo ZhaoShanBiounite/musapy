@@ -50,9 +50,9 @@ class TestMultiStreamBasic:
         s2 = Stream("cpu")
 
         with ms.stream(s1):
-            a = ms.array([1.0, 2.0, 3.0], dtype=ms.float32)
+            a = ms.array([1.0, 2.0, 3.0], dtype='f32')
         with ms.stream(s2):
-            b = ms.array([4.0, 5.0, 6.0], dtype=ms.float32)
+            b = ms.array([4.0, 5.0, 6.0], dtype='f32')
 
         # 各自同步后数据正确
         s1.synchronize()
@@ -66,9 +66,9 @@ class TestMultiStreamBasic:
         s2 = Stream("cpu")
 
         with ms.stream(s1):
-            a = ms.array([1.0, 2.0], dtype=ms.float32)
+            a = ms.array([1.0, 2.0], dtype='f32')
         with ms.stream(s2):
-            b = ms.array([3.0, 4.0], dtype=ms.float32)
+            b = ms.array([3.0, 4.0], dtype='f32')
 
         # 在 s2 上执行 add，输入 a 来自 s1
         with ms.stream(s2):
@@ -83,10 +83,10 @@ class TestMultiStreamBasic:
         s2 = Stream("cpu")
 
         with ms.stream(s1):
-            a = ms.array([1.0, 2.0, 3.0], dtype=ms.float32)
+            a = ms.array([1.0, 2.0, 3.0], dtype='f32')
         with ms.stream(s2):
-            b = ms.array([4.0, 5.0, 6.0], dtype=ms.float32)
-            out = ms.array([0.0, 0.0, 0.0], dtype=ms.float32)
+            b = ms.array([4.0, 5.0, 6.0], dtype='f32')
+            out = ms.array([0.0, 0.0, 0.0], dtype='f32')
 
         # 在 s2 上用 out= 执行，a 来自 s1
         with ms.stream(s2):
@@ -102,9 +102,9 @@ class TestMultiStreamBasic:
         s2 = Stream("cpu")
 
         with ms.stream(s1):
-            a = ms.array([10.0, 20.0], dtype=ms.float32)
+            a = ms.array([10.0, 20.0], dtype='f32')
         with ms.stream(s2):
-            b = ms.array([1.0, 2.0], dtype=ms.float32)
+            b = ms.array([1.0, 2.0], dtype='f32')
             c = ms.add(b, b)  # s2 上独立计算
 
         s1.synchronize()
@@ -124,9 +124,9 @@ class TestMultiStreamInterleaved:
         s2 = Stream("cpu")
 
         with ms.stream(s1):
-            a1 = ms.array([1.0, 2.0], dtype=ms.float32)
+            a1 = ms.array([1.0, 2.0], dtype='f32')
         with ms.stream(s2):
-            b1 = ms.array([3.0, 4.0], dtype=ms.float32)
+            b1 = ms.array([3.0, 4.0], dtype='f32')
         with ms.stream(s1):
             c1 = ms.add(a1, a1)
         with ms.stream(s2):
@@ -151,7 +151,7 @@ class TestMultiStreamInterleaved:
 
         for i, s in enumerate(streams):
             with ms.stream(s):
-                arr = ms.array([float(i), float(i + 1)], dtype=ms.float32)
+                arr = ms.array([float(i), float(i + 1)], dtype='f32')
                 arrays.append(arr)
 
         for s in streams:
@@ -165,7 +165,7 @@ class TestMultiStreamInterleaved:
         s = Stream("cpu")
 
         with ms.stream(s):
-            a = ms.array([1.0, 2.0], dtype=ms.float32)
+            a = ms.array([1.0, 2.0], dtype='f32')
             b = ms.add(a, a)
         s.synchronize()
         assert b.tolist() == [2.0, 4.0]
@@ -193,9 +193,9 @@ class TestMultiStreamMusa:
         s2 = Stream("musa:0")
 
         with ms.stream(s1):
-            a = ms.array([1.0, 2.0, 3.0], dtype=ms.float32)
+            a = ms.array([1.0, 2.0, 3.0], dtype='f32')
         with ms.stream(s2):
-            b = ms.array([4.0, 5.0, 6.0], dtype=ms.float32)
+            b = ms.array([4.0, 5.0, 6.0], dtype='f32')
 
         s1.synchronize()
         s2.synchronize()
@@ -209,9 +209,9 @@ class TestMultiStreamMusa:
         s2 = Stream("musa:0")
 
         with ms.stream(s1):
-            a = ms.array([1.0, 2.0], dtype=ms.float32)
+            a = ms.array([1.0, 2.0], dtype='f32')
         with ms.stream(s2):
-            b = ms.array([3.0, 4.0], dtype=ms.float32)
+            b = ms.array([3.0, 4.0], dtype='f32')
             c = ms.add(a, b)  # 跨 stream 输入
 
         s2.synchronize()
@@ -224,9 +224,9 @@ class TestMultiStreamMusa:
         s2 = Stream("musa:0")
 
         with ms.stream(s1):
-            a = ms.array([1.0, 2.0], dtype=ms.float32)
+            a = ms.array([1.0, 2.0], dtype='f32')
         with ms.stream(s2):
-            b = ms.array([10.0, 20.0], dtype=ms.float32)
+            b = ms.array([10.0, 20.0], dtype='f32')
         with ms.stream(s1):
             c = ms.add(a, a)
         with ms.stream(s2):

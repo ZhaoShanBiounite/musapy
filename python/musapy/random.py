@@ -3,7 +3,7 @@
 包装 _core 的 random 生成函数，对齐 NumPy 肌肉记忆：
 
     ms.random.rand(2, 3)                                   # uniform [0,1) f32
-    ms.random.randn(2, 3, dtype=ms.float64, seed=1)        # N(0,1)
+    ms.random.randn(2, 3, dtype='f64', seed=1)             # N(0,1)
     ms.random.uniform(-1.0, 1.0, shape=(4, 4), seed=7)     # [-1, 1)
     ms.random.normal(loc=0.0, scale=2.0, shape=(2, 2))     # N(0, 4)
     ms.random.bernoulli(p=0.3, shape=(2, 2))               # bool

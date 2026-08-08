@@ -57,7 +57,7 @@ class TestMemorySummary:
         """创建 array 后 allocated 应 > 0。"""
         # 先记录基线
         before = ms.memory_summary()
-        a = ms.array([1.0, 2.0, 3.0], dtype=ms.float32, device="cpu")
+        a = ms.array([1.0, 2.0, 3.0], dtype='f32', device="cpu")
         after = ms.memory_summary()
         # 创建后应有分配（12 bytes for 3 * float32）
         assert "12 bytes" in after or "Allocated" in after
@@ -102,16 +102,16 @@ class TestDebugMode:
     def test_set_debug_true(self):
         ms.set_debug(True)
         # 验证 debug 模式下 add 不报错
-        a = ms.array([1.0, 2.0], dtype=ms.float32, device="cpu")
-        b = ms.array([3.0, 4.0], dtype=ms.float32, device="cpu")
+        a = ms.array([1.0, 2.0], dtype='f32', device="cpu")
+        b = ms.array([3.0, 4.0], dtype='f32', device="cpu")
         c = ms.add(a, b)
         assert c.tolist() == [4.0, 6.0]
         ms.set_debug(False)
 
     def test_set_debug_false(self):
         ms.set_debug(False)
-        a = ms.array([1.0], dtype=ms.float32, device="cpu")
-        b = ms.array([2.0], dtype=ms.float32, device="cpu")
+        a = ms.array([1.0], dtype='f32', device="cpu")
+        b = ms.array([2.0], dtype='f32', device="cpu")
         c = ms.add(a, b)
         assert c.tolist() == [3.0]
 
@@ -120,14 +120,14 @@ class TestDebugMode:
         ms.set_debug(False)
         with ms.debug():
             # debug 模式下 add 应正常工作
-            a = ms.array([1.0, 2.0], dtype=ms.float32, device="cpu")
-            b = ms.array([3.0, 4.0], dtype=ms.float32, device="cpu")
+            a = ms.array([1.0, 2.0], dtype='f32', device="cpu")
+            b = ms.array([3.0, 4.0], dtype='f32', device="cpu")
             c = a + b
             assert c.tolist() == [4.0, 6.0]
         # 退出后 debug 应恢复为 False
         # （无法直接从 Python 读取 is_debug，但 add 应仍正常工作）
-        a = ms.array([1.0], dtype=ms.float32, device="cpu")
-        b = ms.array([2.0], dtype=ms.float32, device="cpu")
+        a = ms.array([1.0], dtype='f32', device="cpu")
+        b = ms.array([2.0], dtype='f32', device="cpu")
         c = ms.add(a, b)
         assert c.tolist() == [3.0]
 
@@ -136,13 +136,13 @@ class TestDebugMode:
         ms.set_debug(False)
         with ms.debug():
             with ms.debug():
-                a = ms.array([1.0], dtype=ms.float32, device="cpu")
-                b = ms.array([2.0], dtype=ms.float32, device="cpu")
+                a = ms.array([1.0], dtype='f32', device="cpu")
+                b = ms.array([2.0], dtype='f32', device="cpu")
                 c = a + b
                 assert c.tolist() == [3.0]
             # 内层退出，外层仍 debug
-            a = ms.array([1.0], dtype=ms.float32, device="cpu")
-            b = ms.array([2.0], dtype=ms.float32, device="cpu")
+            a = ms.array([1.0], dtype='f32', device="cpu")
+            b = ms.array([2.0], dtype='f32', device="cpu")
             c = a + b
             assert c.tolist() == [3.0]
         # 全部退出
@@ -151,8 +151,8 @@ class TestDebugMode:
     def test_debug_dunder_add(self):
         """debug 模式下 __add__ 也应正常工作。"""
         ms.set_debug(True)
-        a = ms.array([1.0, 2.0, 3.0], dtype=ms.float32, device="cpu")
-        b = ms.array([4.0, 5.0, 6.0], dtype=ms.float32, device="cpu")
+        a = ms.array([1.0, 2.0, 3.0], dtype='f32', device="cpu")
+        b = ms.array([4.0, 5.0, 6.0], dtype='f32', device="cpu")
         c = a + b
         assert c.tolist() == [5.0, 7.0, 9.0]
         ms.set_debug(False)
@@ -169,7 +169,7 @@ class TestMemorySummaryMusa:
 
     def test_musa_allocation_tracked(self):
         ms.set_default_device("musa:0")
-        a = ms.array([1.0, 2.0, 3.0], dtype=ms.float32)
+        a = ms.array([1.0, 2.0, 3.0], dtype='f32')
         result = ms.memory_summary()
         assert "Allocated" in result
         # 保持引用

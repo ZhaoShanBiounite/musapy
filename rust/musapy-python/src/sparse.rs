@@ -97,8 +97,10 @@ impl PyCsrMatrix {
             Err(_) => {
                 // 非 Array：list/tuple/scalar 直接作 ms.array 输入（dtype 沿用 mat）；
                 // numpy ndarray 无 sequence 类型但支持 .tolist()，走第二条路径。
-                let dtype = Some(crate::dtype::PyDtype(self.inner.dtype()));
-                if let Ok(temp) = crate::ops::array(py, other, dtype, None) {
+                let dtype = self.inner.dtype();
+                if let Ok(temp) =
+                    crate::ops::array(py, other, Some(crate::dtype::PyDtype(dtype)), None)
+                {
                     return self.matmul_inner_array(&temp.inner);
                 }
                 let list = other.call_method0("tolist").map_err(|_| {
@@ -106,7 +108,7 @@ impl PyCsrMatrix {
                         "csr @ : rhs must be ms.Array or numpy.ndarray/list",
                     )
                 })?;
-                let temp = crate::ops::array(py, &list, dtype, None)?;
+                let temp = crate::ops::array(py, &list, Some(crate::dtype::PyDtype(dtype)), None)?;
                 return self.matmul_inner_array(&temp.inner);
             }
         };
