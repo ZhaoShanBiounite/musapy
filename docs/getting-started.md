@@ -165,6 +165,20 @@ print(row.tolist())                  # [104.0, 108.0, 112.0]
 | `scatter` | `(a, indices, values, axis=0)` | copy，返回新 Array；indices 须 int64 1D |
 | `contiguous` | `(a)` | 物化为连续布局；已连续时零拷贝 |
 
+### 6.5 FFT（v0.3 Phase 5；`ms.fft.*` 命名空间）
+
+| 函数 | 签名 | 说明 |
+|---|---|---|
+| `fft` | `(a, n=None, axis=-1, norm=None, out=None)` | 复数 FFT；输入可 real/complex，输出 complex |
+| `ifft` | `(a, n=None, axis=-1, norm=None, out=None)` | 逆变换（默认缩放 1/N） |
+| `rfft` | `(a, n=None, axis=-1, norm=None, out=None)` | 实输入 FFT，输出形状 `(..., N//2+1)` |
+
+- **GPU-only**：数学库算子（003-D4），CPU 设备调用抛 `DeviceError`
+- `axis` 目前仅支持 `-1`（fftn/多轴推迟）；`norm` 支持 `backward/ortho/forward`
+- complex 支持（Phase 5）：`ms.array([1+2j])` 推断 complex128；elementwise
+  complex 全套（add/sub/mul/div/neg/abs + eq/ne；lt/gt/le/ge 与 pow 拒绝）；
+  `abs(complex)` 输出 real
+
 ### 7. 运行时与上下文
 
 | 函数 | 说明 |

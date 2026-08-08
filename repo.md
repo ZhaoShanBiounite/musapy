@@ -138,7 +138,31 @@
 
 ---
 
-## 4. 健康状态
+## 4. fft（fft/ifft/rfft，muFFT，axis=-1；2026-08-08 真机新增）
+
+> 注：`musapy_mock_musa` cfg 仅在 SDK 缺失时发出，本机 SDK 3.1.0 常驻，
+> mock naive-DFT stub 从未编译——fft 数据均为真机 mufft 执行。
+
+### 4.1 延迟（ms）与吞吐
+
+| n | fft f32 | ifft f32 | rfft f32 | fft f64 | ifft f64 | rfft f64 |
+|---|---|---|---|---|---|---|
+| 1M | 0.391 | 0.429 | 0.260 | 1.480 | 1.526 | 0.979 |
+| 10M | 2.632 | 2.879 | 1.364 | 16.623 | 17.066 | 6.921 |
+| 100M | 33.906 | 36.277 | 18.507 | 194.737 | 199.438 | 92.759 |
+
+f32 吞吐 ~20-30 GB/s（天花板）；f64 慢 3.8-4×（mp_22 FP64 仿真，同 dgemm 特征）；
+rfft 输出减半故约快 2×；2D 逐行 `fft(64×4096)` 6.43ms。详细归因见
+[benchmark/analysis-fft-2026-08-08.md](benchmark/analysis-fft-2026-08-08.md)。
+
+### 4.2 数值
+
+真机对照 np.fft：fft/ifft/rfft rtol 1e-10（f64）/1e-5（f32）；ifft 圆整性、norm 三值、
+n 截断/补零、2D 逐行全部通过（test_fft.py，24 用例）。
+
+---
+
+## 5. 健康状态
 
 - Stream：pending=0，is_poisoned=False（全部 benchmark）
 - 显存：linalg 最终 Allocated 45.3 MB（7 buffers）· Peak 160.4 MB · 无 deferred-free 残留

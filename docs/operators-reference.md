@@ -278,6 +278,30 @@ GPU 路径不在 host 端同步校验 indices，而是由 kernel 内检查：
 
 ---
 
+## FFT 算子（v0.3 Phase 5，ADR-003 003-D5/D7）
+
+### 签名
+
+```python
+ms.fft.fft(a, n=None, axis=-1, norm=None, out=None) -> Array   # 复数 FFT
+ms.fft.ifft(a, n=None, axis=-1, norm=None, out=None) -> Array  # 逆变换（backward 缩放 1/N）
+ms.fft.rfft(a, n=None, axis=-1, norm=None, out=None) -> Array  # 实输入 → 输出 (..., N//2+1)
+```
+
+### 实现要点
+
+- 实现走 **muFFT**（`mufftExecC2C/Z2Z/R2C/D2Z`）；plan 经
+  `math_handle::with_mufft_plan` 按 `MufftPlanSpec::OneD` 池化复用
+- **GPU-only**（003-D4）：CPU 设备上调用抛 `DeviceError`
+- **本轮范围（axis=-1 起步）**：只支持沿最后一维；`axis != -1` 抛 `ShapeError`
+  （fftn/多轴推迟到 v0.3 后期）
+- `n` 截断/补零：`n < last_dim` 截断、`n > last_dim` 补零（resize kernel）
+- `norm`：`"backward"`（默认）/ `"ortho"` / `"forward"`（NumPy 语义）
+- 输入 dtype：real f32/f64（内部扩 complex，`re=x, im=0`）或 complex64/128；
+  输出恒 complex（real f32→c64 / f64→c128）
+- 2D+ 输入沿 axis=-1 逐行执行（Plan1d batch=1，逐行偏移指针）
+- mock 模式：mufft stub 用 naive O(N²) DFT 数值仿真（无 GPU CI 对照 np.fft）
+
 ## 类型提升规则
 
 Binary 算子输入 dtype 不同时自动提升（两段式，见 ADR L1-14）：

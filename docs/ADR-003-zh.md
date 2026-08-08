@@ -150,6 +150,24 @@ OpenBLAS + 纯 Rust 朴素降级；fft/random/sparse 纯 Rust 实现）。废弃
 - 测试矩阵：MUSA 真机 + mock（GPU stub）两条路径。
 - 后续 Phase（qr/svd/eig/random/fft/sparse）按本策略实施，不再建 CPU 路径。
 
+**实施澄清（2026-08-08，Phase 5 落地时确认）——算子族归属规则**：
+「GPU-only 不建 CPU fallback」按**算子族**划分，不按 dtype/参数形态划分：
+
+> v0.2 已有算子族（elementwise/comparison/reduction/creation/indexing）→ 无论后续
+> 新增何种 dtype（如 Phase 5 的 complex64/128）或参数形态（如 Phase 7 的 axis=tuple、
+> Phase 8 的 mask/fancy 索引），CPU 路径一律保留（003-D4 原文「CPU 设备支持保持不变」
+> 即按算子族承诺）。v0.3 新增算子族（linalg/random/fft/sparse）→ 一律 GPU-only。
+
+依据：
+- 003-D4 原文列的就是算子族（elementwise/comparison/…），非 dtype 清单；
+- 同一算子（如 `ms.add`）按 dtype 拆设备行为（f32 有 CPU、complex 抛错）割裂且
+  打破 v0.2「CPU 支持保持不变」承诺；
+- complex 的 CPU 路径是复用既有骨架的 dtype 分支（trait + 循环），非 OpenBLAS 双路径
+  那种维护负担（003-D4 废弃 CPU fallback 的真正原因）。
+
+**影响**：Phase 5 的 complex elementwise（v0.2 算子族的 dtype 扩展）保留 CPU 路径；
+fft 套件（v0.3 新算子族）GPU-only（`fft_impl` 首段 `require_musa`）。Phase 7/8 照此执行。
+
 ---
 
 ## 003-D5：复数语义
@@ -311,6 +329,7 @@ SDK 特征：randn f64 吞吐 ~3 GB/s（比 f32 慢 ~50×，见 sdk-3.1.0-limita
 | 2026-08-06 | 初始草案，7 个 v0.3 补充决策（基于 SDK 3.1.0 头文件实测核对） | 003-D1 至 003-D7 |
 | 2026-08-07 | Phase 3 实施：lu/qr/svd 落地，探针修正 gesvd V 输出 = Vᵀ、SINGULAR 模式 U 损坏 → ALL 模式切片（003-D8） | 003-D7、003-D8 |
 | 2026-08-07 | Phase 4 实施：random 套件，seed/生成串行化/shape=None 语义 + Normal 原生 mean/stddev（003-D9） | 003-D7、003-D9 |
+| 2026-08-08 | Phase 5 实施：complex 落地（elementwise add/sub/mul/div/neg/abs + comparison eq/ne、array 创建/tolist/item、real→complex cast 4 对 + c64→c128 提升）+ fft 套件（fft/ifft/rfft，axis=-1 起步，n 截断/补零，norm 三值，out=）。fftn/多轴与 irfft 推迟到 v0.3 后期。mcc 3.1.0 complex struct kernel 兼容性冒烟通过（sdk-3.1.0-limitations 风险解除）。mock mufft 用 naive O(N²) DFT 数值仿真 | 003-D4、003-D5、003-D7 |
 
 ---
 
