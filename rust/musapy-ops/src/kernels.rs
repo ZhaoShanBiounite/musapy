@@ -69,7 +69,7 @@ unsafe extern "C" {
     pub fn musapy_cast_u64_f64_v2(a: *const u64, c: *mut f64, ndim: i32, shape: *const usize, a_strides: *const isize, stream: musaStream_t);
     pub fn musapy_cast_f32_f64_v2(a: *const f32, c: *mut f64, ndim: i32, shape: *const usize, a_strides: *const isize, stream: musaStream_t);
 
-    // v2 Cast → i64（Phase 4 reduction 整数累加用）
+    // v2 Cast → i64（Phase 4 reduction 整数累加用；f32/f64 → i64 显式 astype）
     pub fn musapy_cast_i8_i64_v2(a: *const i8, c: *mut i64, ndim: i32, shape: *const usize, a_strides: *const isize, stream: musaStream_t);
     pub fn musapy_cast_i16_i64_v2(a: *const i16, c: *mut i64, ndim: i32, shape: *const usize, a_strides: *const isize, stream: musaStream_t);
     pub fn musapy_cast_i32_i64_v2(a: *const i32, c: *mut i64, ndim: i32, shape: *const usize, a_strides: *const isize, stream: musaStream_t);
@@ -77,6 +77,8 @@ unsafe extern "C" {
     pub fn musapy_cast_u16_i64_v2(a: *const u16, c: *mut i64, ndim: i32, shape: *const usize, a_strides: *const isize, stream: musaStream_t);
     pub fn musapy_cast_u32_i64_v2(a: *const u32, c: *mut i64, ndim: i32, shape: *const usize, a_strides: *const isize, stream: musaStream_t);
     pub fn musapy_cast_u64_i64_v2(a: *const u64, c: *mut i64, ndim: i32, shape: *const usize, a_strides: *const isize, stream: musaStream_t);
+    pub fn musapy_cast_f32_i64_v2(a: *const f32, c: *mut i64, ndim: i32, shape: *const usize, a_strides: *const isize, stream: musaStream_t);
+    pub fn musapy_cast_f64_i64_v2(a: *const f64, c: *mut i64, ndim: i32, shape: *const usize, a_strides: *const isize, stream: musaStream_t);
 
     // v2 Comparison（Phase 3：输入 T，输出 u8/bool）
     pub fn musapy_eq_f32_v2(a: *const f32, b: *const f32, c: *mut u8, ndim: i32, shape: *const usize, a_strides: *const isize, b_strides: *const isize, stream: musaStream_t);
@@ -517,6 +519,8 @@ mod mock {
     mock_cast_v2!(musapy_cast_u16_i64_v2, u16, i64);
     mock_cast_v2!(musapy_cast_u32_i64_v2, u32, i64);
     mock_cast_v2!(musapy_cast_u64_i64_v2, u64, i64);
+    mock_cast_v2!(musapy_cast_f32_i64_v2, f32, i64);
+    mock_cast_v2!(musapy_cast_f64_i64_v2, f64, i64);
 
     // v2 Comparison mock（Phase 3）
     macro_rules! mock_compare_v2 {

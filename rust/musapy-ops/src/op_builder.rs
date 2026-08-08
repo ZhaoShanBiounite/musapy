@@ -896,37 +896,13 @@ pub(crate) fn clamp_elementwise(
 ///
 /// 支持矩阵（见 kernels.rs `musapy_cast_<src>_<dst>_v2`）：
 /// - dst ∈ {float32, float64}（计算白名单），src ∈ {int8..int64, uint8..uint64, float32, float64}
-/// - dst ∈ {int64}（reduction 整数累加）
+/// - dst ∈ {int64}（reduction 整数累加 + 显式 astype），src ∈ 同上 + {float32, float64}
 /// - dst ∈ {complex64, complex128}（Phase 5：real→complex，re=src, im=0；
-///   f32→c64 / f64→c128 两对，fft real 输入扩展用）
-/// - bool/float16/bfloat16/complex→real 尚无 cast kernel（后续 Phase）
+///   f32/f64 → c64/c128 + c64 → c128 宽度提升）
+/// - complex → real、bool/float16/bfloat16 任何方向 尚无 cast kernel（后续 Phase，
+///   显式拒绝避免 dispatch 命中 unreachable）
 fn validate_cast_pair(src: Dtype, dst: Dtype) -> Result<()> {
-    match dst {
-        Dtype::Float32 | Dtype::Float64 | Dtype::Int64 => {}
-        Dtype::Complex64 | Dtype::Complex128 => {
-            // Phase 5：real→complex 全部 4 对（f32/f64 → c64/c128，re=src, im=0）
-            // + complex 宽度提升（c64 → c128，跨类别提升：f64+c64→c128）
-            return match (src, dst) {
-                (Dtype::Float32, Dtype::Complex64)
-                | (Dtype::Float32, Dtype::Complex128)
-                | (Dtype::Float64, Dtype::Complex64)
-                | (Dtype::Float64, Dtype::Complex128)
-                | (Dtype::Complex64, Dtype::Complex128) => Ok(()),
-                _ => Err(DtypeError::Unsupported(format!(
-                    "cast: {} → {} not supported (Phase 5 cast scope: real→complex + c64→c128)",
-                    src, dst
-                ))
-                .into()),
-            };
-        }
-        _ => {
-            return Err(DtypeError::Unsupported(format!(
-                "cast: target dtype {} not supported (only float32/float64/int64/complex64/complex128)",
-                dst
-            ))
-            .into());
-        }
-    }
+    // 源侧先拒绝：complex→real / bool / f16 / bf16 全拒
     match src {
         Dtype::Int8
         | Dtype::Int16
@@ -938,13 +914,42 @@ fn validate_cast_pair(src: Dtype, dst: Dtype) -> Result<()> {
         | Dtype::Uint64
         | Dtype::Float32
         | Dtype::Float64 => {}
+        Dtype::Complex64 | Dtype::Complex128 => {
+            // 仅允许 complex 宽度提升 c64 → c128；complex→real 无 kernel，显式拒绝
+            if dst == Dtype::Complex128 && src == Dtype::Complex64 {
+                return Ok(());
+            }
+            return Err(DtypeError::Unsupported(format!(
+                "cast: {} → {} not supported (complex→real 无 cast kernel，后续 Phase)",
+                src, dst
+            ))
+            .into());
+        }
         _ => {
             return Err(DtypeError::Unsupported(format!(
-                "cast: source dtype {} not supported (bool/float16/bfloat16/complex not yet implemented)",
+                "cast: source dtype {} not supported (bool/float16/bfloat16 not yet implemented)",
                 src
             ))
             .into());
         }
+    }
+    match dst {
+        Dtype::Float32 | Dtype::Float64 | Dtype::Int64 | Dtype::Complex64 | Dtype::Complex128 => {}
+        _ => {
+            return Err(DtypeError::Unsupported(format!(
+                "cast: target dtype {} not supported (only float32/float64/int64/complex64/complex128)",
+                dst
+            ))
+            .into());
+        }
+    }
+    // real 源 + complex 目标：仅 f32/f64 → c64/c128
+    if matches!(dst, Dtype::Complex64 | Dtype::Complex128) && !matches!(src, Dtype::Float32 | Dtype::Float64) {
+        return Err(DtypeError::Unsupported(format!(
+            "cast: {} → {} not supported (Phase 5 cast scope: real→complex + c64→c128)",
+            src, dst
+        ))
+        .into());
     }
     if src == dst {
         return Err(DtypeError::Unsupported(format!(
@@ -1016,6 +1021,8 @@ fn launch_cast_kernel(
                     Dtype::Uint16 => launch_cast!(musapy_cast_u16_i64_v2, a_ptr, c_ptr, ndim, shape, a_strides, stream_raw, "cast_u16_i64_v2"),
                     Dtype::Uint32 => launch_cast!(musapy_cast_u32_i64_v2, a_ptr, c_ptr, ndim, shape, a_strides, stream_raw, "cast_u32_i64_v2"),
                     Dtype::Uint64 => launch_cast!(musapy_cast_u64_i64_v2, a_ptr, c_ptr, ndim, shape, a_strides, stream_raw, "cast_u64_i64_v2"),
+                    Dtype::Float32 => launch_cast!(musapy_cast_f32_i64_v2, a_ptr, c_ptr, ndim, shape, a_strides, stream_raw, "cast_f32_i64_v2"),
+                    Dtype::Float64 => launch_cast!(musapy_cast_f64_i64_v2, a_ptr, c_ptr, ndim, shape, a_strides, stream_raw, "cast_f64_i64_v2"),
                     _ => unreachable!("cast pair already validated"),
                 },
                 // real → complex（Phase 5，ADR-003 003-D5；re=src, im=0）

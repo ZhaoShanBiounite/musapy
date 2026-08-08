@@ -507,6 +507,43 @@ class TestAstype:
         assert b.tolist() == [1.0, 2.0]
 
 
+class TestAstypeMusa:
+    """astype 测试（MUSA GPU；回归 cast dispatch unreachable bug）"""
+
+    def test_f32_to_i64_musa(self):
+        """f32 → i64（截断取整；dispatch 曾缺 arm 直接 panic）"""
+        ms.set_default_device("musa:0")
+        a = ms.array([1.7, -2.9, 3.0], dtype='f32')
+        b = a.astype('i64')
+        assert b.dtype == 'i64'
+        assert b.tolist() == [1, -2, 3]
+
+    def test_f64_to_i64_musa(self):
+        """f64 → i64"""
+        ms.set_default_device("musa:0")
+        a = ms.array([1.7, 2.9, -0.9], dtype='f64')
+        b = a.astype('i64')
+        assert b.dtype == 'i64'
+        assert b.tolist() == [1, 2, 0]
+
+    def test_complex_to_real_rejected(self):
+        """complex → real 显式 DtypeError（曾因 validate 与 dispatch 不一致触发
+        unreachable panic）"""
+        ms.set_default_device("musa:0")
+        for src, dst in [('c64', 'f64'), ('c64', 'f32'), ('c128', 'f64'), ('c128', 'f32')]:
+            x = ms.array([1 + 2j], dtype=src)
+            with pytest.raises(ms.DtypeError):
+                x.astype(dst)
+
+    def test_c64_to_c128_musa(self):
+        """complex 宽度提升 c64 → c128 仍可用"""
+        ms.set_default_device("musa:0")
+        x = ms.array([1 + 2j, 3 - 4j], dtype='c64')
+        y = x.astype('c128')
+        assert y.dtype == 'c128'
+        assert y.tolist() == [1 + 2j, 3 - 4j]
+
+
 class TestDunders:
     """Python dunder 运算符测试（CPU）"""
 
