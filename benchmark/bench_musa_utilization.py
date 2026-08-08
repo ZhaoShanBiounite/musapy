@@ -305,6 +305,52 @@ def run_benchmark(size: int, iters: int, device_id: int):
         r = bench_op(fn, iters, total_2d, flops, r_bytes, w_bytes)
         print(f"  {name:<18} {r.latency_ms:<11.3f} {r.gelem_per_sec:<13.3f} {r.effective_bw_gb_s:<11.3f}")
 
+    # ═══ Phase 7 专项 — 复数 reduction + 多轴归约（P7.1/P7.2）═══
+    print("\n" + "-" * 72)
+    print("  [Phase 7 专项 — 复数 reduction + axis=tuple 多轴归约]")
+    print("-" * 72)
+    # 复数（sum/prod/mean：naive 分量路径；max/min/arg* 复数无全序拒绝）。
+    # naive 路径单线程扫轴，大数组极慢（1M c64 全局 ~214ms）→ 降级到 1M
+    # （同 cumsum 模式：性能特征由 naive 路径决定，规模只影响绝对延迟）。
+    cplx_cap = min(size, 1_000_000)
+    cplx_data = [complex(i % 1000 * 0.001, i % 500 * 0.002) for i in range(cplx_cap)]
+    cplx = ms.array(cplx_data, dtype=ms.complex64, device=device_str)
+    if cplx_cap < size:
+        print(f"  注: 复数按上限 {cplx_cap:,} 运行（naive 单线程扫轴，"
+              f"{size:,} 会过慢；性能特征不变）")
+    print(f"  复数数组: {cplx_cap:,} elements × complex64 = {fmt_bytes(cplx_cap * 8)} / array")
+    cplx_ops = [
+        # (name, fn, flops_per_elem, read_bytes_per_elem, write_bytes_per_elem)
+        # complex64 读 8B + 写 8B（元素）
+        ("csum  (c64,global)",  lambda: ms.sum(cplx),   1.0, 8, 8),
+        ("cmean (c64,global)",  lambda: ms.mean(cplx),  2.0, 8, 8),
+        ("cprod (c64,global)",  lambda: ms.prod(cplx),  2.0, 8, 8),
+        ("csum  (c64,axis=0)",  lambda: ms.sum(cplx, axis=0), 1.0, 8, 8),
+    ]
+    print(f"\n  {'算子':<20} {'延迟(ms)':<11} {'吞吐(GE/s)':<13} {'带宽(GB/s)':<11}")
+    print(f"  {'─'*20} {'─'*11} {'─'*13} {'─'*11}")
+    for name, fn, flops, r_bytes, w_bytes in cplx_ops:
+        r = bench_op(fn, iters, cplx_cap, flops, r_bytes, w_bytes)
+        print(f"  {name:<20} {r.latency_ms:<11.3f} {r.gelem_per_sec:<13.3f} {r.effective_bw_gb_s:<11.3f}")
+    # 复数排序归约拒绝（正确性断言，非计时）
+    try:
+        ms.max(cplx)
+        print("  ⚠ ms.max(c64) 未抛 DtypeError（应拒绝，复数无全序）")
+    except ms.DtypeError:
+        print("  ✓ ms.max(c64) 正确抛 DtypeError（复数无全序）")
+
+    # 多轴归约（axis=tuple）：sum/max/argmax 的 2D 全轴归约（逐轴迭代 / transpose+合并轴）
+    print("\n  多轴归约: 256×256 矩阵 axis=(0,1)（全轴归约 → 0-dim）")
+    multi_ops = [
+        ("msum  axis=(0,1)",    lambda: ms.sum(mat, axis=(0, 1)),   1.0, 4, 0),
+        ("mmax  axis=(0,1)",    lambda: ms.max(mat, axis=(0, 1)),   1.0, 4, 0),
+        ("mmean axis=(0,1)",    lambda: ms.mean(mat, axis=(0, 1)),  2.0, 4, 0),
+        ("margmax axis=(0,1)",  lambda: ms.argmax(mat, axis=(0, 1)), 2.0, 4, 0),
+    ]
+    for name, fn, flops, r_bytes, w_bytes in multi_ops:
+        r = bench_op(fn, iters, total_2d, flops, r_bytes, w_bytes)
+        print(f"  {name:<20} {r.latency_ms:<11.3f} {r.gelem_per_sec:<13.3f} {r.effective_bw_gb_s:<11.3f}")
+
     # ═══ Indexing 专项（Phase 6.5-7）═══
     print("\n" + "-" * 72)
     print("  [Indexing 专项 — gather/scatter/contiguous]")

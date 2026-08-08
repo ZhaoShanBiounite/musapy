@@ -191,7 +191,36 @@ spmv 低密度下延迟被固定开销主导（每调用 create/destroy 描述�
 
 ---
 
-## 6. 健康状态
+## 6. reduction 补全（axis=tuple + 复数，Phase 7；2026-08-08 真机新增）
+
+### 6.1 复数 reduction（c64 naive 分量路径；1M 元素）
+
+| 算子 | 延迟(ms) | 带宽(GB/s) | 说明 |
+|---|---|---|---|
+| csum (c64, global) | 214.2 | 0.075 | naive 单线程扫轴（10M/64M 档按 1M 上限运行） |
+| cmean (c64, global) | 215.2 | 0.074 | |
+| cprod (c64, global) | 259.2 | 0.062 | 复数乘法 |
+| csum (c64, axis=0) | 214.2 | 0.075 | |
+
+复数归约**仅 naive 路径**（partial/small_axis 的 warp shuffle 对 struct 有
+兼容性风险）→ 单线程扫轴，1M 已 214ms。大归约性能提升需后续 kernel 重构。
+max/min/argmax/argmin 复数**正确抛 DtypeError**（无全序）。
+
+### 6.2 多轴归约（256×256 矩阵，axis=(0,1) 全轴归约 → 0-dim）
+
+| 算子 | 延迟(ms) | 说明 |
+|---|---|---|
+| msum axis=(0,1) | 0.11-0.13 | 逐轴迭代（2 轮 kernel） |
+| mmax axis=(0,1) | 0.11-0.12 | |
+| mmean axis=(0,1) | 0.11-0.12 | |
+| margmax axis=(0,1) | 0.08 | transpose+合并轴（1 轮 kernel） |
+
+地板主导（256² 太小）；argmax 合并轴单 kernel 最快。正确性对照 NumPy 全绿
+（test_reduction.py +22 用例）。
+
+---
+
+## 7. 健康状态
 
 - Stream：pending=0，is_poisoned=False（全部 benchmark）
 - 显存：linalg 最终 Allocated 45.3 MB（7 buffers）· Peak 160.4 MB · 无 deferred-free 残留
@@ -199,7 +228,7 @@ spmv 低密度下延迟被固定开销主导（每调用 create/destroy 描述�
 
 ---
 
-## 7. 关键数字速查
+## 8. 关键数字速查
 
 | 指标 | 数值 |
 |---|---|
@@ -216,10 +245,12 @@ spmv 低密度下延迟被固定开销主导（每调用 create/destroy 描述�
 | fft 2D 64×4096（batched） | 0.262 ms（逐行对比 6.43 ms，P-FFT-1 24.5×） |
 | fft f64（10M） | 16.6 ms（mp_22 FP64 仿真，慢 4×） |
 | spmv 2000² d=0.5 | ~1.0 ms / ~21 GB/s（CSR 随机访存） |
+| 复数 sum（c64 1M） | 214 ms（naive 单线程扫轴，Phase 7） |
+| 多轴 sum axis=(0,1)（256²） | 0.11-0.13 ms（逐轴迭代，Phase 7） |
 
 ---
 
-## 8. 最终全量复测注记（2026-08-08）
+## 9. 最终全量复测注记（2026-08-08）
 
 除 `bench_math_handles.py` 外的全部 benchmark 于 2026-08-08 重跑
 （`bench_linalg.py` + `bench_musa_utilization.py` 1M/10M/64M 三档 +
