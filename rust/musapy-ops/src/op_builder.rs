@@ -2197,10 +2197,18 @@ impl ReduceKernel {
 /// - sum/prod/max/min/cumsum：int → i64，float 保持
 /// - mean：int → f64，float 保持
 /// - argmax/argmin：int → i64，float 保持（输出恒 i64，但 kernel 输入需要 compute dtype）
+/// - complex（Phase 7 P7.2）：sum/mean/prod 保持自身；max/min/arg* 在
+///   `reduction_axis` 入口拒绝（复数无全序，ADR-003 003-D5）
 fn reduction_compute_dtype(input_dtype: Dtype, kernel: &ReduceKernel) -> Dtype {
     match input_dtype {
         Dtype::Float32 => Dtype::Float32,
         Dtype::Float64 => Dtype::Float64,
+        Dtype::Complex64 | Dtype::Complex128 => match kernel {
+            ReduceKernel::Max | ReduceKernel::Min | ReduceKernel::Argmax | ReduceKernel::Argmin => {
+                unreachable!("complex ordering reduction rejected in reduction_axis")
+            }
+            _ => input_dtype, // sum/prod/mean 保持 complex
+        },
         // 所有整数类型
         _ => match kernel {
             ReduceKernel::Mean => Dtype::Float64,
@@ -2309,6 +2317,22 @@ pub(crate) fn reduction_axis(
 
     // 1. Device
     let device = a.device().clone();
+
+    // 1b. complex 拒绝（Phase 7 P7.2，ADR-003 003-D5）：max/min/argmax/argmin
+    //     对复数无全序，显式抛 DtypeError（替代 Phase 7 前的隐式 cast 失败）
+    if matches!(a.dtype(), Dtype::Complex64 | Dtype::Complex128)
+        && matches!(
+            kernel,
+            ReduceKernel::Max | ReduceKernel::Min | ReduceKernel::Argmax | ReduceKernel::Argmin
+        )
+    {
+        return Err(DtypeError::Unsupported(format!(
+            "{}: ordering reduction not supported for complex dtype {} (complex has no total order, ADR-003 003-D5)",
+            op_name,
+            a.dtype()
+        ))
+        .into());
+    }
 
     // 2. 输出 shape 推导
     let in_shape = a.shape().clone();
@@ -2484,7 +2508,11 @@ pub(crate) fn reduction_axis(
                 const PARALLEL_REDUCE_THRESHOLD: usize = 1024;
                 const SMALL_AXIS_MIN: usize = 16;
 
-                if axis_len > PARALLEL_REDUCE_THRESHOLD {
+                // Phase 7 P7.2：complex 归约仅 naive 路径（无 partial/small_axis
+                // 实例化，warp shuffle 对 struct 有兼容性风险；正确性优先）
+                let is_complex = matches!(compute_dtype, Dtype::Complex64 | Dtype::Complex128);
+
+                if !is_complex && axis_len > PARALLEL_REDUCE_THRESHOLD {
                     // ═══ 两阶段并行路径 ═══
                     // P2：partial kernel 每线程 REDUCE_ITEMS=4 元素，
                     // 一个 tile（256 线程）覆盖 1024 个元素
@@ -2837,7 +2865,7 @@ pub(crate) fn reduction_axis(
                             _ => unreachable!(),
                         }
                     }
-                } else if axis_len > SMALL_AXIS_MIN && !kernel.output_is_index() {
+                } else if !is_complex && axis_len > SMALL_AXIS_MIN && !kernel.output_is_index() {
                     // ═══ 小 axis 并行路径（P2）═══
                     // 每输出配 group_size 线程（≥ axis_len 向上取 2 的幂，
                     // 上限 256），修 naive 在 out_size 小时并行度不足的问题
@@ -2897,6 +2925,13 @@ pub(crate) fn reduction_axis(
                             (ReduceKernel::Min, Dtype::Float64) => launch_reduce!(musapy_min_f64_v2, a_ptr, out_ptr, kernel_ndim, kernel_shape, in_strides, kernel_axis, axis_len, out_size, stream_raw, "min_f64_v2"),
                             (ReduceKernel::Mean, Dtype::Float32) => launch_reduce!(musapy_mean_f32_v2, a_ptr, out_ptr, kernel_ndim, kernel_shape, in_strides, kernel_axis, axis_len, out_size, stream_raw, "mean_f32_v2"),
                             (ReduceKernel::Mean, Dtype::Float64) => launch_reduce!(musapy_mean_f64_v2, a_ptr, out_ptr, kernel_ndim, kernel_shape, in_strides, kernel_axis, axis_len, out_size, stream_raw, "mean_f64_v2"),
+                            // complex（Phase 7 P7.2：sum/prod/mean；naive 路径）
+                            (ReduceKernel::Sum, Dtype::Complex64) => launch_reduce!(musapy_sum_c64_v2, a_ptr, out_ptr, kernel_ndim, kernel_shape, in_strides, kernel_axis, axis_len, out_size, stream_raw, "sum_c64_v2"),
+                            (ReduceKernel::Sum, Dtype::Complex128) => launch_reduce!(musapy_sum_c128_v2, a_ptr, out_ptr, kernel_ndim, kernel_shape, in_strides, kernel_axis, axis_len, out_size, stream_raw, "sum_c128_v2"),
+                            (ReduceKernel::Prod, Dtype::Complex64) => launch_reduce!(musapy_prod_c64_v2, a_ptr, out_ptr, kernel_ndim, kernel_shape, in_strides, kernel_axis, axis_len, out_size, stream_raw, "prod_c64_v2"),
+                            (ReduceKernel::Prod, Dtype::Complex128) => launch_reduce!(musapy_prod_c128_v2, a_ptr, out_ptr, kernel_ndim, kernel_shape, in_strides, kernel_axis, axis_len, out_size, stream_raw, "prod_c128_v2"),
+                            (ReduceKernel::Mean, Dtype::Complex64) => launch_reduce!(musapy_mean_c64_v2, a_ptr, out_ptr, kernel_ndim, kernel_shape, in_strides, kernel_axis, axis_len, out_size, stream_raw, "mean_c64_v2"),
+                            (ReduceKernel::Mean, Dtype::Complex128) => launch_reduce!(musapy_mean_c128_v2, a_ptr, out_ptr, kernel_ndim, kernel_shape, in_strides, kernel_axis, axis_len, out_size, stream_raw, "mean_c128_v2"),
                             _ => unreachable!("mean only supports float compute dtype"),
                         }
                     }
@@ -3207,6 +3242,19 @@ fn cpu_reduction_axis(
     dtype: Dtype,
     kernel: &ReduceKernel,
 ) {
+    // complex（Phase 7 P7.2：sum/prod/mean；max/min/arg* 已在 reduction_axis 拒绝）
+    if matches!(dtype, Dtype::Complex64 | Dtype::Complex128) {
+        match dtype {
+            Dtype::Complex64 => {
+                cpu_reduce_cplx::<muComplex>(a, c, in_shape, in_strides, axis, axis_len, out_size, kernel)
+            }
+            Dtype::Complex128 => {
+                cpu_reduce_cplx::<muDoubleComplex>(a, c, in_shape, in_strides, axis, axis_len, out_size, kernel)
+            }
+            _ => unreachable!(),
+        }
+        return;
+    }
     // mean 单独处理（需要除法，只有 float）
     if matches!(kernel, ReduceKernel::Mean) {
         match dtype {
@@ -3221,6 +3269,62 @@ fn cpu_reduction_axis(
         Dtype::Float32 => cpu_reduce_typed::<f32>(a, c, in_shape, in_strides, axis, axis_len, out_size, kernel),
         Dtype::Float64 => cpu_reduce_typed::<f64>(a, c, in_shape, in_strides, axis, axis_len, out_size, kernel),
         _ => unreachable!("reduction compute dtype already validated"),
+    }
+}
+
+/// 泛型 CPU complex 归约（Phase 7 P7.2：sum/prod/mean；窄化由 CplxScalar 内完成）。
+fn cpu_reduce_cplx<T: CplxScalar>(
+    a: Option<NonNull<u8>>,
+    c: Option<NonNull<u8>>,
+    in_shape: &[usize],
+    in_strides: &[isize],
+    axis: usize,
+    axis_len: usize,
+    out_size: usize,
+    kernel: &ReduceKernel,
+) {
+    let (Some(ap), Some(cp)) = (a, c) else {
+        return;
+    };
+    if out_size == 0 || axis_len == 0 {
+        return;
+    }
+    unsafe {
+        let base_a = ap.as_ptr() as *const T;
+        let base_c = cp.as_ptr() as *mut T;
+        for idx in 0..out_size {
+            let base = cpu_reduce_offset(idx, in_shape, in_strides, axis, 0);
+            let axis_stride = in_strides[axis];
+            let mut re = 0.0f64;
+            let mut im = 0.0f64;
+            match kernel {
+                ReduceKernel::Sum | ReduceKernel::Mean => {
+                    for k in 0..axis_len {
+                        let off = (base as isize + k as isize * axis_stride) as usize;
+                        let v = *base_a.add(off);
+                        re += v.cplx_re();
+                        im += v.cplx_im();
+                    }
+                }
+                ReduceKernel::Prod => {
+                    re = 1.0;
+                    for k in 0..axis_len {
+                        let off = (base as isize + k as isize * axis_stride) as usize;
+                        let v = *base_a.add(off);
+                        let (br, bi) = (v.cplx_re(), v.cplx_im());
+                        let (ar, ai) = (re, im);
+                        re = ar * br - ai * bi;
+                        im = ar * bi + ai * br;
+                    }
+                }
+                _ => unreachable!("complex ordering reduction rejected"),
+            }
+            if matches!(kernel, ReduceKernel::Mean) {
+                re /= axis_len as f64;
+                im /= axis_len as f64;
+            }
+            *base_c.add(idx) = T::cplx_from_parts(re, im);
+        }
     }
 }
 

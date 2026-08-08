@@ -499,3 +499,109 @@ class TestReductionMusa:
                 np.testing.assert_allclose(np.array(got.tolist()),
                                            wf(base[:, ::-1], axis=ax),
                                            rtol=1e-5, atol=1e-5)
+
+
+# ═══════════════════════════════════════════════════════════════
+# Phase 7 (P7.1/P7.2): axis=tuple 多轴归约 + 复数 sum/mean/prod
+# ═══════════════════════════════════════════════════════════════
+
+class TestReductionMultiAxis:
+    """axis=tuple 多轴归约（P7.1）：sum/prod/max/min/mean 逐轴迭代，
+    argmax/argmin transpose+合并轴。CPU + MUSA 双路径。"""
+
+    @pytest.mark.parametrize("dtype", [ms.float32, ms.float64])
+    @pytest.mark.parametrize("axes", [(0, 1), (1, 2), (0, 2), (0, 1, 2), (-1, 0)])
+    def test_multi_axis_reduce_ops(self, dtype, axes):
+        rng = np.random.default_rng(21)
+        data = rng.normal(size=(2, 3, 4)).astype(
+            np.float32 if dtype == ms.float32 else np.float64
+        )
+        tol = 1e-4 if dtype == ms.float32 else 1e-10
+        for dev in ("cpu", "musa:0"):
+            x = ms.array(data.tolist(), dtype=dtype, device=dev)
+            for name, f in [("sum", ms.sum), ("mean", ms.mean), ("prod", ms.prod),
+                            ("max", ms.max), ("min", ms.min)]:
+                for keep in (False, True):
+                    got = np.array(f(x, axis=axes, keepdims=keep).tolist())
+                    exp = getattr(np, name)(data, axis=axes, keepdims=keep)
+                    assert np.allclose(got, exp, rtol=tol, atol=tol), \
+                        (dev, name, axes, keep, got, exp)
+
+    @pytest.mark.parametrize("axes", [(0, 1), (1, 2), (0, 2), (0, 1, 2), (-1, 0)])
+    def test_multi_axis_argreduce(self, axes):
+        """argmax/argmin 多轴：transpose+合并轴，索引为展平指定轴的扁平索引
+        （NumPy 2.0+ 语义）。"""
+        rng = np.random.default_rng(22)
+        data = rng.normal(size=(2, 3, 4))
+        # 参照：指定轴移到末尾、合并为单轴后 argmax
+        norm = tuple(sorted(ax % 3 for ax in axes))
+        perm = [i for i in range(3) if i not in norm] + list(norm)
+        t = data.transpose(perm)
+        merged = t.reshape(t.shape[:3 - len(norm)] + (-1,))
+        exp = np.argmax(merged, axis=-1)
+        for dev in ("cpu", "musa:0"):
+            x = ms.array(data.tolist(), dtype=ms.float64, device=dev)
+            got = np.array(ms.argmax(x, axis=axes).tolist())
+            assert np.allclose(got, exp), (dev, axes, got, exp)
+
+    def test_multi_axis_argreduce_keepdims(self):
+        """argmax 多轴 keepdims：被归约轴处恢复为 1。"""
+        rng = np.random.default_rng(23)
+        data = rng.normal(size=(2, 3, 4))
+        x = ms.array(data.tolist(), dtype=ms.float64)
+        got = ms.argmax(x, axis=(0, 1), keepdims=True)
+        assert got.shape == (1, 1, 4)
+        # 参照：合并轴 argmax 后 reshape 回 (1,1,4)
+        t = data.transpose(2, 0, 1)  # 非轴维 2 在前，轴 0,1 在末尾
+        merged = t.reshape(4, -1)
+        exp = np.argmax(merged, axis=-1).reshape(1, 1, 4)
+        assert np.allclose(got.tolist(), exp), (got.tolist(), exp)
+
+    def test_multi_axis_errors(self):
+        x = ms.array(np.zeros((2, 3, 4)).tolist(), dtype=ms.float64)
+        with pytest.raises(ms.ShapeError):
+            ms.sum(x, axis=(0, 0))  # 重复轴
+        with pytest.raises(ms.ShapeError):
+            ms.sum(x, axis=(0, 5))  # 越界
+
+    def test_multi_axis_out_rejected(self):
+        """多轴 + out= 暂不支持（中间轮 shape 不同）。"""
+        x = ms.array(np.zeros((2, 3)).tolist(), dtype=ms.float64)
+        out = ms.array(np.zeros(2).tolist(), dtype=ms.float64)
+        with pytest.raises(ms.ShapeError):
+            ms.sum(x, axis=(0, 1), out=out)
+
+
+class TestReductionComplex:
+    """复数 sum/mean/prod（P7.2）；max/min/argmax/argmin 拒绝。CPU + MUSA。"""
+
+    @pytest.mark.parametrize("dtype", [ms.complex64, ms.complex128])
+    def test_complex_reduce_ops(self, dtype):
+        rng = np.random.default_rng(24)
+        data = (rng.normal(size=(3, 4)) + 1j * rng.normal(size=(3, 4))).astype(
+            np.complex64 if dtype == ms.complex64 else np.complex128
+        )
+        tol = 1e-4 if dtype == ms.complex64 else 1e-10
+        for dev in ("cpu", "musa:0"):
+            x = ms.array(data.tolist(), dtype=dtype, device=dev)
+            for axes in (None, 0, 1, (0, 1), -1):
+                for name, f in [("sum", ms.sum), ("mean", ms.mean), ("prod", ms.prod)]:
+                    got = np.array(f(x, axis=axes).tolist(), dtype=complex)
+                    exp = getattr(np, name)(data, axis=axes)
+                    assert np.allclose(got, exp, rtol=tol, atol=tol), \
+                        (dev, name, axes, got, exp)
+
+    def test_complex_ordering_rejected(self):
+        """复数 max/min/argmax/argmin 抛 DtypeError（复数无全序）。"""
+        x = ms.array(np.array([1 + 2j, 3 + 4j]).tolist(), dtype=ms.complex128)
+        for f in (ms.max, ms.min, ms.argmax, ms.argmin):
+            with pytest.raises(ms.DtypeError):
+                f(x)
+
+    def test_complex_global_and_keepdims(self):
+        x = ms.array(np.array([1 + 2j, 3 + 4j]).tolist(), dtype=ms.complex128)
+        assert ms.sum(x).dtype == ms.complex128
+        assert ms.sum(x).item() == 4 + 6j
+        got = ms.mean(x, axis=0, keepdims=True)
+        assert got.shape == (1,)
+        assert np.allclose(got.tolist(), [2 + 3j], rtol=1e-10)

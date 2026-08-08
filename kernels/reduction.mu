@@ -19,6 +19,15 @@
 #include <stdint.h>
 #include <limits.h>
 
+// ── complex 类型（Phase 7 P7.2，2026-08-08）───────────────────
+// 各 .mu 独立编译，reduction.mu 需自行定义（ABI ≡ musa_x_ffi.rs 的
+// muComplex/muDoubleComplex）。complex 归约仅 naive 路径（正确性优先，
+// 大归约性能留作后续；partial/small_axis 的 warp shuffle 对 struct 有
+// 兼容性风险）。c64/c128 无法用模板运算符（`x + y` 不适用于 struct），
+// 故用显式 re/im 分量公式。
+typedef struct c64 { float re; float im; } c64;
+typedef struct c128 { double re; double im; } c128;
+
 // ── Reduction 参数结构（按值传递给 kernel）────────────────────
 
 #define MUSAPY_MAX_NDIM 32
@@ -150,6 +159,72 @@ __global__ void musapy_mean_kernel_v2(
     }
     c[idx] = acc / (T)meta.axis_len;
 }
+
+// ── Complex naive kernels（Phase 7 P7.2，2026-08-08）────────────
+// c64/c128 的 sum/prod/mean，显式 re/im 分量（struct 不能用运算符模板）。
+// 仅 naive 路径（正确性优先；partial/small_axis 对 complex 暂不实例化）。
+// 求和与均值：re/im 分别累加，mean 各除 axis_len。
+// 求积：复数乘法 (ar+ai·i)(br+bi·i) = (ar·br−ai·bi) + (ar·bi+ai·br)·i。
+
+#define CPLX_NAIVE_KERNEL(CT, F, SUFFIX)                                      \
+__global__ void musapy_sum_cplx_##SUFFIX##_kernel_v2(                         \
+    const CT* __restrict__ a, CT* __restrict__ c, NdMetaReduce meta,          \
+    size_t out_size                                                           \
+) {                                                                           \
+    size_t idx = blockIdx.x * blockDim.x + threadIdx.x;                       \
+    if (idx >= out_size) return;                                              \
+    size_t base = reduce_offset(idx, meta, 0);                                \
+    ssize_t axis_stride = meta.in_strides[meta.axis];                         \
+    F acc_re = (F)0, acc_im = (F)0;                                           \
+    for (size_t k = 0; k < meta.axis_len; k++) {                              \
+        CT v = a[base + (size_t)((ssize_t)k * axis_stride)];                  \
+        acc_re += v.re;                                                       \
+        acc_im += v.im;                                                       \
+    }                                                                         \
+    c[idx].re = acc_re;                                                       \
+    c[idx].im = acc_im;                                                       \
+}                                                                             \
+__global__ void musapy_prod_cplx_##SUFFIX##_kernel_v2(                        \
+    const CT* __restrict__ a, CT* __restrict__ c, NdMetaReduce meta,          \
+    size_t out_size                                                           \
+) {                                                                           \
+    size_t idx = blockIdx.x * blockDim.x + threadIdx.x;                       \
+    if (idx >= out_size) return;                                              \
+    size_t base = reduce_offset(idx, meta, 0);                                \
+    ssize_t axis_stride = meta.in_strides[meta.axis];                         \
+    F acc_re = (F)1, acc_im = (F)0;                                           \
+    for (size_t k = 0; k < meta.axis_len; k++) {                              \
+        CT v = a[base + (size_t)((ssize_t)k * axis_stride)];                  \
+        F re = acc_re * v.re - acc_im * v.im;                                 \
+        F im = acc_re * v.im + acc_im * v.re;                                 \
+        acc_re = re;                                                          \
+        acc_im = im;                                                          \
+    }                                                                         \
+    c[idx].re = acc_re;                                                       \
+    c[idx].im = acc_im;                                                       \
+}                                                                             \
+__global__ void musapy_mean_cplx_##SUFFIX##_kernel_v2(                        \
+    const CT* __restrict__ a, CT* __restrict__ c, NdMetaReduce meta,          \
+    size_t out_size                                                           \
+) {                                                                           \
+    size_t idx = blockIdx.x * blockDim.x + threadIdx.x;                       \
+    if (idx >= out_size) return;                                              \
+    size_t base = reduce_offset(idx, meta, 0);                                \
+    ssize_t axis_stride = meta.in_strides[meta.axis];                         \
+    F acc_re = (F)0, acc_im = (F)0;                                           \
+    for (size_t k = 0; k < meta.axis_len; k++) {                              \
+        CT v = a[base + (size_t)((ssize_t)k * axis_stride)];                  \
+        acc_re += v.re;                                                       \
+        acc_im += v.im;                                                       \
+    }                                                                         \
+    c[idx].re = acc_re / (F)meta.axis_len;                                    \
+    c[idx].im = acc_im / (F)meta.axis_len;                                    \
+}
+
+CPLX_NAIVE_KERNEL(c64, float, c64)
+CPLX_NAIVE_KERNEL(c128, double, c128)
+
+#undef CPLX_NAIVE_KERNEL
 
 // ── Argmax / Argmin naive kernel（输入 T，输出 int64_t）────────
 
@@ -1137,6 +1212,36 @@ REDUCE_V2(prod)
 REDUCE_V2(max)
 REDUCE_V2(min)
 #undef REDUCE_V2
+
+// ── Complex naive wrapper（Phase 7 P7.2）─────────────────────
+// 仅 sum/prod/mean 的 c64/c128（max/min/arg* 复数无全序，op_builder 拒绝）。
+
+#define CPLX_REDUCE_V2(OP, CT, SUFFIX)                                        \
+void musapy_##OP##_##SUFFIX##_v2(                                              \
+    const CT* __restrict__ a, CT* __restrict__ c,                             \
+    int ndim, const size_t* in_shape, const ssize_t* in_strides,              \
+    int axis, size_t axis_len, size_t out_size, musaStream_t stream           \
+) {                                                                           \
+    NdMetaReduce meta;                                                        \
+    meta.ndim = ndim;                                                         \
+    meta.axis = axis;                                                         \
+    meta.axis_len = axis_len;                                                 \
+    for (int i = 0; i < ndim; i++) {                                          \
+        meta.in_shape[i] = in_shape[i];                                       \
+        meta.in_strides[i] = in_strides[i];                                   \
+    }                                                                         \
+    musapy_##OP##_cplx_##SUFFIX##_kernel_v2                                   \
+        <<<grid_size_1d(out_size), 256, 0, stream>>>(a, c, meta, out_size);   \
+}
+
+CPLX_REDUCE_V2(sum, c64, c64)
+CPLX_REDUCE_V2(sum, c128, c128)
+CPLX_REDUCE_V2(prod, c64, c64)
+CPLX_REDUCE_V2(prod, c128, c128)
+CPLX_REDUCE_V2(mean, c64, c64)
+CPLX_REDUCE_V2(mean, c128, c128)
+
+#undef CPLX_REDUCE_V2
 
 /// mean wrapper：只有 f32/f64
 #define MEAN_V2(T, SUFFIX)                                                    \

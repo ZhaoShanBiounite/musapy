@@ -220,7 +220,29 @@ pub fn clamp(
 
 // ── Phase 4: Reduction ──────────────────────────────────────
 
-/// Reduction pyfunction 宏（axis + keepdims + out）。
+/// 提取 axis 参数：None → None；int → 单轴；tuple/list → 多轴（Phase 7 P7.1）。
+fn parse_axes_opt(axis: &Option<&Bound<'_, PyAny>>) -> PyResult<Option<Vec<isize>>> {
+    let Some(ax) = axis else {
+        return Ok(None);
+    };
+    // 整数 → 单轴
+    if let Ok(i) = ax.extract::<isize>() {
+        return Ok(Some(vec![i]));
+    }
+    // tuple/list → 多轴
+    if let Ok(seq) = ax.downcast::<pyo3::types::PySequence>() {
+        let mut out = Vec::with_capacity(seq.len()?);
+        for item in seq.iter()? {
+            out.push(item?.extract::<isize>()?);
+        }
+        return Ok(Some(out));
+    }
+    Err(pyo3::exceptions::PyTypeError::new_err(
+        "axis must be an int or a tuple/list of ints",
+    ))
+}
+
+/// Reduction pyfunction 宏（axis + keepdims + out；axis 支持 int/tuple/list）。
 macro_rules! py_reduce_op {
     ($name:ident, $doc:expr) => {
         #[doc = $doc]
@@ -229,7 +251,7 @@ macro_rules! py_reduce_op {
         pub fn $name(
             py: Python<'_>,
             a: &PyArray,
-            axis: Option<isize>,
+            axis: Option<&Bound<'_, PyAny>>,
             keepdims: bool,
             out: Option<&PyArray>,
         ) -> PyResult<PyArray> {
@@ -238,15 +260,50 @@ macro_rules! py_reduce_op {
                     debug::set_debug_frame(Some(frame));
                 }
             }
-            let result = musapy_ops::$name(&a.inner, axis, keepdims, out.map(|o| &o.inner))
+            let axes = parse_axes_opt(&axis)?;
+            let result = musapy_ops::$name(&a.inner, axes.as_deref(), keepdims, out.map(|o| &o.inner))
                 .map_err(error::to_pyerr)?;
             Ok(PyArray::from_array(result))
         }
     };
 }
 
-/// Argmax/Argmin pyfunction 宏（axis + out，无 keepdims）。
+/// Argmax/Argmin pyfunction 宏（axis + keepdims + out；axis 支持 int/tuple/list）。
 macro_rules! py_argreduce_op {
+    ($name:ident, $doc:expr) => {
+        #[doc = $doc]
+        #[pyfunction]
+        #[pyo3(signature = (a, axis=None, keepdims=false, out=None))]
+        pub fn $name(
+            py: Python<'_>,
+            a: &PyArray,
+            axis: Option<&Bound<'_, PyAny>>,
+            keepdims: bool,
+            out: Option<&PyArray>,
+        ) -> PyResult<PyArray> {
+            if debug::is_debug() {
+                if let Some(frame) = extract_caller_frame(py) {
+                    debug::set_debug_frame(Some(frame));
+                }
+            }
+            let axes = parse_axes_opt(&axis)?;
+            let result = musapy_ops::$name(&a.inner, axes.as_deref(), keepdims, out.map(|o| &o.inner))
+                .map_err(error::to_pyerr)?;
+            Ok(PyArray::from_array(result))
+        }
+    };
+}
+
+py_reduce_op!(sum, "ms.sum(a, axis=None, keepdims=False, out=None) — 沿轴求和");
+py_reduce_op!(prod, "ms.prod(a, axis=None, keepdims=False, out=None) — 沿轴求积");
+py_reduce_op!(max, "ms.max(a, axis=None, keepdims=False, out=None) — 沿轴最大值");
+py_reduce_op!(min, "ms.min(a, axis=None, keepdims=False, out=None) — 沿轴最小值");
+py_reduce_op!(mean, "ms.mean(a, axis=None, keepdims=False, out=None) — 沿轴均值");
+py_argreduce_op!(argmax, "ms.argmax(a, axis=None, keepdims=False, out=None) — 沿轴最大值索引");
+py_argreduce_op!(argmin, "ms.argmin(a, axis=None, keepdims=False, out=None) — 沿轴最小值索引");
+
+/// Cumsum pyfunction（axis 单轴 int，无 keepdims）。
+macro_rules! py_cumsum_op {
     ($name:ident, $doc:expr) => {
         #[doc = $doc]
         #[pyfunction]
@@ -269,14 +326,7 @@ macro_rules! py_argreduce_op {
     };
 }
 
-py_reduce_op!(sum, "ms.sum(a, axis=None, keepdims=False, out=None) — 沿轴求和");
-py_reduce_op!(prod, "ms.prod(a, axis=None, keepdims=False, out=None) — 沿轴求积");
-py_reduce_op!(max, "ms.max(a, axis=None, keepdims=False, out=None) — 沿轴最大值");
-py_reduce_op!(min, "ms.min(a, axis=None, keepdims=False, out=None) — 沿轴最小值");
-py_reduce_op!(mean, "ms.mean(a, axis=None, keepdims=False, out=None) — 沿轴均值");
-py_argreduce_op!(argmax, "ms.argmax(a, axis=None, out=None) — 沿轴最大值索引");
-py_argreduce_op!(argmin, "ms.argmin(a, axis=None, out=None) — 沿轴最小值索引");
-py_argreduce_op!(cumsum, "ms.cumsum(a, axis=None, out=None) — 沿轴累积求和");
+py_cumsum_op!(cumsum, "ms.cumsum(a, axis=None, out=None) — 沿轴累积求和");
 
 /// 从 Python 调用栈提取调用者帧信息（debug 模式用，ADR L3-26）。
 ///

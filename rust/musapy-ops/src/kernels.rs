@@ -148,6 +148,13 @@ unsafe extern "C" {
     pub fn musapy_min_f64_v2(a: *const f64, c: *mut f64, ndim: i32, in_shape: *const usize, in_strides: *const isize, axis: i32, axis_len: usize, out_size: usize, stream: musaStream_t);
     pub fn musapy_mean_f32_v2(a: *const f32, c: *mut f32, ndim: i32, in_shape: *const usize, in_strides: *const isize, axis: i32, axis_len: usize, out_size: usize, stream: musaStream_t);
     pub fn musapy_mean_f64_v2(a: *const f64, c: *mut f64, ndim: i32, in_shape: *const usize, in_strides: *const isize, axis: i32, axis_len: usize, out_size: usize, stream: musaStream_t);
+    // complex naive reduction（Phase 7 P7.2：sum/prod/mean；max/min/arg* 复数无全序拒绝）
+    pub fn musapy_sum_c64_v2(a: *const muComplex, c: *mut muComplex, ndim: i32, in_shape: *const usize, in_strides: *const isize, axis: i32, axis_len: usize, out_size: usize, stream: musaStream_t);
+    pub fn musapy_sum_c128_v2(a: *const muDoubleComplex, c: *mut muDoubleComplex, ndim: i32, in_shape: *const usize, in_strides: *const isize, axis: i32, axis_len: usize, out_size: usize, stream: musaStream_t);
+    pub fn musapy_prod_c64_v2(a: *const muComplex, c: *mut muComplex, ndim: i32, in_shape: *const usize, in_strides: *const isize, axis: i32, axis_len: usize, out_size: usize, stream: musaStream_t);
+    pub fn musapy_prod_c128_v2(a: *const muDoubleComplex, c: *mut muDoubleComplex, ndim: i32, in_shape: *const usize, in_strides: *const isize, axis: i32, axis_len: usize, out_size: usize, stream: musaStream_t);
+    pub fn musapy_mean_c64_v2(a: *const muComplex, c: *mut muComplex, ndim: i32, in_shape: *const usize, in_strides: *const isize, axis: i32, axis_len: usize, out_size: usize, stream: musaStream_t);
+    pub fn musapy_mean_c128_v2(a: *const muDoubleComplex, c: *mut muDoubleComplex, ndim: i32, in_shape: *const usize, in_strides: *const isize, axis: i32, axis_len: usize, out_size: usize, stream: musaStream_t);
     // 小 axis 并行 reduction（P2）：每输出 group_size ∈ {32,64,128,256} 线程
     pub fn musapy_sum_small_axis_i64_v2(a: *const i64, c: *mut i64, ndim: i32, in_shape: *const usize, in_strides: *const isize, axis: i32, axis_len: usize, out_size: usize, group_size: i32, stream: musaStream_t);
     pub fn musapy_sum_small_axis_f32_v2(a: *const f32, c: *mut f32, ndim: i32, in_shape: *const usize, in_strides: *const isize, axis: i32, axis_len: usize, out_size: usize, group_size: i32, stream: musaStream_t);
@@ -930,6 +937,63 @@ mod mock {
 
     mock_mean_v2!(musapy_mean_f32_v2, f32);
     mock_mean_v2!(musapy_mean_f64_v2, f64);
+
+    // complex naive reduction mock（Phase 7 P7.2：sum/prod/mean 的 c64/c128）
+    macro_rules! mock_cplx_reduce_v2 {
+        ($name:ident, $t:ty, $kind:ident) => {
+            pub unsafe fn $name(
+                a: *const $t, c: *mut $t,
+                ndim: i32, in_shape: *const usize, in_strides: *const isize,
+                axis: i32, axis_len: usize, out_size: usize,
+                _stream: musaStream_t,
+            ) {
+                if a.is_null() || c.is_null() || ndim <= 0 || out_size == 0 || axis_len == 0 { return; }
+                let ndim_u = ndim as usize;
+                let shape_s = std::slice::from_raw_parts(in_shape, ndim_u);
+                let strides_s = std::slice::from_raw_parts(in_strides, ndim_u);
+                let axis_u = axis as usize;
+                for idx in 0..out_size {
+                    let base = mock_reduce_offset(idx, shape_s, strides_s, axis_u, 0);
+                    let axis_stride = strides_s[axis_u];
+                    let mut re: f64 = 0.0;
+                    let mut im: f64 = 0.0;
+                    for k in 0..axis_len {
+                        let off = (base as isize + k as isize * axis_stride) as usize;
+                        let v = *a.add(off);
+                        match $kind {
+                            // sum/mean：re/im 分别累加
+                            _ if $kind == "sum" || $kind == "mean" => {
+                                re += v.re as f64;
+                                im += v.im as f64;
+                            }
+                            // prod：复数乘法
+                            _ => {
+                                let (ar, ai) = (re, im);
+                                let (br, bi) = (v.re as f64, v.im as f64);
+                                re = ar * br - ai * bi;
+                                im = ar * bi + ai * br;
+                            }
+                        }
+                    }
+                    if $kind == "mean" {
+                        re /= axis_len as f64;
+                        im /= axis_len as f64;
+                    }
+                    *c.add(idx) = $t {
+                        re: re as _,
+                        im: im as _,
+                    };
+                }
+            }
+        };
+    }
+
+    mock_cplx_reduce_v2!(musapy_sum_c64_v2, muComplex, "sum");
+    mock_cplx_reduce_v2!(musapy_sum_c128_v2, muDoubleComplex, "sum");
+    mock_cplx_reduce_v2!(musapy_prod_c64_v2, muComplex, "prod");
+    mock_cplx_reduce_v2!(musapy_prod_c128_v2, muDoubleComplex, "prod");
+    mock_cplx_reduce_v2!(musapy_mean_c64_v2, muComplex, "mean");
+    mock_cplx_reduce_v2!(musapy_mean_c128_v2, muDoubleComplex, "mean");
 
     // 小 axis 并行 reduction mock（P2）：结果语义与 naive 完全一致，
     // group_size 仅影响 GPU 线程映射，mock 直接委托对应 naive 实现。

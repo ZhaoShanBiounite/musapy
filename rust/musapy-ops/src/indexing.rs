@@ -114,6 +114,64 @@ pub fn index_select(a: &Array, axis: usize, index: usize) -> Result<Array> {
     Ok(Array::new_view(a, new_layout))
 }
 
+/// 把末尾 `n_merge` 维合并为单维（view 语义；Phase 7 arg* 多轴用）。
+///
+/// 要求输入连续（transpose 后需先 `contiguous` 物化）；合并后 shape 末尾为
+/// 各维乘积，strides 为标准连续。零拷贝 view（data 共享）。
+pub fn reshape_merge_last(a: &Array, n_merge: usize) -> Result<Array> {
+    if n_merge <= 1 {
+        return Ok(Array::new_view(a, a.layout().clone()));
+    }
+    let ndim = a.ndim();
+    if n_merge > ndim {
+        return Err(ShapeError::Mismatch(format!(
+            "reshape_merge_last: cannot merge {} dims of a {}-dim array",
+            n_merge, ndim
+        ))
+        .into());
+    }
+    if !a.is_contiguous() {
+        return Err(ShapeError::Mismatch(
+            "reshape_merge_last requires contiguous input (call contiguous first)".into(),
+        )
+        .into());
+    }
+    let shape = a.shape();
+    let merged: usize = shape[ndim - n_merge..].iter().product();
+    let mut new_shape: Vec<usize> = shape[..ndim - n_merge].to_vec();
+    new_shape.push(merged);
+    let new_layout = Layout::from_shape(new_shape);
+    Ok(Array::new_view(a, new_layout))
+}
+
+/// 把末尾 size=1 的维拆成 `n` 个 size=1 的维（view 语义；reshape_merge_last 的逆，
+/// Phase 7 arg* 多轴 keepdims 恢复轴位用）。
+///
+/// 要求输入连续且末尾维 size==1。零拷贝 view。
+pub fn reshape_split_last(a: &Array, n: usize) -> Result<Array> {
+    if n <= 1 {
+        return Ok(Array::new_view(a, a.layout().clone()));
+    }
+    let ndim = a.ndim();
+    if ndim == 0 || a.shape()[ndim - 1] != 1 {
+        return Err(ShapeError::Mismatch(
+            "reshape_split_last requires last dim size == 1".into(),
+        )
+        .into());
+    }
+    if !a.is_contiguous() {
+        return Err(ShapeError::Mismatch(
+            "reshape_split_last requires contiguous input".into(),
+        )
+        .into());
+    }
+    let shape = a.shape();
+    let mut new_shape: Vec<usize> = shape[..ndim - 1].to_vec();
+    new_shape.extend(std::iter::repeat(1).take(n));
+    let new_layout = Layout::from_shape(new_shape);
+    Ok(Array::new_view(a, new_layout))
+}
+
 // ── Copy 操作（gather / scatter / contiguous）────────────────
 
 /// `contiguous(a)` — 物化为连续布局（C order）。
