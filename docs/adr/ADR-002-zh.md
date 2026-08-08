@@ -3,7 +3,7 @@
 > **状态**：已接受（002-D1 至 002-D5 全部实现，随 v0.2.0-alpha 发布）
 > **最后更新**：2026-08-04
 > **范围**：musapy v0.2-alpha 基础算子套件（elementwise / comparison / broadcast / reduction / init / indexing）
-> **关系**：本文档是 [ADR-zh.md](./ADR-zh.md)（主 ADR，69 决策）的补充。按主 ADR「使用本 ADR 的说明」第 2 条，
+> **关系**：本文档是 [ADR-zh.md](ADR-zh.md)（主 ADR，69 决策）的补充。按主 ADR「使用本 ADR 的说明」第 2 条，
 > v0.2 新增决策单独成文，**不**直接编辑主 ADR。每个决策标注它扩展（extends）或取代（supersedes）的主 ADR ID。
 
 本文档记录主 ADR 未覆盖、但 v0.2 实现必须确定的 5 个决策。决策 ID 采用 `002-D<编号>` 形式，

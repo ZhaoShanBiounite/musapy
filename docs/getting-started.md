@@ -1,7 +1,7 @@
 # musapy 快速上手
 
 > 版本：v0.3.0-alpha（发布中，2026-08-08）
-> 完整算子参考（kernel 符号 / ABI / 性能）见 [operators-reference.md](./operators-reference.md))
+> 完整算子参考（kernel 符号 / ABI / 性能）见 [operators-reference.md](operators-reference.md))
 
 ## 前置条件
 
@@ -383,8 +383,8 @@ python benchmark/bench_musa_utilization.py --size 1000000 --iters 100
 
 ## 下一步
 
-- [v0.2-alpha 发布说明](../release/v0.2-alpha-release-note.md)) — 本版本功能/性能/语义变更
-- [operators-reference.md](./operators-reference.md)) — 已实现算子参考（kernel 符号、ABI、性能）
-- [ADR-zh.md](../adr/ADR-zh.md)) — 完整架构决策（L0-L4 分层；类型提升见 L1-14）
-- [v0.2-alpha 实现计划](./v0.2-alpha-plan-zh.md)) — 版本范围与阶段
-- [benchmark/analysis-followup-2026-08-04.md](../../benchmark/analysis-followup-2026-08-04.md)) — 性能优化前后对比与 launch 地板分析
+- [v0.2-alpha 发布说明](release/v0.2-alpha-release-note.md)) — 本版本功能/性能/语义变更
+- [operators-reference.md](operators-reference.md)) — 已实现算子参考（kernel 符号、ABI、性能）
+- [ADR-zh.md](adr/ADR-zh.md)) — 完整架构决策（L0-L4 分层；类型提升见 L1-14）
+- [v0.2-alpha 实现计划](archive/v0.2-alpha-plan-zh.md)) — 版本范围与阶段
+- [benchmark/analysis-followup-2026-08-04.md](../benchmark/analysis-followup-2026-08-04.md)) — 性能优化前后对比与 launch 地板分析

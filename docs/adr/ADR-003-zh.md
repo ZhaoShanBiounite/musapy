@@ -3,7 +3,7 @@
 > **状态**：已接受（全部决策随 v0.3.0-alpha 实现定稿，2026-08-08）
 > **最后更新**：2026-08-08
 > **范围**：musapy v0.3-alpha 数学库 ops（linalg / random / fft / sparse）+ reduction 补全 + 高级索引
-> **关系**：本文档是 [ADR-zh.md](./ADR-zh.md)（主 ADR，69 决策）的补充，与 [ADR-002-zh.md](./ADR-002-zh.md)
+> **关系**：本文档是 [ADR-zh.md](ADR-zh.md)（主 ADR，69 决策）的补充，与 [ADR-002-zh.md](ADR-002-zh.md)
 > （v0.2 补充，5 决策）同级。按主 ADR「使用本 ADR 的说明」第 2 条，v0.3 新增决策单独成文，
 > **不**直接编辑主 ADR。每个决策标注它扩展（extends）或澄清（clarifies）的主 ADR / ADR-002 ID。
 
@@ -288,7 +288,7 @@ fft 套件（v0.3 新算子族）GPU-only（`fft_impl` 首段 `require_musa`）�
 
 **影响**：linalg.rs `svd` 的实现约束；文档注明 SDK 3.1.0 SINGULAR 模式不可用
 （升级 SDK 后可评估改回 SINGULAR 以省显存）。全部 SDK 3.1.0 限制/缺陷汇总见
-[sdk-3.1.0-limitations.md](../archive/sdk-3.1.0-limitations.md)。
+[sdk-3.1.0-limitations.md](../sdk-3.1.0-limitations.md)。
 
 ---
 

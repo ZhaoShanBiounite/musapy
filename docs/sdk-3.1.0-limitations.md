@@ -5,9 +5,9 @@
 > **目的**:把散落在 ADR-003（003-D2/D3/D8）、v0.3 计划 §2/§16 风险表、linalg.rs 注释中的
 > SDK 限制/怪异行为集中到本文件,作为实现与部署的**单一查询入口**（§0 符号覆盖清单 +
 > §1 行为缺陷 + §2 符号缺口 + §3 运行期依赖 + §4 算子影响表）。
-> **相关文档**:[ADR-003-zh.md](../adr/ADR-003-zh.md))（003-D2 句柄模型 / 003-D3 错误模型 / 003-D8 探针修正）、
-> [v0.3-alpha-plan-zh.md](./v0.3-alpha-plan-zh.md)) §16 风险登记表、
-> [benchmark/analysis-2026-08-07.md](../../benchmark/analysis-2026-08-07.md))（性能归因与实测数据）。
+> **相关文档**:[ADR-003-zh.md](adr/ADR-003-zh.md))（003-D2 句柄模型 / 003-D3 错误模型 / 003-D8 探针修正）、
+> [v0.3-alpha-plan-zh.md](archive/v0.3-alpha-plan-zh.md)) §16 风险登记表、
+> [benchmark/analysis-2026-08-07.md](../benchmark/analysis-2026-08-07.md))（性能归因与实测数据）。
 > 复测命令:`./tools/check_musax_symbols.sh [SDK路径]`(退出码非 0 即有 MISS)。
 
 ---
