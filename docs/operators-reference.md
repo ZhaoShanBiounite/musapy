@@ -444,4 +444,4 @@ Binary 算子输入 dtype 不同时自动提升（两段式，见 ADR L1-14）�
 ## 相关文档
 
 - [ADR](ADR-zh.md) — 架构决策
-- [v0.2 计划](v0.2-alpha-plan-zh.md) — Phase 规划
+- [v0.2 计划](docs/archive/v0.2-alpha-plan-zh.md) — Phase 规划

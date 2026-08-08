@@ -389,7 +389,7 @@ add 16M → 620 GB/s（≈ DRAM 峰值 89%），64M → 655 GB/s
 - [v0.3.0-alpha 发布说明](docs/v0.3-alpha-release-note.md)
 - [SDK 3.1.0 已知限制](docs/sdk-3.1.0-limitations.md)
 - [Benchmark 数据报告](repo.md)
-- [v0.2 实现计划](docs/v0.2-alpha-plan-zh.md)
+- [v0.2 实现计划](docs/archive/v0.2-alpha-plan-zh.md)
 - [v0.1 发布说明](docs/v0.1-alpha-release-note.md)
 
 ---
