@@ -1,12 +1,12 @@
 # 已实现算子参考
 
-> **版本**: v0.2-alpha  
+> **版本**: v0.3-alpha  
 > **设备**: CPU fallback + MUSA GPU kernel 双路径  
-> **Kernel 精度**: i64 / f32 / f64（小整数 cast 到 i64）
+> **Kernel 精度**: i64 / f32 / f64 / c64 / c128（小整数 cast 到 i64；复数支持见各章节）
 
 ---
 
-## 算子总览（43 个）
+## 算子总览（v0.3，63 个 + 3 命名空间 + 索引语法）
 
 | 分类 | 算子 | 数量 |
 |------|------|------|
@@ -14,13 +14,20 @@
 | Unary elementwise | sin, cos, exp, log, abs, sign, neg | 7 |
 | Ternary-scalar | clamp | 1 |
 | Comparison | gt, lt, ge, le, eq, ne | 6 |
-| Reduction | sum, prod, max, min, mean | 5 |
-| Arg-reduction | argmax, argmin | 2 |
+| Reduction | sum, prod, max, min, mean（axis=int/tuple） | 5 |
+| Arg-reduction | argmax, argmin（axis=int/tuple, keepdims） | 2 |
 | Scan | cumsum | 1 |
 | Cast | astype | 1 |
 | Init | zeros, ones, full, eye, arange, linspace, zeros_like, ones_like | 8 |
 | Indexing | transpose, permute, flip, slice, index_select, contiguous, gather, scatter | 8 |
-| **合计** | | **43** |
+| Linalg | matmul, dot, solve, lu, qr, svd | 6 |
+| 命名空间 | ms.random（rand, randn, uniform, normal, bernoulli）· ms.fft（fft, ifft, rfft）· ms.sparse（csr_matrix, spmv, spmm） | 3 子模块 11 函数 |
+| 高级索引 | a[mask]（boolean）· a[idx] / a[i0,i1,...]（fancy） | 语法扩展 |
+| Complex 扩展 | elementwise（add/sub/mul/div/neg/abs/eq/ne）+ reduction（sum/mean/prod）+ cast（real→c64/c128） | dtype 扩展 |
+| **合计** | | **63 个函数 + 3 命名空间 + 高级索引语法** |
+
+> 复数 max/min/argmax/argmin **永久拒绝**（复数无全序，002-D3）。
+> 数学库算子（linalg/random/fft/sparse）**GPU-only**（003-D4）。
 
 ---
 

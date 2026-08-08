@@ -1,6 +1,6 @@
 # musapy 快速上手
 
-> 版本：v0.2.0-alpha（已发布，2026-08-04）
+> 版本：v0.3.0-alpha（发布中，2026-08-08）
 > 完整算子参考（kernel 符号 / ABI / 性能）见 [operators-reference.md](./operators-reference.md)
 
 ## 前置条件
@@ -106,7 +106,7 @@ c.stream.synchronize()               # 等所有异步 op 完成
 print(row.tolist())                  # [104.0, 108.0, 112.0]
 ```
 
-## 完整 API 参考（v0.2 全部 Python 接口）
+## 完整 API 参考（v0.3 全部 Python 接口）
 
 ### 1. 创建与转换
 
@@ -189,6 +189,43 @@ A = csr.toarray()      # 物化稠密 ms.Array
 
 - **GPU-only**（003-D4）；`data` dtype f32/f64，`indices`/`indptr` 须 int32
 - 只做 `csr_matrix`（`coo_matrix` 推迟）；`nnz=0` 空矩阵输出全零
+
+### 6.7 Linalg（v0.3 Phase 2/3；模块级函数）
+
+| 函数 | 签名 | 说明 |
+|---|---|---|
+| `matmul` | `(a, b, out=None)` | 矩阵乘法（1D/2D 混合） |
+| `dot` | `(a, b, out=None)` | 1D 内积 / 2D matmul |
+| `solve` | `(a, b)` | 解 a·x=b；奇异抛 LinAlgError |
+| `lu` | `(a)` | 返回 `(lu, piv)`（对齐 torch.linalg.lu） |
+| `qr` | `(a, mode='reduced')` | 返回 `(q, r)` |
+| `svd` | `(a, full_matrices=True, compute_uv=True)` | 返回 `(u, s, vh)`，s 降序 |
+
+- **GPU-only**（003-D4）；`a @ b` 走 `__matmul__` 等价 `ms.matmul(a, b)`
+
+### 6.8 Random（v0.3 Phase 4；`ms.random.*` 命名空间）
+
+| 函数 | 签名 | 说明 |
+|---|---|---|
+| `rand` | `(*shape, dtype=None, device=None, seed=None)` | uniform [0,1) |
+| `randn` | `(*shape, dtype=None, seed=None)` | N(0,1) |
+| `uniform` | `(low=0, high=1, shape=None, dtype=None, seed=None)` | [low, high) |
+| `normal` | `(loc=0, scale=1, shape=None, dtype=None, seed=None)` | N(loc, scale²) |
+| `bernoulli` | `(p=0.5, shape=None, device=None, seed=None)` | bool |
+
+- **GPU-only**（003-D4）；同 seed 紧邻两次逐元素可复现（003-D9）
+- `shape=None` → 0-dim 标量数组
+
+### 6.9 高级索引（v0.3 Phase 8）
+
+```python
+a[mask]          # boolean mask（等形或前 md 维广播）→ copy
+a[idx]           # fancy 单索引（PyArray/ndarray/list）→ copy
+a[i0, i1, ...]   # 多索引坐标配对（索引形状广播）→ copy
+```
+
+- 恒为 copy；越界抛 Python 内置 `IndexError`
+- 混合 basic+fancy（`a[1:, [0,2]]`）抛 NotImplementedError（v0.4）
 
 ### 7. 运行时与上下文
 
