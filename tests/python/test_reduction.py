@@ -3,7 +3,6 @@
 CPU 测试使用 MUSAPY_MOCK_MUSA=1 构建；GPU 测试需真实 MUSA 设备。
 """
 
-import math
 import numpy as np
 import pytest
 import musapy as ms

@@ -34,17 +34,6 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "python"))
 import musapy as ms  # noqa: E402
 
 
-def fmt_bytes(n: int) -> str:
-    """字节格式化（与 bench_musa_utilization.py 一致）。"""
-    if n >= 1024**3:
-        return f"{n / 1024**3:.2f} GB"
-    elif n >= 1024**2:
-        return f"{n / 1024**2:.2f} MB"
-    elif n >= 1024:
-        return f"{n / 1024:.1f} KB"
-    return f"{n} B"
-
-
 def _safe_sync(r) -> None:
     """安全 sync：stream poisoned 时跳过（同 bench_musa_utilization.py）。"""
     if not hasattr(r, "stream"):
@@ -68,7 +57,6 @@ def bench_latency_ms(fn, iters: int) -> float:
     t0 = time.perf_counter()
     for _ in range(iters):
         _ = fn()
-    t1 = time.perf_counter()
     r = fn()
     _safe_sync(r)
     t2 = time.perf_counter()

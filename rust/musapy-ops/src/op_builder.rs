@@ -2228,10 +2228,9 @@ fn reduction_compute_dtype(input_dtype: Dtype, kernel: &ReduceKernel) -> Dtype {
 ///
 /// 调用方已生成第一级 partials（`tiles` = ceil(axis_len/1024) 个/输出）。
 /// 把 partials 以 (out_size, tiles) 布局逐级喂给 partial kernel 递归归约
-/// （每级 ÷1024），直到 tiles ≤ FINAL_TILES_THRESHOLD——final kernel 每
-/// 输出单 block 256 线程扫 partials，tiles 过大时串行扫成带宽瓶颈
-/// （64M 全局 sum：65536 partials → 200 GB/s，P2 遗留；多级后 final 只
-/// 扫 ≤256 个）。中间缓冲在函数内分配，随作用域释放（实际级数 ≤ 2）。
+/// （每级 ÷1024），直到 tiles ≤ MULTI_STAGE_MIN_TILES——触发阈值即收尾
+/// 条件（32K 蕴含 final 扫 ≤256）。中间缓冲在函数内分配，随作用域释放
+/// （实际级数 ≤ 2）。
 ///
 /// `launch_partial(src, dst, out_size, tiles)`：把 src（每输出 tiles 个
 /// 元素，紧凑布局 [out_size, tiles]）归约到 dst（每输出
@@ -2251,10 +2250,10 @@ fn multi_stage_reduce_tail(
     // 才走多级——final 串行扫 partials 的代价是每线程逐次依赖 load
     // （64M 时 ~90µs），而每级多级化要付 ~45µs launch 地板；1M/16M
     // 规模多级化净亏（1M sum 0.085→0.121ms 实测），故设此下限。
+    // （MULTI_STAGE_MIN_TILES=32K 已蕴含 final 扫 ≤256 的收尾条件）
     const MULTI_STAGE_MIN_TILES: usize = 32768;
-    const FINAL_TILES_THRESHOLD: usize = 256;
     let mut stage_bufs: Vec<Buffer> = Vec::new();
-    while tiles > FINAL_TILES_THRESHOLD && tiles > MULTI_STAGE_MIN_TILES {
+    while tiles > MULTI_STAGE_MIN_TILES {
         let next_tiles = (tiles + 1023) / 1024;
         let buf = Buffer::alloc(out_size * next_tiles * elem_size, device.clone(), out_stream)?;
         let dst = buf.ptr().expect("multi-stage partial buf").as_ptr();
@@ -2271,7 +2270,7 @@ fn multi_stage_reduce_tail(
 /// 与 `multi_stage_reduce_tail` 同构，但 val/idx 两路 partials 同步递归
 /// （argmid kernel 沿袭输入对的 idx，不能复用 argreduce_partial——后者
 /// 只读值数组、idx 按轴内 k 重新计算）。每级 ÷1024，直到
-/// tiles ≤ FINAL_TILES_THRESHOLD 再走 arg final。
+/// tiles ≤ MULTI_STAGE_MIN_TILES 再走 arg final（32K 已蕴含 final 扫 ≤256）。
 #[allow(clippy::too_many_arguments)]
 fn multi_stage_arg_reduce_tail(
     device: &Device,
@@ -2285,9 +2284,8 @@ fn multi_stage_arg_reduce_tail(
     launch_final: impl Fn(*mut u8, *mut u8, usize) -> Result<()>,
 ) -> Result<()> {
     const MULTI_STAGE_MIN_TILES: usize = 32768;
-    const FINAL_TILES_THRESHOLD: usize = 256;
     let mut stage_bufs: Vec<(Buffer, Buffer)> = Vec::new();
-    while tiles > FINAL_TILES_THRESHOLD && tiles > MULTI_STAGE_MIN_TILES {
+    while tiles > MULTI_STAGE_MIN_TILES {
         let next_tiles = (tiles + 1023) / 1024;
         let vbuf = Buffer::alloc(out_size * next_tiles * elem_size, device.clone(), out_stream)?;
         let ibuf = Buffer::alloc(out_size * next_tiles * 8, device.clone(), out_stream)?;

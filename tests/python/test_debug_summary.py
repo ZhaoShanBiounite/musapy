@@ -55,8 +55,6 @@ class TestMemorySummary:
 
     def test_tracks_allocation(self):
         """创建 array 后 allocated 应 > 0。"""
-        # 先记录基线
-        before = ms.memory_summary()
         a = ms.array([1.0, 2.0, 3.0], dtype='f32', device="cpu")
         after = ms.memory_summary()
         # 创建后应有分配（12 bytes for 3 * float32）

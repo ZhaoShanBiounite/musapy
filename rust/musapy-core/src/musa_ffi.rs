@@ -34,10 +34,6 @@ pub type musaEvent_t = *mut c_void;
 /// 设备属性枚举（对标 cudaDeviceAttr / musaDeviceAttr）。
 pub type musaDeviceAttr = c_int;
 
-/// 内存池是否支持（stream-ordered alloc/free）。
-/// ⚠️ CUDA 值为 115，MUSA 对标应一致 —— 请对照 driver_types.h 确认。
-pub const MUSA_DEV_ATTR_MEMORY_POOLS_SUPPORTED: musaDeviceAttr = 115;
-
 /// 多处理器数量（CU 数）。driver_types.h: musaDevAttrMultiProcessorCount = 16。
 pub const MUSA_DEV_ATTR_MULTIPROCESSOR_COUNT: musaDeviceAttr = 16;
 
@@ -108,7 +104,6 @@ mod real {
         ) -> musaError_t;
         // musaMalloc/musaFree 绑定到调用线程的"当前设备"，所以必须先 set。
         pub fn musaSetDevice(device: c_int) -> musaError_t;
-        pub fn musaGetDevice(device: *mut c_int) -> musaError_t;
 
         // --- Device: 属性查询（ADR L1-3, P5.9 device_summary）---
         pub fn musaGetDeviceProperties(prop: *mut MusaDeviceProp, device: c_int) -> musaError_t;
@@ -141,18 +136,6 @@ mod real {
             dst: *mut c_void,
             src: *const c_void,
             count: usize,
-            kind: musaMemcpyKind,
-        ) -> musaError_t;
-
-        // musaMemcpy2D：跨步 2D 拷贝（对标 cudaMemcpy2D）。solve 奇异检测
-        // 用它单次读回 LU 对角线（跨步 = (n+1)·elem，v0.3 Phase 2）。
-        pub fn musaMemcpy2D(
-            dst: *mut c_void,
-            dpitch: usize,
-            src: *const c_void,
-            spitch: usize,
-            width: usize,
-            height: usize,
             kind: musaMemcpyKind,
         ) -> musaError_t;
 
@@ -248,7 +231,6 @@ mod mock {
             return 1;
         }
         *value = match attr {
-            MUSA_DEV_ATTR_MEMORY_POOLS_SUPPORTED => 1,
             MUSA_DEV_ATTR_MULTIPROCESSOR_COUNT => 80, // mock: 80 CUs
             MUSA_DEV_ATTR_COMPUTE_CAPABILITY_MAJOR => 2, // mock: arch 2.2
             MUSA_DEV_ATTR_COMPUTE_CAPABILITY_MINOR => 2,
@@ -258,14 +240,6 @@ mod mock {
     }
 
     pub unsafe fn musaSetDevice(_device: c_int) -> musaError_t {
-        MUSA_SUCCESS
-    }
-
-    pub unsafe fn musaGetDevice(device: *mut c_int) -> musaError_t {
-        if device.is_null() {
-            return 1;
-        }
-        *device = 0;
         MUSA_SUCCESS
     }
 
@@ -332,26 +306,6 @@ mod mock {
             return 1;
         }
         std::ptr::copy_nonoverlapping(src as *const u8, dst as *mut u8, count);
-        MUSA_SUCCESS
-    }
-
-    /// mock musaMemcpy2D：逐行拷贝（spitch/dpitch 语义与真实实现一致）。
-    pub unsafe fn musaMemcpy2D(
-        dst: *mut c_void,
-        dpitch: usize,
-        src: *const c_void,
-        spitch: usize,
-        width: usize,
-        height: usize,
-        _kind: musaMemcpyKind,
-    ) -> musaError_t {
-        if dst.is_null() || src.is_null() {
-            return 1;
-        }
-        let (d, s) = (dst as *mut u8, src as *const u8);
-        for row in 0..height {
-            std::ptr::copy_nonoverlapping(s.add(row * spitch), d.add(row * dpitch), width);
-        }
         MUSA_SUCCESS
     }
 
@@ -465,25 +419,6 @@ pub fn set_device(device_id: i32) -> Result<()> {
     unsafe { check_musa(musaSetDevice(device_id), "musaSetDevice") }
 }
 
-/// 探测设备是否支持内存池（stream-ordered alloc/free，ADR L3-9, L3-11）。
-///
-/// 返回 `true` 表示该设备的 MUSA Runtime 有 `musaMallocAsync`/`musaFreeAsync`
-/// 真实实现（5.x+），可启用 `stream-ordered` feature 走全量 stream-ordered 方案。
-/// 返回 `false` 表示需走 deferred-free 默认路径（3.x/4.x）。
-///
-/// 注意：3.x/4.x 头文件里 `musaMallocAsync` 是 static inline 包装，
-/// libmusart.so 不导出符号，所以即使此探测返回 true 也不代表能链接——
-/// feature gate 是编译期硬保证，此 probe 是运行期双重保险。
-///
-/// 探测失败（属性查询返回错误）时保守返回 `false`。
-pub fn probe_memory_pools_supported(device_id: i32) -> bool {
-    let mut value: c_int = 0;
-    let err = unsafe {
-        musaDeviceGetAttribute(&mut value, MUSA_DEV_ATTR_MEMORY_POOLS_SUPPORTED, device_id)
-    };
-    err == MUSA_SUCCESS && value != 0
-}
-
 /// 设备属性快照（ADR L1-3，P5.9 device_summary）。
 #[derive(Clone, Debug)]
 pub struct DeviceProperties {
@@ -584,12 +519,6 @@ mod tests {
         // 真实环境应返回 >= 1；mock 模式返回 1
         let count = get_device_count().unwrap();
         assert!(count >= 1, "expected at least 1 MUSA device, got {}", count);
-    }
-
-    #[test]
-    fn probe_memory_pools_supported_works() {
-        // 只要不 panic 就行；真实环境可能 true 或 false，mock 返回 true
-        let _supported = probe_memory_pools_supported(0);
     }
 
     #[test]

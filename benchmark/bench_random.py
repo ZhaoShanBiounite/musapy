@@ -24,7 +24,6 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "python"))
 
-import numpy as np  # noqa: E402
 import musapy as ms  # noqa: E402
 
 
@@ -46,7 +45,6 @@ def bench_latency_ms(fn, iters: int) -> float:
     t0 = time.perf_counter()
     for _ in range(iters):
         _ = fn()
-    t1 = time.perf_counter()
     r = fn()
     _safe_sync(r)
     t2 = time.perf_counter()

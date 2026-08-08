@@ -628,23 +628,28 @@ fn copy_to_buffer(data_ref: &BufferRef, bytes: &[u8], device: &Device) -> PyResu
 // Phase 5: Creation ops（zeros/ones/full/eye/arange/linspace/zeros_like/ones_like）
 // ============================================================
 
-/// 从 Python 参数解析 Device（复用 lib.rs 的逻辑）。
+/// 从 Python 对象解析 Device（string 或 Device 实例）。
+///
+/// lib.rs 的 set_default_device/device/memory_summary 与 ops.rs/random.rs
+/// 的创建类算子共用此实现（消除 parse_device_arg/parse_device_opt 重复）。
+pub(crate) fn parse_device_obj(obj: &Bound<'_, PyAny>) -> PyResult<Device> {
+    if let Ok(s) = obj.extract::<String>() {
+        Device::parse(&s).map_err(error::to_pyerr)
+    } else if let Ok(d) = obj.extract::<Py<PyDevice>>() {
+        let d_ref = d.borrow(obj.py());
+        Ok(d_ref.inner.clone())
+    } else {
+        Err(pyo3::exceptions::PyTypeError::new_err(
+            "device must be a string (e.g. \"musa:0\") or Device",
+        ))
+    }
+}
+
+/// 从 Python 可选参数解析 Device（None → None）。
 pub(crate) fn parse_device_opt(py: Python<'_>, device: &Option<PyObject>) -> PyResult<Option<Device>> {
     match device {
         None => Ok(None),
-        Some(obj) => {
-            let obj = obj.bind(py);
-            if let Ok(s) = obj.extract::<String>() {
-                Ok(Some(Device::parse(&s).map_err(error::to_pyerr)?))
-            } else if let Ok(d) = obj.extract::<Py<PyDevice>>() {
-                let d_ref = d.borrow(py);
-                Ok(Some(d_ref.inner.clone()))
-            } else {
-                Err(pyo3::exceptions::PyTypeError::new_err(
-                    "device must be a string (e.g. \"musa:0\") or Device",
-                ))
-            }
-        }
+        Some(obj) => parse_device_obj(obj.bind(py)).map(Some),
     }
 }
 

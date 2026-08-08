@@ -9,10 +9,9 @@ import sys
 import threading
 from concurrent.futures import ThreadPoolExecutor
 
-import pytest
 
 import musapy as ms
-from musapy import Device, Dtype, Stream
+from musapy import Device, Stream
 
 
 # ============================================================

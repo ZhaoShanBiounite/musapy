@@ -4,7 +4,6 @@
 L1-11（0-dim Array）、L3-27（Array naming）。
 """
 
-import math
 
 import pytest
 

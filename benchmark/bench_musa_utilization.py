@@ -44,19 +44,6 @@ def fmt_bytes(n: int) -> str:
     return f"{n} B"
 
 
-def parse_size(s: str) -> int:
-    s = s.strip()
-    if s.endswith("GB"):
-        return int(float(s[:-2].strip()) * 1024**3)
-    elif s.endswith("MB"):
-        return int(float(s[:-2].strip()) * 1024**2)
-    elif s.endswith("KB"):
-        return int(float(s[:-2].strip()) * 1024)
-    elif s.endswith("B"):
-        return int(float(s[:-1].strip()))
-    return 0
-
-
 @dataclass
 class OpResult:
     name: str
@@ -103,14 +90,13 @@ def bench_op(fn, iters: int, size: int, flops_per_elem: float,
     t0 = time.perf_counter()
     for _ in range(iters):
         _ = fn()
-    t1 = time.perf_counter()
 
     # sync + 取最后一个结果
     r = fn()
     _safe_sync(r)
     t2 = time.perf_counter()
 
-    # t1..t2 包含最后一次调用 + sync；总时间 = (t2 - t0)，迭代数 = iters + 1
+    # 总时间 = (t2 - t0) 含最后一次调用 + sync；迭代数 = iters + 1
     total_iters = iters + 1
     lat_ms = (t2 - t0) * 1000.0 / total_iters
     gelem_s = size / (lat_ms / 1000.0) / 1e9

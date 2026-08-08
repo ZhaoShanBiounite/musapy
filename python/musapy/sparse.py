@@ -16,9 +16,8 @@
   - GPU-only（003-D4）：CPU 设备上调用抛 DeviceError。
 """
 
-from typing import Optional, Sequence, Tuple
+from typing import Optional, Tuple
 
-import numpy as np
 
 from . import _core
 from ._core import Array, CsrMatrix

@@ -18,24 +18,6 @@ use musapy_core::{Device, debug, mem_stats, resolution};
 use pyo3::prelude::*;
 
 // ============================================================
-// 辅助：从 Python 参数解析 Device
-// ============================================================
-
-fn parse_device_arg(obj: &Bound<'_, PyAny>) -> PyResult<Device> {
-    let py = obj.py();
-    if let Ok(s) = obj.extract::<String>() {
-        Device::parse(&s).map_err(error::to_pyerr)
-    } else if let Ok(d) = obj.extract::<Py<device::PyDevice>>() {
-        let d_ref = d.borrow(py);
-        Ok(d_ref.inner.clone())
-    } else {
-        Err(pyo3::exceptions::PyTypeError::new_err(
-            "device must be a string (e.g. \"musa:0\") or Device",
-        ))
-    }
-}
-
-// ============================================================
 // Context managers（ADR L2-7：device/dtype/stream 对称可组合）
 // ============================================================
 
@@ -112,7 +94,7 @@ impl DebugContext {
 /// `ms.set_default_device("musa:0")` 或 `ms.set_default_device(ms.Device("cpu"))`
 #[pyfunction]
 fn set_default_device(device: &Bound<'_, PyAny>) -> PyResult<()> {
-    let dev = parse_device_arg(device)?;
+    let dev = ops::parse_device_obj(device)?;
     resolution::set_default_device(dev);
     Ok(())
 }
@@ -128,7 +110,7 @@ fn set_default_dtype(dtype: dtype::PyDtype) {
 /// `with ms.device("musa:0"):` — 临时切换 device context
 #[pyfunction(name = "device")]
 fn device_context(device: &Bound<'_, PyAny>) -> PyResult<DeviceContext> {
-    let dev = parse_device_arg(device)?;
+    let dev = ops::parse_device_obj(device)?;
     let guard = resolution::push_device_context(dev);
     Ok(DeviceContext { guard: Some(guard) })
 }
@@ -192,7 +174,7 @@ fn memory_summary(device: Option<&Bound<'_, PyAny>>) -> PyResult<String> {
 
     // 可选：显示指定设备的 VRAM 信息
     if let Some(dev_obj) = device {
-        let dev = parse_device_arg(dev_obj)?;
+        let dev = ops::parse_device_obj(dev_obj)?;
         if let Device::Musa(id) = dev {
             match musapy_core::musa_ffi::get_device_properties(id as i32) {
                 Ok(props) => {
