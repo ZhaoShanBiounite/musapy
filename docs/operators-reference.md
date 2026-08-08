@@ -109,8 +109,8 @@ ms.prod(a, axis=None, keepdims=False, out=None) -> Array
 ms.max(a, axis=None, keepdims=False, out=None) -> Array
 ms.min(a, axis=None, keepdims=False, out=None) -> Array
 ms.mean(a, axis=None, keepdims=False, out=None) -> Array
-ms.argmax(a, axis=None, out=None) -> Array
-ms.argmin(a, axis=None, out=None) -> Array
+ms.argmax(a, axis=None, keepdims=False, out=None) -> Array
+ms.argmin(a, axis=None, keepdims=False, out=None) -> Array
 ms.cumsum(a, axis=None, out=None) -> Array
 ```
 
@@ -118,23 +118,33 @@ ms.cumsum(a, axis=None, out=None) -> Array
 
 - **axis=None**：全局缩减，视为 1D（kernel_ndim=1, strides=[1]），输出 0-dim scalar
 - **axis=int**：沿指定轴缩减，支持负索引
+- **axis=tuple**（Phase 7 P7.1）：多轴归约。
+  - sum/prod/max/min/mean：**逐轴迭代**（升序），全部轮 keepdims=true 保维，
+    最后统一 squeeze 被归约轴（用户 keepdims=false 时）；重复轴报 ShapeError
+  - argmax/argmin：**transpose+合并轴**（指定轴移到末尾、contiguous、reshape 合并
+    为单轴后走单轴 kernel），索引为展平指定轴的**扁平索引**（NumPy 2.0+ 语义）；
+    arg* 同步支持 keepdims（被归约轴处=1）
 - **keepdims**：仅影响输出 Layout shape，kernel 不感知
 - **Kernel 策略（P2 起三路选择）**：
   - `axis_len ≤ 16` 或 argmax/argmin → naive one-thread-per-output
   - `16 < axis_len ≤ 1024`（sum/prod/max/min/mean）→ 小 axis 并行
     （每输出 32..256 线程组，warp shuffle + smem 两级归约）
   - `axis_len > 1024` → 两阶段并行（partial 每线程 4 元素 + final）
+- **复数**（Phase 7 P7.2）：sum/mean/prod 支持 complex64/128（naive 路径，
+  显式 re/im 分量公式，CPU+MUSA 双路径）；**max/min/argmax/argmin 对复数抛
+  DtypeError**（复数无全序，ADR-003 003-D5）
 - **cumsum**：work-efficient 分层扫描，**单轴容量上限 256³ ≈ 16.7M 元素**，
   超限报错（P0 修复：此前 axis_len > 65536 结果错误 + smem 越界）
 - **NdMetaReduce 结构体按值传入 kernel**（非 host 指针）
 
 ### Compute dtype 规则（ADR-002-D3）
 
-| 算子 | 整数输入 | 浮点输入 | 输出 dtype |
-|------|---------|---------|-----------|
-| sum/prod/max/min/cumsum | cast → i64 | 保持 | 同 compute dtype |
-| mean | cast → f64 | 保持 | 同 compute dtype |
-| argmax/argmin | cast → i64 | 保持 | **恒 i64**（索引） |
+| 算子 | 整数输入 | 浮点输入 | 复数输入 | 输出 dtype |
+|------|---------|---------|---------|-----------|
+| sum/prod/cumsum | cast → i64 | 保持 | 保持（sum/prod） | 同 compute dtype |
+| max/min | cast → i64 | 保持 | **拒绝**（无全序） | 同 compute dtype |
+| mean | cast → f64 | 保持 | 保持 | 同 compute dtype |
+| argmax/argmin | cast → i64 | 保持 | **拒绝**（无全序） | **恒 i64**（索引） |
 
 ### Kernel 符号（76 个，P6 清理后）
 

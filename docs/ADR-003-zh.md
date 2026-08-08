@@ -331,6 +331,7 @@ SDK 特征：randn f64 吞吐 ~3 GB/s（比 f32 慢 ~50×，见 sdk-3.1.0-limita
 | 2026-08-07 | Phase 4 实施：random 套件，seed/生成串行化/shape=None 语义 + Normal 原生 mean/stddev（003-D9） | 003-D7、003-D9 |
 | 2026-08-08 | Phase 5 实施：complex 落地（elementwise add/sub/mul/div/neg/abs + comparison eq/ne、array 创建/tolist/item、real→complex cast 4 对 + c64→c128 提升）+ fft 套件（fft/ifft/rfft，axis=-1 起步，n 截断/补零，norm 三值，out=）。fftn/多轴与 irfft 推迟到 v0.3 后期。mcc 3.1.0 complex struct kernel 兼容性冒烟通过（sdk-3.1.0-limitations 风险解除）。mock mufft 用 naive O(N²) DFT 数值仿真 | 003-D4、003-D5、003-D7 |
 | 2026-08-08 | Phase 6 实施：sparse 套件（csr_matrix + spmv/spmm/toarray，muSPARSE 泛型 API 两段式）。用户确认只做 csr_matrix，coo_matrix/coo→csr 推迟。`@` 收 ms.Array 直连 + ndarray/list 经 tolist 转 device。alpha/beta 按 dtype 宽度传标量（f32/f64）。真机对照 NumPy 全绿 | 003-D4、003-D7 |
+| 2026-08-08 | Phase 7 实施：reduction 补全。axis=tuple（sum/prod/max/min/mean 逐轴迭代 + argmax/argmin transpose+合并轴复用单轴 kernel + arg* 补 keepdims）；复数 sum/mean/prod（naive 分量 kernel，CPU+MUSA 双路径）；max/min/argmax/argmin 复数显式 DtypeError（替代隐式 cast 失败）。用户确认范围超计划（prod、arg* 多轴） | 002-D3、003-D5 |
 
 ---
 
