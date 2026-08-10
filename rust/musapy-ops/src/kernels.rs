@@ -433,6 +433,9 @@ macro_rules! mock_cast_v2 {
 
 #[cfg(musapy_mock_musa)]
 mod mock {
+    // mock stub 在 unsafe fn 体内直接操作裸指针（host 内存 + dummy 句柄，语义安全）。
+    // edition 2024 的 unsafe_op_in_unsafe_fn 在此为纯噪音，allow 掉（真机 extern 声明无此问题）。
+    #![allow(unsafe_op_in_unsafe_fn)]
     use super::*;
 
     // v2 Binary（v1 符号于 P6 清理删除）
@@ -603,6 +606,8 @@ mod mock {
     });
 
     // neg（输出同 complex）
+    // 注：struct 字面量/关联函数不能用 metavariable 起始（macro_rules 限制），
+    // 这里用「拷贝 + 字段赋值」构造（见 mock_cplx_cast_v2 的 Default 方案）。
     macro_rules! mock_cplx_neg_v2 {
         ($name:ident, $t:ty) => {
             pub unsafe fn $name(
@@ -618,7 +623,10 @@ mod mock {
                 for idx in 0..n {
                     let ao = mock_offset_nd(idx, shape_s, as_s);
                     let v = *a.add(ao);
-                    *c.add(idx) = $t { re: -v.re, im: -v.im };
+                    let mut out = v;
+                    out.re = -v.re;
+                    out.im = -v.im;
+                    *c.add(idx) = out;
                 }
             }
         };
@@ -698,7 +706,9 @@ mod mock {
                 for idx in 0..n {
                     let ao = mock_offset_nd(idx, shape_s, as_s);
                     let v = *a.add(ao) as f64;
-                    *c.add(idx) = $ct { re: v as _, im: 0.0 };
+                    let mut out: $ct = Default::default();
+                    out.re = v as _;
+                    *c.add(idx) = out;
                 }
             }
         };
@@ -749,7 +759,7 @@ mod mock {
                             let a_off = mock_offset_nd(in_linear, shape_s, as_s);
                             *c.add(idx) = *a.add(a_off);
                         } else {
-                            *c.add(idx) = $ct { re: 0.0, im: 0.0 };
+                            *c.add(idx) = Default::default();
                         }
                     }
                 }
@@ -814,9 +824,11 @@ mod mock {
                             let in_linear = oi * n_in + k;
                             let a_off = mock_offset_nd(in_linear, shape_s, as_s);
                             let v = *a.add(a_off) as f64;
-                            *c.add(idx) = $ct { re: v as _, im: 0.0 };
+                            let mut out: $ct = Default::default();
+                            out.re = v as _;
+                            *c.add(idx) = out;
                         } else {
-                            *c.add(idx) = $ct { re: 0.0, im: 0.0 };
+                            *c.add(idx) = Default::default();
                         }
                     }
                 }
@@ -975,7 +987,7 @@ mod mock {
 
     // complex naive reduction mock（Phase 7 P7.2：sum/prod/mean 的 c64/c128）
     macro_rules! mock_cplx_reduce_v2 {
-        ($name:ident, $t:ty, $kind:ident) => {
+        ($name:ident, $t:ty, $kind:expr) => {
             pub unsafe fn $name(
                 a: *const $t, c: *mut $t,
                 ndim: i32, in_shape: *const usize, in_strides: *const isize,
@@ -1014,10 +1026,10 @@ mod mock {
                         re /= axis_len as f64;
                         im /= axis_len as f64;
                     }
-                    *c.add(idx) = $t {
-                        re: re as _,
-                        im: im as _,
-                    };
+                    let mut out: $t = Default::default();
+                    out.re = re as _;
+                    out.im = im as _;
+                    *c.add(idx) = out;
                 }
             }
         };
@@ -1089,7 +1101,7 @@ mod mock {
         };
     }
     macro_rules! mock_cplx_final_v2 {
-        ($name:ident, $t:ty, $kind:ident) => {
+        ($name:ident, $t:ty, $kind:expr) => {
             pub unsafe fn $name(
                 partials: *const $t, c: *mut $t,
                 num_partials: usize, out_size: usize, axis_len: usize,
@@ -1112,7 +1124,10 @@ mod mock {
                         }
                     }
                     if $kind == "mean" { re /= axis_len as f64; im /= axis_len as f64; }
-                    *c.add(idx) = $t { re: re as _, im: im as _ };
+                    let mut out: $t = Default::default();
+                    out.re = re as _;
+                    out.im = im as _;
+                    *c.add(idx) = out;
                 }
             }
         };
