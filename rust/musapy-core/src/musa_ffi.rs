@@ -12,6 +12,8 @@
 //! mock 模式（musapy_mock_musa）：提供 Rust stub，不调用真实 FFI。
 
 #![allow(non_camel_case_types)]
+#![allow(non_snake_case)] // C API 命名风格（与 musa_x_ffi.rs 一致）
+#![allow(clippy::missing_safety_doc)] // FFI 绑定文档另见 musa_runtime_api.h（与 musa_x_ffi.rs 一致）
 use crate::error::{KernelError, MusapyError, Result, StreamError};
 use std::ffi::{c_char, c_int, c_uint, c_void, CStr};
 
@@ -151,6 +153,9 @@ mod real {
 
 #[cfg(musapy_mock_musa)]
 mod mock {
+    // mock stub 在 unsafe fn 体内直接操作裸指针（host 内存 + dummy 句柄，语义安全）。
+    // edition 2024 的 unsafe_op_in_unsafe_fn 在此为纯噪音，allow 掉。
+    #![allow(unsafe_op_in_unsafe_fn)]
     use super::*;
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::Mutex;

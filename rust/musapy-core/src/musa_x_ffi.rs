@@ -72,7 +72,7 @@ pub type mublas_int = c_int;
 /// 单精度复数(muComplex.h:`typedef float2 muFloatComplex; typedef muFloatComplex muComplex`)。
 /// ABI 与 C 的 `float2 { x, y }` 一致。
 #[repr(C)]
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Copy, Debug, PartialEq, Default)]
 pub struct muComplex {
     pub re: f32,
     pub im: f32,
@@ -80,7 +80,7 @@ pub struct muComplex {
 
 /// 双精度复数(muComplex.h:`typedef double2 muDoubleComplex`)。
 #[repr(C)]
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Copy, Debug, PartialEq, Default)]
 pub struct muDoubleComplex {
     pub re: f64,
     pub im: f64,
@@ -874,13 +874,42 @@ mod real {
 
 #[cfg(musapy_mock_musa)]
 mod mock {
+    // mock stub 在 unsafe fn 体内直接操作裸指针（host 内存 + dummy 句柄，语义安全）。
+    // edition 2024 的 unsafe_op_in_unsafe_fn 在此为纯噪音，allow 掉。
+    #![allow(unsafe_op_in_unsafe_fn)]
+    #![allow(dead_code)] // mock 仿真记录字段（rows/nnz/data_type/ftype 等）仅写入未读，保留供对照
     use super::*;
     use std::collections::HashMap;
+    use std::sync::LazyLock;
     use std::sync::Mutex;
     use std::sync::atomic::{AtomicUsize, Ordering};
 
     /// dummy 句柄计数器(mock 下句柄只需非空且可区分)。
     static MOCK_MATH_HANDLE_COUNTER: AtomicUsize = AtomicUsize::new(0x1000_0000);
+
+    /// mock 句柄全局表。
+    ///
+    /// mock 下句柄是 `next_handle()` 生成的 dummy 裸指针值，仅作身份标识、从不解引用；
+    /// 跨线程访问由 `Mutex` 串行化。裸指针 key 本身非 `Send`/`Sync`（`HashMap` 值无此约束），
+    /// 无法直接放入 `static`，这里按 mock 语义手动标注（真值则不可，见 L2-3 注释）。
+    struct MockHandleTable<T> {
+        inner: Mutex<HashMap<*mut c_void, T>>,
+    }
+
+    impl<T> MockHandleTable<T> {
+        fn new() -> Self {
+            Self {
+                inner: Mutex::new(HashMap::new()),
+            }
+        }
+
+        fn lock(&self) -> std::sync::MutexGuard<'_, HashMap<*mut c_void, T>> {
+            self.inner.lock().unwrap()
+        }
+    }
+
+    unsafe impl<T> Send for MockHandleTable<T> {}
+    unsafe impl<T> Sync for MockHandleTable<T> {}
 
     fn next_handle() -> *mut c_void {
         MOCK_MATH_HANDLE_COUNTER.fetch_add(1, Ordering::Relaxed) as *mut c_void
@@ -2125,12 +2154,13 @@ mod mock {
         }
     }
 
-    static MOCK_MUFFT_PLANS: Mutex<HashMap<mufftHandle, MockFftPlan>> = Mutex::new(HashMap::new());
+    static MOCK_MUFFT_PLANS: LazyLock<MockHandleTable<MockFftPlan>> =
+        LazyLock::new(MockHandleTable::new);
 
     fn register_plan(plan: *mut mufftHandle, nx: i32, ftype: mufftType) {
         unsafe { *plan = next_handle() };
-        MOCK_MUFFT_PLANS.lock().unwrap().insert(
-            *plan,
+        MOCK_MUFFT_PLANS.lock().insert(
+            unsafe { *plan },
             MockFftPlan::new(nx, ftype),
         );
     }
@@ -2143,7 +2173,7 @@ mod mock {
             muDoubleComplex { re: 0.0, im: 0.0 };
             out_len
         ];
-        for k in 0..out_len {
+        for (k, o) in out.iter_mut().enumerate() {
             let mut re = 0.0f64;
             let mut im = 0.0f64;
             for (j, x) in input.iter().enumerate() {
@@ -2151,7 +2181,7 @@ mod mock {
                 re += x * angle.cos();
                 im += x * angle.sin();
             }
-            out[k] = muDoubleComplex { re, im };
+            *o = muDoubleComplex { re, im };
         }
         out
     }
@@ -2164,7 +2194,7 @@ mod mock {
             muDoubleComplex { re: 0.0, im: 0.0 };
             n
         ];
-        for k in 0..n {
+        for (k, o) in out.iter_mut().enumerate() {
             let mut re = 0.0f64;
             let mut im = 0.0f64;
             for (j, x) in input.iter().enumerate() {
@@ -2173,7 +2203,7 @@ mod mock {
                 re += x.re * c - x.im * s;
                 im += x.re * s + x.im * c;
             }
-            out[k] = muDoubleComplex { re, im };
+            *o = muDoubleComplex { re, im };
         }
         out
     }
@@ -2190,7 +2220,7 @@ mod mock {
         if plan.is_null() {
             return 1;
         }
-        MOCK_MUFFT_PLANS.lock().unwrap().remove(&plan);
+        MOCK_MUFFT_PLANS.lock().remove(&plan);
         MUFFT_SUCCESS
     }
 
@@ -2267,7 +2297,7 @@ mod mock {
         }
         let nx = if rank > 0 && !n.is_null() { unsafe { *n } } else { 0 };
         unsafe { *plan = next_handle() };
-        MOCK_MUFFT_PLANS.lock().unwrap().insert(
+        MOCK_MUFFT_PLANS.lock().insert(
             *plan,
             MockFftPlan {
                 nx,
@@ -2285,7 +2315,7 @@ mod mock {
 
     /// 取 plan 的批量信息：(nx, batch, stride, idist, odist)。
     fn mock_plan_batch(plan: mufftHandle) -> Option<(usize, usize, usize, usize, usize)> {
-        let g = MOCK_MUFFT_PLANS.lock().unwrap();
+        let g = MOCK_MUFFT_PLANS.lock();
         let p = g.get(&plan)?;
         Some((
             p.nx as usize,
@@ -2484,12 +2514,9 @@ mod mock {
         data_type: musparseDataType_t,
     }
 
-    static MOCK_SPMATS: Mutex<HashMap<musparseSpMatDescr_t, MockSpMat>> =
-        Mutex::new(HashMap::new());
-    static MOCK_DNVECS: Mutex<HashMap<musparseDnVecDescr_t, MockDnVec>> =
-        Mutex::new(HashMap::new());
-    static MOCK_DNMATS: Mutex<HashMap<musparseDnMatDescr_t, MockDnMat>> =
-        Mutex::new(HashMap::new());
+    static MOCK_SPMATS: LazyLock<MockHandleTable<MockSpMat>> = LazyLock::new(MockHandleTable::new);
+    static MOCK_DNVECS: LazyLock<MockHandleTable<MockDnVec>> = LazyLock::new(MockHandleTable::new);
+    static MOCK_DNMATS: LazyLock<MockHandleTable<MockDnMat>> = LazyLock::new(MockHandleTable::new);
 
     pub unsafe fn musparseCreateCsr(
         descr: *mut musparseSpMatDescr_t,
@@ -2511,7 +2538,7 @@ mod mock {
         unsafe {
             *descr = h;
         }
-        MOCK_SPMATS.lock().unwrap().insert(
+        MOCK_SPMATS.lock().insert(
             h,
             MockSpMat {
                 rows,
@@ -2527,7 +2554,7 @@ mod mock {
     }
 
     pub unsafe fn musparseDestroySpMat(descr: musparseSpMatDescr_t) -> musparseStatus_t {
-        MOCK_SPMATS.lock().unwrap().remove(&descr);
+        MOCK_SPMATS.lock().remove(&descr);
         MUSPARSE_STATUS_SUCCESS
     }
 
@@ -2544,7 +2571,7 @@ mod mock {
         unsafe {
             *descr = h;
         }
-        MOCK_DNVECS.lock().unwrap().insert(
+        MOCK_DNVECS.lock().insert(
             h,
             MockDnVec {
                 size,
@@ -2556,7 +2583,7 @@ mod mock {
     }
 
     pub unsafe fn musparseDestroyDnVec(descr: musparseDnVecDescr_t) -> musparseStatus_t {
-        MOCK_DNVECS.lock().unwrap().remove(&descr);
+        MOCK_DNVECS.lock().remove(&descr);
         MUSPARSE_STATUS_SUCCESS
     }
 
@@ -2576,7 +2603,7 @@ mod mock {
         unsafe {
             *descr = h;
         }
-        MOCK_DNMATS.lock().unwrap().insert(
+        MOCK_DNMATS.lock().insert(
             h,
             MockDnMat {
                 rows,
@@ -2590,7 +2617,7 @@ mod mock {
     }
 
     pub unsafe fn musparseDestroyDnMat(descr: musparseDnMatDescr_t) -> musparseStatus_t {
-        MOCK_DNMATS.lock().unwrap().remove(&descr);
+        MOCK_DNMATS.lock().remove(&descr);
         MUSPARSE_STATUS_SUCCESS
     }
 
@@ -2618,16 +2645,16 @@ mod mock {
             return MUSPARSE_STATUS_SUCCESS;
         }
         let (m, xv, yv) = {
-            let g = MOCK_SPMATS.lock().unwrap();
+            let g = MOCK_SPMATS.lock();
             let s = match g.get(&mat) {
                 Some(s) => *s,
                 None => return 1,
             };
-            let xv = match MOCK_DNVECS.lock().unwrap().get(&x) {
+            let xv = match MOCK_DNVECS.lock().get(&x) {
                 Some(v) => *v,
                 None => return 1,
             };
-            let yv = match MOCK_DNVECS.lock().unwrap().get(&y) {
+            let yv = match MOCK_DNVECS.lock().get(&y) {
                 Some(v) => *v,
                 None => return 1,
             };
@@ -2715,16 +2742,16 @@ mod mock {
             return MUSPARSE_STATUS_SUCCESS;
         }
         let (m, b, c) = {
-            let g = MOCK_SPMATS.lock().unwrap();
+            let g = MOCK_SPMATS.lock();
             let s = match g.get(&mat_A) {
                 Some(s) => *s,
                 None => return 1,
             };
-            let b = match MOCK_DNMATS.lock().unwrap().get(&mat_B) {
+            let b = match MOCK_DNMATS.lock().get(&mat_B) {
                 Some(b) => *b,
                 None => return 1,
             };
-            let c = match MOCK_DNMATS.lock().unwrap().get(&mat_C) {
+            let c = match MOCK_DNMATS.lock().get(&mat_C) {
                 Some(c) => *c,
                 None => return 1,
             };

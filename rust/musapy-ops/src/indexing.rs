@@ -988,7 +988,6 @@ fn gpu_gather(
     let axis_i32 = axis as i32;
 
     let idx_dev = indices_dev;
-    let n_indices = out_shape[axis];
 
     // dtype 已实例化 → launch v2 kernel（device 侧越界检查，P1 方案二）
     let instantiated = matches!(
@@ -1001,6 +1000,7 @@ fn gpu_gather(
         // 错误槽 16B：[flag i32][pos i32][val i64]，synchronize 时批量读回
         #[cfg(not(musapy_mock_musa))]
         let (err_flag, err_pos, err_val) = {
+            let n_indices = out_shape[axis];
             let slot = out_stream.acquire_index_check(format!(
                 "gather(axis={}, axis_len={}, n_indices={})",
                 axis, axis_len, n_indices
@@ -1138,7 +1138,6 @@ fn gpu_scatter(
     let ndim = val_shape.len() as i32;
     let axis_i32 = axis as i32;
 
-    let n_indices = val_shape[axis];
     let instantiated = matches!(
         (dtype, indices_dev),
         (Dtype::Float32 | Dtype::Float64 | Dtype::Int32 | Dtype::Int64, Some(_))
@@ -1149,6 +1148,7 @@ fn gpu_scatter(
         // 错误槽 16B：[flag i32][pos i32][val i64]，synchronize 时批量读回
         #[cfg(not(musapy_mock_musa))]
         let (err_flag, err_pos, err_val) = {
+            let n_indices = val_shape[axis];
             let slot = out_stream.acquire_index_check(format!(
                 "scatter(axis={}, axis_len={}, n_indices={})",
                 axis, axis_len, n_indices
@@ -1926,6 +1926,7 @@ fn cpu_adv_index(
 /// 探针证实 mcc 不支持指针数组作为 __global__ 参数（`const int64_t* const*`
 /// 启动即 error 999），故 GPU 路径走「D2H a 数据 → host 计算 → H2D 结果」
 ///（与 gpu_gather_via_host 同模式）。正确性优先，性能后续再优化 kernel。
+#[cfg_attr(musapy_mock_musa, allow(dead_code))] // mock 下走 host fallback，仅真机路径调用
 #[allow(clippy::too_many_arguments)]
 fn gpu_adv_index(
     a: &Array,
