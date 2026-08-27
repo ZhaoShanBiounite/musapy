@@ -82,14 +82,8 @@ fn creation_skeleton(
                 let stream_raw = stream.raw();
                 let out_ptr = data_ref.buffer().ptr();
                 if let Some(ptr) = out_ptr {
-                    let dispatched = gpu_dispatch(
-                        ptr.as_ptr(),
-                        dtype,
-                        n,
-                        action,
-                        shape,
-                        stream_raw,
-                    )?;
+                    let dispatched =
+                        gpu_dispatch(ptr.as_ptr(), dtype, n, action, shape, stream_raw)?;
                     if !dispatched {
                         // 未实例化 kernel 的 dtype：CPU 填充 + H2D memcpy
                         cpu_fill_to_device(ptr.as_ptr(), dtype, n, action, shape, &device)?;
@@ -103,7 +97,9 @@ fn creation_skeleton(
 
     data_ref.buffer().record_write(&stream);
 
-    Ok(Array::new(data_ref, layout, dtype, stream, dev_res, dtype_res))
+    Ok(Array::new(
+        data_ref, layout, dtype, stream, dev_res, dtype_res,
+    ))
 }
 
 /// 尝试 GPU kernel 分发。返回 true 表示已成功分发，false 表示需要 fallback。
@@ -147,7 +143,7 @@ fn gpu_dispatch(
                     kernels::musapy_fill_u16(out_ptr as *mut u16, v as u16, n, stream_raw);
                 },
                 Dtype::Uint8 => unsafe {
-                    kernels::musapy_fill_u8(out_ptr as *mut u8, v as u8, n, stream_raw);
+                    kernels::musapy_fill_u8(out_ptr, v as u8, n, stream_raw);
                 },
                 _ => return Ok(false), // complex 等未实例化
             }
@@ -158,16 +154,34 @@ fn gpu_dispatch(
             let (s, st) = (*start, *step);
             match dtype {
                 Dtype::Float32 => unsafe {
-                    kernels::musapy_arange_f32(out_ptr as *mut f32, s as f32, st as f32, n, stream_raw);
+                    kernels::musapy_arange_f32(
+                        out_ptr as *mut f32,
+                        s as f32,
+                        st as f32,
+                        n,
+                        stream_raw,
+                    );
                 },
                 Dtype::Float64 => unsafe {
                     kernels::musapy_arange_f64(out_ptr as *mut f64, s, st, n, stream_raw);
                 },
                 Dtype::Int64 => unsafe {
-                    kernels::musapy_arange_i64(out_ptr as *mut i64, s as i64, st as i64, n, stream_raw);
+                    kernels::musapy_arange_i64(
+                        out_ptr as *mut i64,
+                        s as i64,
+                        st as i64,
+                        n,
+                        stream_raw,
+                    );
                 },
                 Dtype::Int32 => unsafe {
-                    kernels::musapy_arange_i32(out_ptr as *mut i32, s as i32, st as i32, n, stream_raw);
+                    kernels::musapy_arange_i32(
+                        out_ptr as *mut i32,
+                        s as i32,
+                        st as i32,
+                        n,
+                        stream_raw,
+                    );
                 },
                 _ => return Ok(false),
             }
@@ -178,7 +192,13 @@ fn gpu_dispatch(
             let (s, e) = (*start, *stop);
             match dtype {
                 Dtype::Float32 => unsafe {
-                    kernels::musapy_linspace_f32(out_ptr as *mut f32, s as f32, e as f32, n, stream_raw);
+                    kernels::musapy_linspace_f32(
+                        out_ptr as *mut f32,
+                        s as f32,
+                        e as f32,
+                        n,
+                        stream_raw,
+                    );
                 },
                 Dtype::Float64 => unsafe {
                     kernels::musapy_linspace_f64(out_ptr as *mut f64, s, e, n, stream_raw);
@@ -264,162 +284,212 @@ unsafe fn cpu_fill_ptr(
     shape: &[usize],
 ) -> Result<()> {
     unsafe {
-    match action {
-        FillAction::Fill(value) => {
-            let v = *value;
-            match dtype {
-                Dtype::Float32 => {
-                    let p = ptr as *mut f32;
-                    for i in 0..n { *p.add(i) = v as f32; }
+        match action {
+            FillAction::Fill(value) => {
+                let v = *value;
+                match dtype {
+                    Dtype::Float32 => {
+                        let p = ptr as *mut f32;
+                        for i in 0..n {
+                            *p.add(i) = v as f32;
+                        }
+                    }
+                    Dtype::Float64 => {
+                        let p = ptr as *mut f64;
+                        for i in 0..n {
+                            *p.add(i) = v;
+                        }
+                    }
+                    Dtype::Int64 => {
+                        let p = ptr as *mut i64;
+                        for i in 0..n {
+                            *p.add(i) = v as i64;
+                        }
+                    }
+                    Dtype::Int32 => {
+                        let p = ptr as *mut i32;
+                        for i in 0..n {
+                            *p.add(i) = v as i32;
+                        }
+                    }
+                    Dtype::Int16 => {
+                        let p = ptr as *mut i16;
+                        for i in 0..n {
+                            *p.add(i) = v as i16;
+                        }
+                    }
+                    Dtype::Int8 => {
+                        let p = ptr as *mut i8;
+                        for i in 0..n {
+                            *p.add(i) = v as i8;
+                        }
+                    }
+                    Dtype::Uint64 => {
+                        let p = ptr as *mut u64;
+                        for i in 0..n {
+                            *p.add(i) = v as u64;
+                        }
+                    }
+                    Dtype::Uint32 => {
+                        let p = ptr as *mut u32;
+                        for i in 0..n {
+                            *p.add(i) = v as u32;
+                        }
+                    }
+                    Dtype::Uint16 => {
+                        let p = ptr as *mut u16;
+                        for i in 0..n {
+                            *p.add(i) = v as u16;
+                        }
+                    }
+                    Dtype::Uint8 => {
+                        let p = ptr;
+                        for i in 0..n {
+                            *p.add(i) = v as u8;
+                        }
+                    }
+                    Dtype::Bool => {
+                        let p = ptr;
+                        let bv: u8 = if v != 0.0 { 1 } else { 0 };
+                        for i in 0..n {
+                            *p.add(i) = bv;
+                        }
+                    }
+                    _ => {
+                        // Float16/Bfloat16/Complex: 暂不支持 CPU fill
+                        return Err(musapy_core::error::DtypeError::Unsupported(format!(
+                            "creation ops do not support dtype {:?}",
+                            dtype
+                        ))
+                        .into());
+                    }
                 }
-                Dtype::Float64 => {
-                    let p = ptr as *mut f64;
-                    for i in 0..n { *p.add(i) = v; }
+            }
+            FillAction::Arange { start, step } => {
+                let (s, st) = (*start, *step);
+                match dtype {
+                    Dtype::Float32 => {
+                        let p = ptr as *mut f32;
+                        for i in 0..n {
+                            *p.add(i) = (s + i as f64 * st) as f32;
+                        }
+                    }
+                    Dtype::Float64 => {
+                        let p = ptr as *mut f64;
+                        for i in 0..n {
+                            *p.add(i) = s + i as f64 * st;
+                        }
+                    }
+                    Dtype::Int64 => {
+                        let p = ptr as *mut i64;
+                        for i in 0..n {
+                            *p.add(i) = (s + i as f64 * st) as i64;
+                        }
+                    }
+                    Dtype::Int32 => {
+                        let p = ptr as *mut i32;
+                        for i in 0..n {
+                            *p.add(i) = (s + i as f64 * st) as i32;
+                        }
+                    }
+                    _ => {
+                        return Err(musapy_core::error::DtypeError::Unsupported(format!(
+                            "arange does not support dtype {:?}",
+                            dtype
+                        ))
+                        .into());
+                    }
                 }
-                Dtype::Int64 => {
-                    let p = ptr as *mut i64;
-                    for i in 0..n { *p.add(i) = v as i64; }
+            }
+            FillAction::Linspace { start, stop } => {
+                let (s, e) = (*start, *stop);
+                match dtype {
+                    Dtype::Float32 => {
+                        let p = ptr as *mut f32;
+                        if n == 1 {
+                            *p = s as f32;
+                        } else {
+                            let step = (e - s) / (n - 1) as f64;
+                            for i in 0..n {
+                                *p.add(i) = (s + i as f64 * step) as f32;
+                            }
+                        }
+                    }
+                    Dtype::Float64 => {
+                        let p = ptr as *mut f64;
+                        if n == 1 {
+                            *p = s;
+                        } else {
+                            let step = (e - s) / (n - 1) as f64;
+                            for i in 0..n {
+                                *p.add(i) = s + i as f64 * step;
+                            }
+                        }
+                    }
+                    _ => {
+                        return Err(musapy_core::error::DtypeError::Unsupported(format!(
+                            "linspace does not support dtype {:?}",
+                            dtype
+                        ))
+                        .into());
+                    }
                 }
-                Dtype::Int32 => {
-                    let p = ptr as *mut i32;
-                    for i in 0..n { *p.add(i) = v as i32; }
-                }
-                Dtype::Int16 => {
-                    let p = ptr as *mut i16;
-                    for i in 0..n { *p.add(i) = v as i16; }
-                }
-                Dtype::Int8 => {
-                    let p = ptr as *mut i8;
-                    for i in 0..n { *p.add(i) = v as i8; }
-                }
-                Dtype::Uint64 => {
-                    let p = ptr as *mut u64;
-                    for i in 0..n { *p.add(i) = v as u64; }
-                }
-                Dtype::Uint32 => {
-                    let p = ptr as *mut u32;
-                    for i in 0..n { *p.add(i) = v as u32; }
-                }
-                Dtype::Uint16 => {
-                    let p = ptr as *mut u16;
-                    for i in 0..n { *p.add(i) = v as u16; }
-                }
-                Dtype::Uint8 => {
-                    let p = ptr as *mut u8;
-                    for i in 0..n { *p.add(i) = v as u8; }
-                }
-                Dtype::Bool => {
-                    let p = ptr as *mut u8;
-                    let bv: u8 = if v != 0.0 { 1 } else { 0 };
-                    for i in 0..n { *p.add(i) = bv; }
-                }
-                _ => {
-                    // Float16/Bfloat16/Complex: 暂不支持 CPU fill
-                    return Err(musapy_core::error::DtypeError::Unsupported(format!(
-                        "creation ops do not support dtype {:?}", dtype
-                    )).into());
+            }
+            FillAction::Eye { m, k } => {
+                let (m, k) = (*m, *k);
+                let n_rows = shape[0];
+                match dtype {
+                    Dtype::Float32 => {
+                        let p = ptr as *mut f32;
+                        for idx in 0..n {
+                            let row = idx / m;
+                            let col = idx % m;
+                            *p.add(idx) = if (col as i32 - row as i32) == k {
+                                1.0
+                            } else {
+                                0.0
+                            };
+                        }
+                    }
+                    Dtype::Float64 => {
+                        let p = ptr as *mut f64;
+                        for idx in 0..n {
+                            let row = idx / m;
+                            let col = idx % m;
+                            *p.add(idx) = if (col as i32 - row as i32) == k {
+                                1.0
+                            } else {
+                                0.0
+                            };
+                        }
+                    }
+                    Dtype::Int64 => {
+                        let p = ptr as *mut i64;
+                        for idx in 0..n {
+                            let row = idx / m;
+                            let col = idx % m;
+                            *p.add(idx) = if (col as i32 - row as i32) == k { 1 } else { 0 };
+                        }
+                    }
+                    Dtype::Int32 => {
+                        let p = ptr as *mut i32;
+                        for idx in 0..n {
+                            let row = idx / m;
+                            let col = idx % m;
+                            *p.add(idx) = if (col as i32 - row as i32) == k { 1 } else { 0 };
+                        }
+                    }
+                    _ => {
+                        let _ = n_rows;
+                        return Err(musapy_core::error::DtypeError::Unsupported(format!(
+                            "eye does not support dtype {:?}",
+                            dtype
+                        ))
+                        .into());
+                    }
                 }
             }
         }
-        FillAction::Arange { start, step } => {
-            let (s, st) = (*start, *step);
-            match dtype {
-                Dtype::Float32 => {
-                    let p = ptr as *mut f32;
-                    for i in 0..n { *p.add(i) = (s + i as f64 * st) as f32; }
-                }
-                Dtype::Float64 => {
-                    let p = ptr as *mut f64;
-                    for i in 0..n { *p.add(i) = s + i as f64 * st; }
-                }
-                Dtype::Int64 => {
-                    let p = ptr as *mut i64;
-                    for i in 0..n { *p.add(i) = (s + i as f64 * st) as i64; }
-                }
-                Dtype::Int32 => {
-                    let p = ptr as *mut i32;
-                    for i in 0..n { *p.add(i) = (s + i as f64 * st) as i32; }
-                }
-                _ => {
-                    return Err(musapy_core::error::DtypeError::Unsupported(format!(
-                        "arange does not support dtype {:?}", dtype
-                    )).into());
-                }
-            }
-        }
-        FillAction::Linspace { start, stop } => {
-            let (s, e) = (*start, *stop);
-            match dtype {
-                Dtype::Float32 => {
-                    let p = ptr as *mut f32;
-                    if n == 1 {
-                        *p = s as f32;
-                    } else {
-                        let step = (e - s) / (n - 1) as f64;
-                        for i in 0..n { *p.add(i) = (s + i as f64 * step) as f32; }
-                    }
-                }
-                Dtype::Float64 => {
-                    let p = ptr as *mut f64;
-                    if n == 1 {
-                        *p = s;
-                    } else {
-                        let step = (e - s) / (n - 1) as f64;
-                        for i in 0..n { *p.add(i) = s + i as f64 * step; }
-                    }
-                }
-                _ => {
-                    return Err(musapy_core::error::DtypeError::Unsupported(format!(
-                        "linspace does not support dtype {:?}", dtype
-                    )).into());
-                }
-            }
-        }
-        FillAction::Eye { m, k } => {
-            let (m, k) = (*m, *k);
-            let n_rows = shape[0];
-            match dtype {
-                Dtype::Float32 => {
-                    let p = ptr as *mut f32;
-                    for idx in 0..n {
-                        let row = idx / m;
-                        let col = idx % m;
-                        *p.add(idx) = if (col as i32 - row as i32) == k { 1.0 } else { 0.0 };
-                    }
-                }
-                Dtype::Float64 => {
-                    let p = ptr as *mut f64;
-                    for idx in 0..n {
-                        let row = idx / m;
-                        let col = idx % m;
-                        *p.add(idx) = if (col as i32 - row as i32) == k { 1.0 } else { 0.0 };
-                    }
-                }
-                Dtype::Int64 => {
-                    let p = ptr as *mut i64;
-                    for idx in 0..n {
-                        let row = idx / m;
-                        let col = idx % m;
-                        *p.add(idx) = if (col as i32 - row as i32) == k { 1 } else { 0 };
-                    }
-                }
-                Dtype::Int32 => {
-                    let p = ptr as *mut i32;
-                    for idx in 0..n {
-                        let row = idx / m;
-                        let col = idx % m;
-                        *p.add(idx) = if (col as i32 - row as i32) == k { 1 } else { 0 };
-                    }
-                }
-                _ => {
-                    let _ = n_rows;
-                    return Err(musapy_core::error::DtypeError::Unsupported(format!(
-                        "eye does not support dtype {:?}", dtype
-                    )).into());
-                }
-            }
-        }
-    }
     } // unsafe
     Ok(())
 }
@@ -443,7 +513,12 @@ pub fn ones(shape: &[usize], dtype: Option<Dtype>, device: Option<Device>) -> Re
 /// `ms.full(shape, fill_value, dtype=None, device=None)` — 创建填充指定值的数组。
 ///
 /// dtype 默认 float32（L0-7 级 5 兜底）。
-pub fn full(shape: &[usize], value: f64, dtype: Option<Dtype>, device: Option<Device>) -> Result<Array> {
+pub fn full(
+    shape: &[usize],
+    value: f64,
+    dtype: Option<Dtype>,
+    device: Option<Device>,
+) -> Result<Array> {
     creation_skeleton(shape, device, dtype, &FillAction::Fill(value))
 }
 
@@ -454,7 +529,13 @@ pub fn full(shape: &[usize], value: f64, dtype: Option<Dtype>, device: Option<De
 /// - `k`: 对角线偏移（0 = 主对角线，>0 上移，<0 下移）
 ///
 /// dtype 默认 float32。
-pub fn eye(n: usize, m: Option<usize>, k: i32, dtype: Option<Dtype>, device: Option<Device>) -> Result<Array> {
+pub fn eye(
+    n: usize,
+    m: Option<usize>,
+    k: i32,
+    dtype: Option<Dtype>,
+    device: Option<Device>,
+) -> Result<Array> {
     let m = m.unwrap_or(n);
     let shape = [n, m];
     creation_skeleton(&shape, device, dtype, &FillAction::Eye { m, k })
@@ -491,10 +572,12 @@ pub fn arange(
     let dtype_arg = match dtype {
         Some(d) => Some(d),
         None => {
-            let all_integer = start.fract() == 0.0
-                && stop.fract() == 0.0
-                && step.fract() == 0.0;
-            Some(if all_integer { Dtype::Int64 } else { Dtype::Float64 })
+            let all_integer = start.fract() == 0.0 && stop.fract() == 0.0 && step.fract() == 0.0;
+            Some(if all_integer {
+                Dtype::Int64
+            } else {
+                Dtype::Float64
+            })
         }
     };
 
@@ -514,7 +597,12 @@ pub fn linspace(
 ) -> Result<Array> {
     // linspace 默认 float64（NumPy 行为）
     let dtype_arg = Some(dtype.unwrap_or(Dtype::Float64));
-    creation_skeleton(&[num], device, dtype_arg, &FillAction::Linspace { start, stop })
+    creation_skeleton(
+        &[num],
+        device,
+        dtype_arg,
+        &FillAction::Linspace { start, stop },
+    )
 }
 
 /// `ms.zeros_like(a)` — 创建与输入同 shape/dtype/device 的全零数组。
@@ -539,16 +627,34 @@ pub fn zeros_like(a: &Array) -> Result<Array> {
     if n > 0 {
         match &device {
             Device::Cpu => {
-                cpu_fill(data_ref.buffer().ptr(), dtype, n, &FillAction::Fill(0.0), a.shape())?;
+                cpu_fill(
+                    data_ref.buffer().ptr(),
+                    dtype,
+                    n,
+                    &FillAction::Fill(0.0),
+                    a.shape(),
+                )?;
             }
             Device::Musa(_) => {
                 let stream_raw = stream.raw();
                 if let Some(ptr) = data_ref.buffer().ptr() {
                     let dispatched = gpu_dispatch(
-                        ptr.as_ptr(), dtype, n, &FillAction::Fill(0.0), a.shape(), stream_raw,
+                        ptr.as_ptr(),
+                        dtype,
+                        n,
+                        &FillAction::Fill(0.0),
+                        a.shape(),
+                        stream_raw,
                     )?;
                     if !dispatched {
-                        cpu_fill_to_device(ptr.as_ptr(), dtype, n, &FillAction::Fill(0.0), a.shape(), &device)?;
+                        cpu_fill_to_device(
+                            ptr.as_ptr(),
+                            dtype,
+                            n,
+                            &FillAction::Fill(0.0),
+                            a.shape(),
+                            &device,
+                        )?;
                     }
                 }
             }
@@ -590,16 +696,34 @@ pub fn ones_like(a: &Array) -> Result<Array> {
     if n > 0 {
         match &device {
             Device::Cpu => {
-                cpu_fill(data_ref.buffer().ptr(), dtype, n, &FillAction::Fill(1.0), a.shape())?;
+                cpu_fill(
+                    data_ref.buffer().ptr(),
+                    dtype,
+                    n,
+                    &FillAction::Fill(1.0),
+                    a.shape(),
+                )?;
             }
             Device::Musa(_) => {
                 let stream_raw = stream.raw();
                 if let Some(ptr) = data_ref.buffer().ptr() {
                     let dispatched = gpu_dispatch(
-                        ptr.as_ptr(), dtype, n, &FillAction::Fill(1.0), a.shape(), stream_raw,
+                        ptr.as_ptr(),
+                        dtype,
+                        n,
+                        &FillAction::Fill(1.0),
+                        a.shape(),
+                        stream_raw,
                     )?;
                     if !dispatched {
-                        cpu_fill_to_device(ptr.as_ptr(), dtype, n, &FillAction::Fill(1.0), a.shape(), &device)?;
+                        cpu_fill_to_device(
+                            ptr.as_ptr(),
+                            dtype,
+                            n,
+                            &FillAction::Fill(1.0),
+                            a.shape(),
+                            &device,
+                        )?;
                     }
                 }
             }

@@ -53,7 +53,14 @@ fn main() {
     match &musa_home {
         Some(home) => {
             // -------- 2. 编译 kernels --------
-            compile_kernels(&kernels_dir, &elementwise_mu, &reduction_mu, &init_mu, &indexing_mu, home);
+            compile_kernels(
+                &kernels_dir,
+                &elementwise_mu,
+                &reduction_mu,
+                &init_mu,
+                &indexing_mu,
+                home,
+            );
 
             // 声明 rerun 触发条件
             println!("cargo:rerun-if-changed={}", elementwise_mu.display());
@@ -188,7 +195,14 @@ fn compile_one_mu(mcc: &Path, kernels_dir: &Path, include_dir: &Path, src: &Path
 }
 
 /// 用 mcc 编译 kernel 源文件 → 静态库
-fn compile_kernels(kernels_dir: &Path, elementwise_mu: &Path, reduction_mu: &Path, init_mu: &Path, indexing_mu: &Path, home: &Path) {
+fn compile_kernels(
+    kernels_dir: &Path,
+    elementwise_mu: &Path,
+    reduction_mu: &Path,
+    init_mu: &Path,
+    indexing_mu: &Path,
+    home: &Path,
+) {
     let out_dir = env::var("OUT_DIR").unwrap();
     let out_dir = Path::new(&out_dir);
 
@@ -210,8 +224,20 @@ fn compile_kernels(kernels_dir: &Path, elementwise_mu: &Path, reduction_mu: &Pat
         );
     }
 
-    compile_one_mu(&mcc, kernels_dir, &include_dir, elementwise_mu, &elementwise_obj);
-    compile_one_mu(&mcc, kernels_dir, &include_dir, reduction_mu, &reduction_obj);
+    compile_one_mu(
+        &mcc,
+        kernels_dir,
+        &include_dir,
+        elementwise_mu,
+        &elementwise_obj,
+    );
+    compile_one_mu(
+        &mcc,
+        kernels_dir,
+        &include_dir,
+        reduction_mu,
+        &reduction_obj,
+    );
     compile_one_mu(&mcc, kernels_dir, &include_dir, init_mu, &init_obj);
     compile_one_mu(&mcc, kernels_dir, &include_dir, indexing_mu, &indexing_obj);
 

@@ -37,16 +37,16 @@ pub fn csr_matrix(
     dtype: Option<PyDtype>,
 ) -> PyResult<PyCsrMatrix> {
     // dtype 参数（若给，须与 data.dtype 一致）
-    if let Some(d) = dtype {
-        if d.0 != data.inner.dtype() {
-            return Err(error::to_pyerr(musapy_core::MusapyError::Dtype(
-                musapy_core::error::DtypeError::Unsupported(format!(
-                    "csr_matrix: dtype {} != data dtype {}",
-                    d.0,
-                    data.inner.dtype()
-                )),
-            )));
-        }
+    if let Some(d) = dtype
+        && d.0 != data.inner.dtype()
+    {
+        return Err(error::to_pyerr(musapy_core::MusapyError::Dtype(
+            musapy_core::error::DtypeError::Unsupported(format!(
+                "csr_matrix: dtype {} != data dtype {}",
+                d.0,
+                data.inner.dtype()
+            )),
+        )));
     }
     let _ = py;
 
@@ -166,7 +166,7 @@ impl PyCsrMatrix {
             nd => {
                 return Err(pyo3::exceptions::PyValueError::new_err(format!(
                     "csr @ : rhs must be 1D (vec) or 2D (dense), got {nd}D"
-                )))
+                )));
             }
         };
         Ok(PyArray::from_array(result.map_err(error::to_pyerr)?))

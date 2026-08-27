@@ -9,6 +9,7 @@ pub mod array;
 pub mod buffer;
 pub mod debug;
 pub mod device;
+pub mod dlpack;
 pub mod dtype;
 pub mod error;
 pub mod layout;

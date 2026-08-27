@@ -209,8 +209,7 @@ impl PyArray {
 
     /// `a.astype(dtype)` — 类型转换。
     fn astype(&self, dtype: PyDtype) -> PyResult<PyArray> {
-        let result =
-            musapy_ops::astype(&self.inner, dtype.0, None).map_err(error::to_pyerr)?;
+        let result = musapy_ops::astype(&self.inner, dtype.0, None).map_err(error::to_pyerr)?;
         Ok(PyArray::from_array(result))
     }
 
@@ -261,11 +260,11 @@ impl PyArray {
                 let mut all_int = true;
                 let n = data.len().unwrap_or(0);
                 for i in 0..n {
-                    if let Ok(item) = data.get_item(i) {
-                        if item.extract::<i64>().is_err() {
-                            all_int = false;
-                            break;
-                        }
+                    if let Ok(item) = data.get_item(i)
+                        && item.extract::<i64>().is_err()
+                    {
+                        all_int = false;
+                        break;
                     }
                 }
                 if all_int {
@@ -302,7 +301,7 @@ impl PyArray {
             if all_arrays {
                 is_adv = true;
             }
-        } else if !key.downcast::<PySlice>().is_ok() && key.extract::<isize>().is_err() {
+        } else if key.downcast::<PySlice>().is_err() && key.extract::<isize>().is_err() {
             // 单个非 int/slice → 数组索引（mask 或 fancy）
             if let Some(arr) = as_index_array(py, key)? {
                 adv_items.push(arr);
@@ -326,17 +325,13 @@ impl PyArray {
             let guards: Vec<pyo3::PyRef<'_, PyArray>> =
                 adv_items.iter().map(|a| a.borrow(py)).collect();
             let idx_refs: Vec<&musapy_core::Array> = guards.iter().map(|g| &g.inner).collect();
-            let result = musapy_ops::adv_index(&self.inner, &idx_refs)
-                .map_err(error::to_pyerr)?;
+            let result = musapy_ops::adv_index(&self.inner, &idx_refs).map_err(error::to_pyerr)?;
             return Ok(PyArray::from_array(result));
         }
 
         // ═══ 既有 view 路径 ═══
         // 辅助：解析单个索引项
-        fn parse_index_item(
-            item: &Bound<'_, pyo3::PyAny>,
-            dim_size: usize,
-        ) -> PyResult<IndexItem> {
+        fn parse_index_item(item: &Bound<'_, pyo3::PyAny>, dim_size: usize) -> PyResult<IndexItem> {
             if let Ok(idx) = item.extract::<isize>() {
                 // 整数索引（支持负数）
                 let idx = if idx < 0 {
@@ -358,7 +353,9 @@ impl PyArray {
                 let stop = indices.stop.max(0) as usize;
                 let step = indices.step as usize;
                 if step == 0 {
-                    return Err(pyo3::exceptions::PyValueError::new_err("slice step cannot be zero"));
+                    return Err(pyo3::exceptions::PyValueError::new_err(
+                        "slice step cannot be zero",
+                    ));
                 }
                 Ok(IndexItem::Slice { start, stop, step })
             } else {
@@ -370,14 +367,17 @@ impl PyArray {
 
         enum IndexItem {
             Index(usize),
-            Slice { start: usize, stop: usize, step: usize },
+            Slice {
+                start: usize,
+                stop: usize,
+                step: usize,
+            },
         }
 
         // 解析 key：可能是单个项或 tuple
         let items: Vec<IndexItem> = if let Ok(tuple) = key.downcast::<PyTuple>() {
             let mut items = Vec::new();
-            for i in 0..tuple.len() {
-                let item = tuple.get_item(i)?;
+            for (i, item) in tuple.iter().enumerate() {
                 if i >= ndim {
                     return Err(pyo3::exceptions::PyIndexError::new_err(
                         "too many indices for array",
@@ -458,7 +458,7 @@ impl PyArray {
         let flat = bytes_to_pylist(py, &bytes, n, dtype)?;
 
         // 0-dim：返回标量（NumPy 兼容）
-        if shape.len() == 0 {
+        if shape.is_empty() {
             let flat_list = flat.downcast_bound::<pyo3::types::PyList>(py)?;
             return Ok(flat_list.get_item(0)?.into());
         }
@@ -542,11 +542,7 @@ impl PyArray {
                 Device::Cpu => {
                     if let Some(p) = ptr {
                         unsafe {
-                            std::ptr::copy_nonoverlapping(
-                                p.as_ptr(),
-                                bytes.as_mut_ptr(),
-                                nbytes,
-                            );
+                            std::ptr::copy_nonoverlapping(p.as_ptr(), bytes.as_mut_ptr(), nbytes);
                         }
                     }
                 }
@@ -709,10 +705,9 @@ fn bytes_to_pylist(py: Python<'_>, bytes: &[u8], n: usize, dtype: Dtype) -> PyRe
         Dtype::Uint64 => to_list!(u64),
         Dtype::Float32 => to_list!(f32),
         Dtype::Float64 => to_list!(f64),
-        Dtype::Float16 | Dtype::Bfloat16 => Err(pyo3::exceptions::PyNotImplementedError::new_err(format!(
-            "tolist not yet supported for dtype {}",
-            dtype
-        ))),
+        Dtype::Float16 | Dtype::Bfloat16 => Err(pyo3::exceptions::PyNotImplementedError::new_err(
+            format!("tolist not yet supported for dtype {}", dtype),
+        )),
         // complex（Phase 5，ADR-003 003-D5）：interleaved re/im → Python complex 列表
         Dtype::Complex64 => {
             let v: &[f32] =
@@ -725,16 +720,20 @@ fn bytes_to_pylist(py: Python<'_>, bytes: &[u8], n: usize, dtype: Dtype) -> PyRe
                     v[2 * i + 1] as f64,
                 ))?;
             }
-            return Ok(list.into());
+            Ok(list.into())
         }
         Dtype::Complex128 => {
             let v: &[f64] =
                 unsafe { std::slice::from_raw_parts(bytes.as_ptr() as *const f64, n * 2) };
             let list = PyList::empty(py);
             for i in 0..n {
-                list.append(pyo3::types::PyComplex::from_doubles(py, v[2 * i], v[2 * i + 1]))?;
+                list.append(pyo3::types::PyComplex::from_doubles(
+                    py,
+                    v[2 * i],
+                    v[2 * i + 1],
+                ))?;
             }
-            return Ok(list.into());
+            Ok(list.into())
         }
     }
 }
@@ -761,20 +760,19 @@ fn bytes_to_scalar(py: Python<'_>, bytes: &[u8], dtype: Dtype) -> PyResult<PyObj
         Dtype::Uint64 => to_scalar!(u64),
         Dtype::Float32 => to_scalar!(f32),
         Dtype::Float64 => to_scalar!(f64),
-        Dtype::Float16 | Dtype::Bfloat16 => Err(pyo3::exceptions::PyNotImplementedError::new_err(format!(
-            "item not yet supported for dtype {}",
-            dtype
-        ))),
+        Dtype::Float16 | Dtype::Bfloat16 => Err(pyo3::exceptions::PyNotImplementedError::new_err(
+            format!("item not yet supported for dtype {}", dtype),
+        )),
         // complex（Phase 5）：interleaved re/im → Python complex
         Dtype::Complex64 => {
             let re = unsafe { std::ptr::read_unaligned(bytes.as_ptr() as *const f32) };
             let im = unsafe { std::ptr::read_unaligned(bytes.as_ptr().add(4) as *const f32) };
-            return Ok(pyo3::types::PyComplex::from_doubles(py, re as f64, im as f64).into());
+            Ok(pyo3::types::PyComplex::from_doubles(py, re as f64, im as f64).into())
         }
         Dtype::Complex128 => {
             let re = unsafe { std::ptr::read_unaligned(bytes.as_ptr() as *const f64) };
             let im = unsafe { std::ptr::read_unaligned(bytes.as_ptr().add(8) as *const f64) };
-            return Ok(pyo3::types::PyComplex::from_doubles(py, re, im).into());
+            Ok(pyo3::types::PyComplex::from_doubles(py, re, im).into())
         }
     }
 }

@@ -89,7 +89,7 @@ thread_local! {
     ///   2. 调用 `set_debug_frame(Some(frame))` 写入 thread-local
     ///   3. op_builder 创建 OpContext 时调用 `take_debug_frame()` 取走
     ///   4. 帧信息附加到 OpContext.python_frame
-    static DEBUG_PYTHON_FRAME: RefCell<Option<PythonFrame>> = RefCell::new(None);
+    static DEBUG_PYTHON_FRAME: RefCell<Option<PythonFrame>> = const { RefCell::new(None) };
 }
 
 /// 设置当前线程的 Python 调用帧（PyO3 层调用）。

@@ -13,10 +13,10 @@ use pyo3::prelude::*;
 
 /// 捕获 Python 调用帧（debug 模式，ADR L3-26；与 linalg ops 同惯例）。
 fn capture_frame(py: Python<'_>) {
-    if debug::is_debug() {
-        if let Some(frame) = extract_caller_frame(py) {
-            debug::set_debug_frame(Some(frame));
-        }
+    if debug::is_debug()
+        && let Some(frame) = extract_caller_frame(py)
+    {
+        debug::set_debug_frame(Some(frame));
     }
 }
 
@@ -77,8 +77,8 @@ pub fn uniform(
     };
     let dtype_arg = dtype.map(|d| d.0);
     let device_arg = parse_device_opt(py, &device)?;
-    let result =
-        musapy_ops::uniform(&shape, low, high, dtype_arg, device_arg, seed).map_err(error::to_pyerr)?;
+    let result = musapy_ops::uniform(&shape, low, high, dtype_arg, device_arg, seed)
+        .map_err(error::to_pyerr)?;
     Ok(PyArray::from_array(result))
 }
 
@@ -103,8 +103,8 @@ pub fn normal(
     };
     let dtype_arg = dtype.map(|d| d.0);
     let device_arg = parse_device_opt(py, &device)?;
-    let result =
-        musapy_ops::normal(&shape, loc, scale, dtype_arg, device_arg, seed).map_err(error::to_pyerr)?;
+    let result = musapy_ops::normal(&shape, loc, scale, dtype_arg, device_arg, seed)
+        .map_err(error::to_pyerr)?;
     Ok(PyArray::from_array(result))
 }
 

@@ -214,10 +214,11 @@ fn device_summary() -> PyResult<String> {
                 match musapy_core::musa_ffi::get_device_properties(id) {
                     Ok(props) => {
                         out.push_str(&format!(
-                            "musa:{} — {}, arch=mp_{}, {} VRAM, {} CUs\n",
+                            "musa:{} — {}, arch=mp_{}{}, {} VRAM, {} CUs\n",
                             id,
                             props.name,
-                            format!("{}{}", props.arch_major, props.arch_minor),
+                            props.arch_major,
+                            props.arch_minor,
                             format_bytes(props.total_memory),
                             props.multiprocessor_count,
                         ));

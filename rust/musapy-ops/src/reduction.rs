@@ -22,11 +22,7 @@ pub(crate) fn resolve_axis(axis: Option<isize>, ndim: usize) -> Result<Option<us
     match axis {
         None => Ok(None),
         Some(ax) => {
-            let normalized = if ax < 0 {
-                ax + ndim as isize
-            } else {
-                ax
-            };
+            let normalized = if ax < 0 { ax + ndim as isize } else { ax };
             if normalized < 0 || normalized >= ndim as isize {
                 return Err(ShapeError::Mismatch(format!(
                     "axis {} is out of bounds for array of dimension {}",
@@ -48,11 +44,7 @@ pub(crate) fn resolve_axes(axis: Option<&[isize]>, ndim: usize) -> Result<Vec<us
     };
     let mut out: Vec<usize> = Vec::with_capacity(axs.len());
     for &ax in axs {
-        let normalized = if ax < 0 {
-            ax + ndim as isize
-        } else {
-            ax
-        };
+        let normalized = if ax < 0 { ax + ndim as isize } else { ax };
         if normalized < 0 || normalized >= ndim as isize {
             return Err(ShapeError::Mismatch(format!(
                 "axis {} is out of bounds for array of dimension {}",
@@ -78,35 +70,60 @@ pub(crate) fn resolve_axes(axis: Option<&[isize]>, ndim: usize) -> Result<Vec<us
 /// `ms.sum(a, axis=None, keepdims=False, out=None)` — 沿轴求和。
 ///
 /// 整数输入以 int64 累加，输出 int64；浮点保持原 dtype。
-pub fn sum(a: &Array, axis: Option<&[isize]>, keepdims: bool, out: Option<&Array>) -> Result<Array> {
+pub fn sum(
+    a: &Array,
+    axis: Option<&[isize]>,
+    keepdims: bool,
+    out: Option<&Array>,
+) -> Result<Array> {
     reduce_multi(a, axis, keepdims, out, ReduceKernel::Sum)
 }
 
 /// `ms.prod(a, axis=None, keepdims=False, out=None)` — 沿轴求积。
 ///
 /// 整数输入以 int64 累加，输出 int64；浮点保持原 dtype。
-pub fn prod(a: &Array, axis: Option<&[isize]>, keepdims: bool, out: Option<&Array>) -> Result<Array> {
+pub fn prod(
+    a: &Array,
+    axis: Option<&[isize]>,
+    keepdims: bool,
+    out: Option<&Array>,
+) -> Result<Array> {
     reduce_multi(a, axis, keepdims, out, ReduceKernel::Prod)
 }
 
 /// `ms.max(a, axis=None, keepdims=False, out=None)` — 沿轴最大值。
 ///
 /// 整数输入 cast 到 int64 后比较，输出 int64；浮点保持原 dtype。
-pub fn max(a: &Array, axis: Option<&[isize]>, keepdims: bool, out: Option<&Array>) -> Result<Array> {
+pub fn max(
+    a: &Array,
+    axis: Option<&[isize]>,
+    keepdims: bool,
+    out: Option<&Array>,
+) -> Result<Array> {
     reduce_multi(a, axis, keepdims, out, ReduceKernel::Max)
 }
 
 /// `ms.min(a, axis=None, keepdims=False, out=None)` — 沿轴最小值。
 ///
 /// 整数输入 cast 到 int64 后比较，输出 int64；浮点保持原 dtype。
-pub fn min(a: &Array, axis: Option<&[isize]>, keepdims: bool, out: Option<&Array>) -> Result<Array> {
+pub fn min(
+    a: &Array,
+    axis: Option<&[isize]>,
+    keepdims: bool,
+    out: Option<&Array>,
+) -> Result<Array> {
     reduce_multi(a, axis, keepdims, out, ReduceKernel::Min)
 }
 
 /// `ms.mean(a, axis=None, keepdims=False, out=None)` — 沿轴均值。
 ///
 /// 整数输入以 float64 累加，输出 float64；f32 保持 f32，f64 保持 f64。
-pub fn mean(a: &Array, axis: Option<&[isize]>, keepdims: bool, out: Option<&Array>) -> Result<Array> {
+pub fn mean(
+    a: &Array,
+    axis: Option<&[isize]>,
+    keepdims: bool,
+    out: Option<&Array>,
+) -> Result<Array> {
     reduce_multi(a, axis, keepdims, out, ReduceKernel::Mean)
 }
 
@@ -137,7 +154,13 @@ fn reduce_multi(
             let mut cur: Option<Array> = None;
             for &ax in &axes {
                 let input = cur.as_ref().unwrap_or(a);
-                cur = Some(op_builder::reduction_axis(input, Some(ax), true, None, kernel)?);
+                cur = Some(op_builder::reduction_axis(
+                    input,
+                    Some(ax),
+                    true,
+                    None,
+                    kernel,
+                )?);
             }
             let cur = cur.expect("non-empty axes");
             if keepdims {

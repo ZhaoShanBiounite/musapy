@@ -15,7 +15,7 @@
 #![allow(non_snake_case)] // C API 命名风格（与 musa_x_ffi.rs 一致）
 #![allow(clippy::missing_safety_doc)] // FFI 绑定文档另见 musa_runtime_api.h（与 musa_x_ffi.rs 一致）
 use crate::error::{KernelError, MusapyError, Result, StreamError};
-use std::ffi::{c_char, c_int, c_uint, c_void, CStr};
+use std::ffi::{CStr, c_char, c_int, c_uint, c_void};
 
 // ============================================================
 // 类型定义（对标 CUDA/MUSA）
@@ -157,8 +157,8 @@ mod mock {
     // edition 2024 的 unsafe_op_in_unsafe_fn 在此为纯噪音，allow 掉。
     #![allow(unsafe_op_in_unsafe_fn)]
     use super::*;
-    use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::Mutex;
+    use std::sync::atomic::{AtomicUsize, Ordering};
 
     static MOCK_HANDLE_COUNTER: AtomicUsize = AtomicUsize::new(1);
 
@@ -236,7 +236,7 @@ mod mock {
             return 1;
         }
         *value = match attr {
-            MUSA_DEV_ATTR_MULTIPROCESSOR_COUNT => 80, // mock: 80 CUs
+            MUSA_DEV_ATTR_MULTIPROCESSOR_COUNT => 80,    // mock: 80 CUs
             MUSA_DEV_ATTR_COMPUTE_CAPABILITY_MAJOR => 2, // mock: arch 2.2
             MUSA_DEV_ATTR_COMPUTE_CAPABILITY_MINOR => 2,
             _ => 0,

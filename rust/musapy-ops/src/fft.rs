@@ -240,13 +240,13 @@ fn fft_impl(
 
     let scale = norm.scale(forward, n);
     let result_data: BufferRef;
-    let result_ptr: Option<NonNull<u8>>;
+
     // 每行输出 complex 数（rfft → N//2+1，已在 Phase A 算出）
     let out_nbytes = outer * result_len * out_dtype.element_size();
     let (res_data, res_ptr) =
         alloc_or_reuse_out(out, &out_shape, out_nbytes, &device, &out_stream)?;
     result_data = res_data;
-    result_ptr = res_ptr;
+    let result_ptr: Option<NonNull<u8>> = res_ptr;
 
     if outer * result_len > 0 {
         let ftype = match out_dtype {
@@ -300,7 +300,11 @@ fn fft_impl(
                         plan,
                         src as *mut muComplex,
                         dst as *mut muComplex,
-                        if forward { MUFFT_FORWARD } else { MUFFT_INVERSE },
+                        if forward {
+                            MUFFT_FORWARD
+                        } else {
+                            MUFFT_INVERSE
+                        },
                     )
                 },
                 (Dtype::Complex128, true) => unsafe {
@@ -311,7 +315,11 @@ fn fft_impl(
                         plan,
                         src as *mut muDoubleComplex,
                         dst as *mut muDoubleComplex,
-                        if forward { MUFFT_FORWARD } else { MUFFT_INVERSE },
+                        if forward {
+                            MUFFT_FORWARD
+                        } else {
+                            MUFFT_INVERSE
+                        },
                     )
                 },
                 _ => unreachable!(),

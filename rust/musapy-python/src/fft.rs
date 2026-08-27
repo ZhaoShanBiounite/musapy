@@ -12,10 +12,10 @@ use pyo3::prelude::*;
 
 /// 捕获 Python 调用帧（debug 模式，ADR L3-26；与 linalg/random ops 同惯例）。
 fn capture_frame(py: Python<'_>) {
-    if debug::is_debug() {
-        if let Some(frame) = extract_caller_frame(py) {
-            debug::set_debug_frame(Some(frame));
-        }
+    if debug::is_debug()
+        && let Some(frame) = extract_caller_frame(py)
+    {
+        debug::set_debug_frame(Some(frame));
     }
 }
 

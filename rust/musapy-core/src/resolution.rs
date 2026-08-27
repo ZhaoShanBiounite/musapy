@@ -12,9 +12,9 @@
 //!   - L0-7：dtype 对称解析，但 dtype 总有 float32 兜底（无 DeviceNotConfigured）
 //!   - L0-8：每次解析生成 DeviceResolution/DtypeResolution（可追溯）
 //!   - L0-9：从未 set_default_device 时首次 array() 抛 DeviceNotConfigured，
-//!           不静默用 auto-probe
+//!     不静默用 auto-probe
 //!   - L0-11：默认 device/dtype 用 thread-local 栈；新线程 start 时继承父线程
-//!            当前默认（值快照，之后解耦）；不做广播 API
+//!     当前默认（值快照，之后解耦）；不做广播 API
 //!   - L1-13："Musa > CPU" 层级仅用于 auto-probe 偏好，不影响 op 行为
 //!   - L2-7：device()/dtype()/stream() context 对称且可组合
 
@@ -37,19 +37,19 @@ use std::sync::Arc;
 
 thread_local! {
     /// 全局默认 device（ADR L0-6 级 4, L0-11）。
-    static DEVICE_DEFAULT: RefCell<Option<Device>> = RefCell::new(None);
+    static DEVICE_DEFAULT: RefCell<Option<Device>> = const { RefCell::new(None) };
     /// device context 栈（ADR L2-7，`with ms.device()` push 的）。
-    static DEVICE_CONTEXT: RefCell<Vec<Device>> = RefCell::new(Vec::new());
+    static DEVICE_CONTEXT: RefCell<Vec<Device>> = const { RefCell::new(Vec::new()) };
     /// 全局默认 dtype（ADR L0-7 级 4, L0-11，对称于 device）。
-    static DTYPE_DEFAULT: RefCell<Option<Dtype>> = RefCell::new(None);
+    static DTYPE_DEFAULT: RefCell<Option<Dtype>> = const { RefCell::new(None) };
     /// dtype context 栈（ADR L2-7）。
-    static DTYPE_CONTEXT: RefCell<Vec<Dtype>> = RefCell::new(Vec::new());
+    static DTYPE_CONTEXT: RefCell<Vec<Dtype>> = const { RefCell::new(Vec::new()) };
     /// stream context 栈（L1-7）。栈顶 = 当前 context 的 stream。
-    static STREAM_CONTEXT: RefCell<Vec<Arc<Stream>>> = RefCell::new(Vec::new());
+    static STREAM_CONTEXT: RefCell<Vec<Arc<Stream>>> = const { RefCell::new(Vec::new()) };
     /// 标记当前线程是否已从 device SEED snapshot 过初始值（L0-11：snapshot 后解耦）。
-    static DEVICE_SEED_SNAPSHOT_TAKEN: RefCell<bool> = RefCell::new(false);
+    static DEVICE_SEED_SNAPSHOT_TAKEN: RefCell<bool> = const { RefCell::new(false) };
     /// 标记当前线程是否已从 dtype SEED snapshot 过初始值。
-    static DTYPE_SEED_SNAPSHOT_TAKEN: RefCell<bool> = RefCell::new(false);
+    static DTYPE_SEED_SNAPSHOT_TAKEN: RefCell<bool> = const { RefCell::new(false) };
 }
 
 /// 全局 device SEED：新线程继承父线程当前的默认（值快照，L0-11）。

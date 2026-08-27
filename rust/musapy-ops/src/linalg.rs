@@ -1136,182 +1136,6 @@ fn write_zero_device(ptr: *mut u8, dtype: Dtype) -> Result<()> {
 }
 
 // ============================================================
-// 测试（形状推导纯逻辑 + mock 端到端）
-// ============================================================
-
-#[cfg(test)]
-mod tests {
-    use super::{final_matmul_shape, matmul_shapes};
-
-    // ── 形状推导（纯逻辑，无需设备）──
-
-    #[test]
-    fn test_matmul_shapes_2d_2d() {
-        let (a2, b2, sf, sl) = matmul_shapes(&[3, 4], &[4, 5]).unwrap();
-        assert_eq!(a2, [3, 4]);
-        assert_eq!(b2, [4, 5]);
-        assert!(!sf && !sl);
-        assert_eq!(final_matmul_shape(&[3, 5], sf, sl), vec![3, 5]);
-    }
-
-    #[test]
-    fn test_matmul_shapes_1d_left() {
-        let (a2, b2, sf, sl) = matmul_shapes(&[4], &[4, 5]).unwrap();
-        assert_eq!(a2, [1, 4]);
-        assert_eq!(b2, [4, 5]);
-        assert!(sf && !sl);
-        assert_eq!(final_matmul_shape(&[1, 5], sf, sl), vec![5]);
-    }
-
-    #[test]
-    fn test_matmul_shapes_1d_right() {
-        let (a2, b2, sf, sl) = matmul_shapes(&[3, 4], &[4]).unwrap();
-        assert_eq!(a2, [3, 4]);
-        assert_eq!(b2, [4, 1]);
-        assert!(!sf && sl);
-        assert_eq!(final_matmul_shape(&[3, 1], sf, sl), vec![3]);
-    }
-
-    #[test]
-    fn test_matmul_shapes_1d_1d() {
-        let (a2, b2, sf, sl) = matmul_shapes(&[4], &[4]).unwrap();
-        assert_eq!(a2, [1, 4]);
-        assert_eq!(b2, [4, 1]);
-        assert!(sf && sl);
-        assert_eq!(final_matmul_shape(&[1, 1], sf, sl), Vec::<usize>::new());
-    }
-
-    #[test]
-    fn test_matmul_shapes_errors() {
-        assert!(matmul_shapes(&[3, 4], &[5, 6]).is_err()); // 内维不匹配
-        assert!(matmul_shapes(&[], &[4]).is_err()); // 0-dim
-        assert!(matmul_shapes(&[2, 3, 4], &[4, 5]).is_err()); // 3D batch
-        assert!(matmul_shapes(&[4, 5], &[2, 3, 4]).is_err()); // 3D batch
-    }
-
-    // ── GPU mock 端到端（仅 musapy_mock_musa：验证形状管线 + mock 数值）──
-
-    #[cfg(musapy_mock_musa)]
-    mod gpu_mock_e2e {
-        use super::super::{dot, matmul, solve};
-        use crate::creation;
-        use musapy_core::{Array, Device, DeviceError, Dtype};
-
-        /// 从 Array buffer 读出 f64 数据（mock 设备内存即宿主内存）。
-        fn read_f64(a: &Array) -> Vec<f64> {
-            let n = a.size().max(1);
-            let mut out = vec![0f64; n];
-            if let Some(ptr) = a.data().buffer().ptr() {
-                unsafe {
-                    std::ptr::copy_nonoverlapping(
-                        ptr.as_ptr() as *const u8,
-                        out.as_mut_ptr() as *mut u8,
-                        a.size() * 8,
-                    );
-                }
-            }
-            out
-        }
-
-        fn make_musa_f64(shape: &[usize], data: &[f64]) -> Array {
-            let dev = Device::Musa(0);
-            let a = creation::zeros(shape, Some(Dtype::Float64), Some(dev)).unwrap();
-            // mock 模式下设备内存即宿主内存，可直接写
-            if let Some(ptr) = a.data().buffer().ptr() {
-                unsafe {
-                    std::ptr::copy_nonoverlapping(
-                        data.as_ptr() as *const u8,
-                        ptr.as_ptr(),
-                        data.len() * 8,
-                    );
-                }
-            }
-            a
-        }
-
-        #[test]
-        fn matmul_mock_shapes_and_fill() {
-            // mock Sgemm/Dgemm 把 C 全填 1.0——验证形状管线端到端
-            let a = make_musa_f64(&[2, 3], &[0.0; 6]);
-            let b = make_musa_f64(&[3, 4], &[0.0; 12]);
-            let c = matmul(&a, &b, None).unwrap();
-            assert_eq!(c.shape(), &vec![2, 4]);
-            assert_eq!(read_f64(&c), vec![1.0; 8]);
-
-            // 1D 组合 squeeze
-            let v = make_musa_f64(&[3], &[0.0; 3]);
-            let r = matmul(&v, &b, None).unwrap();
-            assert_eq!(r.shape(), &vec![4]);
-            let r2 = matmul(&a, &v, None).unwrap();
-            assert_eq!(r2.shape(), &vec![2]);
-            let r3 = matmul(&v, &make_musa_f64(&[3], &[0.0; 3]), None).unwrap();
-            assert_eq!(r3.shape(), &Vec::<usize>::new());
-        }
-
-        #[test]
-        fn dot_mock_returns_n() {
-            let a = make_musa_f64(&[5], &[0.0; 5]);
-            let b = make_musa_f64(&[5], &[0.0; 5]);
-            let r = dot(&a, &b, None).unwrap();
-            assert_eq!(r.shape(), &Vec::<usize>::new());
-            assert_eq!(read_f64(&r)[0], 5.0); // mock Ddot 返回 n
-        }
-
-        #[test]
-        fn solve_mock_passthrough() {
-            // mock getrf/getrs 不改数据：x ≡ b
-            let a = make_musa_f64(&[2, 2], &[1.0, 0.0, 0.0, 1.0]);
-            let b = make_musa_f64(&[2], &[7.0, 9.0]);
-            let x = solve(&a, &b).unwrap();
-            assert_eq!(x.shape(), &vec![2]);
-            assert_eq!(read_f64(&x), vec![7.0, 9.0]);
-
-            // 2D rhs
-            let b2 = make_musa_f64(&[2, 2], &[1.0, 2.0, 3.0, 4.0]);
-            let x2 = solve(&a, &b2).unwrap();
-            assert_eq!(x2.shape(), &vec![2, 2]);
-            assert_eq!(read_f64(&x2), vec![1.0, 2.0, 3.0, 4.0]);
-        }
-
-        #[test]
-        fn cpu_input_rejected() {
-            // v0.3 GPU-only 策略：CPU 设备输入 → DeviceError（require_musa）
-            let a = make_musa_f64(&[2, 2], &[0.0; 4]);
-            let b_cpu = creation::zeros(&[2, 2], Some(Dtype::Float64), Some(Device::Cpu)).unwrap();
-
-            // 跨设备混合输入：device mismatch 先报
-            assert!(matches!(
-                matmul(&a, &b_cpu, None).unwrap_err(),
-                musapy_core::MusapyError::Device(DeviceError::Mismatch(_))
-            ));
-            assert!(dot(&a, &b_cpu, None).is_err());
-            assert!(solve(&a, &b_cpu).is_err());
-
-            // 同设备 CPU 输入：require_musa 拒绝
-            let a_cpu = creation::zeros(&[2, 2], Some(Dtype::Float64), Some(Device::Cpu)).unwrap();
-            let err = matmul(&a_cpu, &b_cpu, None).unwrap_err();
-            assert!(matches!(
-                err,
-                musapy_core::MusapyError::Device(DeviceError::Mismatch(msg))
-                    if msg.contains("GPU-only")
-            ));
-            assert!(dot(&a_cpu, &b_cpu, None).is_err());
-            assert!(solve(&a_cpu, &b_cpu).is_err());
-        }
-
-        #[test]
-        fn matmul_mock_k_zero() {
-            // k=0 退化：输出全零（fill_zeros 路径）
-            let a = make_musa_f64(&[2, 0], &[]);
-            let b = make_musa_f64(&[0, 3], &[]);
-            let c = matmul(&a, &b, None).unwrap();
-            assert_eq!(c.shape(), &vec![2, 3]);
-            assert_eq!(read_f64(&c), vec![0.0; 6]);
-        }
-    }
-}
-
-// ============================================================
 // Phase 3：分解类算子（lu / qr / svd，GPU-only，003-D3/D6）
 // ============================================================
 //
@@ -1372,13 +1196,28 @@ pub fn lu(a: &Array) -> Result<(Array, Array)> {
     let cm = col_major_copy(a, &out_stream)?;
     cm.data().buffer().wait_last_write_on(&out_stream)?;
     cm.data().buffer().record_read(&out_stream);
-    record_op_context("lu", &[a.shape()], &[a.device()], &[a.dtype()], &[m, n], &out_stream);
+    record_op_context(
+        "lu",
+        &[a.shape()],
+        &[a.device()],
+        &[a.dtype()],
+        &[m, n],
+        &out_stream,
+    );
     let (lu_ptr, lu_data) = device_ptr(cm.data())?;
 
     // getrf：ipiv/info 设备分配 + 两段式分解
-    let (ipiv_dev, info_dev, _guards) =
-        alloc_ipiv_info(&device, k * std::mem::size_of::<c_int>())?;
-    let ipiv = gpu_getrf(&device, &out_stream, lu_ptr, m, n, ipiv_dev, info_dev, dtype)?;
+    let (ipiv_dev, info_dev, _guards) = alloc_ipiv_info(&device, k * std::mem::size_of::<c_int>())?;
+    let ipiv = gpu_getrf(
+        &device,
+        &out_stream,
+        lu_ptr,
+        m,
+        n,
+        ipiv_dev,
+        info_dev,
+        dtype,
+    )?;
 
     // lu = strides (1, m) 视图：列主序 L·U 读为行主序标准布局（零拷贝）
     let lu_arr = strided_view(
@@ -1652,7 +1491,14 @@ pub fn qr(a: &Array, mode: &str) -> Result<(Array, Array)> {
         (cm_data, [q_rows, q_cols])
     };
 
-    let q = strided_view(&q_data, q_shape, [1, m as isize], dtype, &device, &out_stream);
+    let q = strided_view(
+        &q_data,
+        q_shape,
+        [1, m as isize],
+        dtype,
+        &device,
+        &out_stream,
+    );
     q.data().buffer().record_write(&out_stream);
     r.data().buffer().record_write(&out_stream);
     Ok((q, r))
@@ -1759,7 +1605,14 @@ pub fn svd(
     let cm = col_major_copy(a, &out_stream)?;
     cm.data().buffer().wait_last_write_on(&out_stream)?;
     cm.data().buffer().record_read(&out_stream);
-    record_op_context("svd", &[a.shape()], &[a.device()], &[a.dtype()], &[k], &out_stream);
+    record_op_context(
+        "svd",
+        &[a.shape()],
+        &[a.device()],
+        &[a.dtype()],
+        &[k],
+        &out_stream,
+    );
     let (a_ptr, _) = device_ptr(cm.data())?;
 
     // 输出缓冲：S (k)、U (m×u_alloc)、V (n×v_alloc)、E (max(m,n))、info
@@ -1865,19 +1718,23 @@ pub fn svd(
         "musaMemcpy(D2H svd s)",
     )?;
     let s_ok = match dtype {
-        Dtype::Float32 => s_host
-            .chunks_exact(4)
-            .all(|b| { let v = f32::from_le_bytes(b.try_into().unwrap()); v >= 0.0 && v.is_finite() }),
-        Dtype::Float64 => s_host
-            .chunks_exact(8)
-            .all(|b| { let v = f64::from_le_bytes(b.try_into().unwrap()); v >= 0.0 && v.is_finite() }),
+        Dtype::Float32 => s_host.chunks_exact(4).all(|b| {
+            let v = f32::from_le_bytes(b.try_into().unwrap());
+            v >= 0.0 && v.is_finite()
+        }),
+        Dtype::Float64 => s_host.chunks_exact(8).all(|b| {
+            let v = f64::from_le_bytes(b.try_into().unwrap());
+            v >= 0.0 && v.is_finite()
+        }),
         _ => unreachable!("dtype already validated as float32/float64"),
     };
     if !s_ok {
-        return Err(MusapyError::Device(DeviceError::MathLibCallFailed(format!(
-            "{}: gesvd returned invalid singular values (negative/NaN; convergence failure?)",
-            op_name
-        ))));
+        return Err(MusapyError::Device(DeviceError::MathLibCallFailed(
+            format!(
+                "{}: gesvd returned invalid singular values (negative/NaN; convergence failure?)",
+                op_name
+            ),
+        )));
     }
 
     // s：独立 1D 连续数组
@@ -1983,19 +1840,13 @@ fn alloc_buf_ref(nbytes: usize, device: &Device, stream: &Arc<Stream>) -> Result
 /// musaMalloc 前绑定设备（同 Buffer::alloc / get_workspace 纪律）。
 fn set_device_for_alloc(device: &Device) -> Result<()> {
     let Some(id) = device.musa_id() else {
-        return Err(DeviceError::Mismatch(
-            "linalg: device has no musa id".into(),
-        )
-        .into());
+        return Err(DeviceError::Mismatch("linalg: device has no musa id".into()).into());
     };
     musa_ffi::set_device(id as i32)
 }
 
 /// 裸设备内存分配（ipiv/info/tau 等 FFI 要求；RAII 释放）。
-fn alloc_dev_bytes(
-    device: &Device,
-    nbytes: usize,
-) -> Result<(*mut std::ffi::c_void, DevPtrGuard)> {
+fn alloc_dev_bytes(device: &Device, nbytes: usize) -> Result<(*mut std::ffi::c_void, DevPtrGuard)> {
     set_device_for_alloc(device)?;
     let mut ptr: *mut std::ffi::c_void = std::ptr::null_mut();
     musa_ffi::check_musa(
@@ -2213,4 +2064,180 @@ fn int64_array_from(
         DeviceResolution::new(device.clone(), ResolutionSource::InputArray),
         DtypeResolution::new(Dtype::Int64, ResolutionSource::InputArray),
     ))
+}
+
+// ============================================================
+// 测试（形状推导纯逻辑 + mock 端到端）
+// ============================================================
+
+#[cfg(test)]
+mod tests {
+    use super::{final_matmul_shape, matmul_shapes};
+
+    // ── 形状推导（纯逻辑，无需设备）──
+
+    #[test]
+    fn test_matmul_shapes_2d_2d() {
+        let (a2, b2, sf, sl) = matmul_shapes(&[3, 4], &[4, 5]).unwrap();
+        assert_eq!(a2, [3, 4]);
+        assert_eq!(b2, [4, 5]);
+        assert!(!sf && !sl);
+        assert_eq!(final_matmul_shape(&[3, 5], sf, sl), vec![3, 5]);
+    }
+
+    #[test]
+    fn test_matmul_shapes_1d_left() {
+        let (a2, b2, sf, sl) = matmul_shapes(&[4], &[4, 5]).unwrap();
+        assert_eq!(a2, [1, 4]);
+        assert_eq!(b2, [4, 5]);
+        assert!(sf && !sl);
+        assert_eq!(final_matmul_shape(&[1, 5], sf, sl), vec![5]);
+    }
+
+    #[test]
+    fn test_matmul_shapes_1d_right() {
+        let (a2, b2, sf, sl) = matmul_shapes(&[3, 4], &[4]).unwrap();
+        assert_eq!(a2, [3, 4]);
+        assert_eq!(b2, [4, 1]);
+        assert!(!sf && sl);
+        assert_eq!(final_matmul_shape(&[3, 1], sf, sl), vec![3]);
+    }
+
+    #[test]
+    fn test_matmul_shapes_1d_1d() {
+        let (a2, b2, sf, sl) = matmul_shapes(&[4], &[4]).unwrap();
+        assert_eq!(a2, [1, 4]);
+        assert_eq!(b2, [4, 1]);
+        assert!(sf && sl);
+        assert_eq!(final_matmul_shape(&[1, 1], sf, sl), Vec::<usize>::new());
+    }
+
+    #[test]
+    fn test_matmul_shapes_errors() {
+        assert!(matmul_shapes(&[3, 4], &[5, 6]).is_err()); // 内维不匹配
+        assert!(matmul_shapes(&[], &[4]).is_err()); // 0-dim
+        assert!(matmul_shapes(&[2, 3, 4], &[4, 5]).is_err()); // 3D batch
+        assert!(matmul_shapes(&[4, 5], &[2, 3, 4]).is_err()); // 3D batch
+    }
+
+    // ── GPU mock 端到端（仅 musapy_mock_musa：验证形状管线 + mock 数值）──
+
+    #[cfg(musapy_mock_musa)]
+    mod gpu_mock_e2e {
+        use super::super::{dot, matmul, solve};
+        use crate::creation;
+        use musapy_core::{Array, Device, DeviceError, Dtype};
+
+        /// 从 Array buffer 读出 f64 数据（mock 设备内存即宿主内存）。
+        fn read_f64(a: &Array) -> Vec<f64> {
+            let n = a.size().max(1);
+            let mut out = vec![0f64; n];
+            if let Some(ptr) = a.data().buffer().ptr() {
+                unsafe {
+                    std::ptr::copy_nonoverlapping(
+                        ptr.as_ptr() as *const u8,
+                        out.as_mut_ptr() as *mut u8,
+                        a.size() * 8,
+                    );
+                }
+            }
+            out
+        }
+
+        fn make_musa_f64(shape: &[usize], data: &[f64]) -> Array {
+            let dev = Device::Musa(0);
+            let a = creation::zeros(shape, Some(Dtype::Float64), Some(dev)).unwrap();
+            // mock 模式下设备内存即宿主内存，可直接写
+            if let Some(ptr) = a.data().buffer().ptr() {
+                unsafe {
+                    std::ptr::copy_nonoverlapping(
+                        data.as_ptr() as *const u8,
+                        ptr.as_ptr(),
+                        data.len() * 8,
+                    );
+                }
+            }
+            a
+        }
+
+        #[test]
+        fn matmul_mock_shapes_and_fill() {
+            // mock Sgemm/Dgemm 把 C 全填 1.0——验证形状管线端到端
+            let a = make_musa_f64(&[2, 3], &[0.0; 6]);
+            let b = make_musa_f64(&[3, 4], &[0.0; 12]);
+            let c = matmul(&a, &b, None).unwrap();
+            assert_eq!(c.shape(), &vec![2, 4]);
+            assert_eq!(read_f64(&c), vec![1.0; 8]);
+
+            // 1D 组合 squeeze
+            let v = make_musa_f64(&[3], &[0.0; 3]);
+            let r = matmul(&v, &b, None).unwrap();
+            assert_eq!(r.shape(), &vec![4]);
+            let r2 = matmul(&a, &v, None).unwrap();
+            assert_eq!(r2.shape(), &vec![2]);
+            let r3 = matmul(&v, &make_musa_f64(&[3], &[0.0; 3]), None).unwrap();
+            assert_eq!(r3.shape(), &Vec::<usize>::new());
+        }
+
+        #[test]
+        fn dot_mock_returns_n() {
+            let a = make_musa_f64(&[5], &[0.0; 5]);
+            let b = make_musa_f64(&[5], &[0.0; 5]);
+            let r = dot(&a, &b, None).unwrap();
+            assert_eq!(r.shape(), &Vec::<usize>::new());
+            assert_eq!(read_f64(&r)[0], 5.0); // mock Ddot 返回 n
+        }
+
+        #[test]
+        fn solve_mock_passthrough() {
+            // mock getrf/getrs 不改数据：x ≡ b
+            let a = make_musa_f64(&[2, 2], &[1.0, 0.0, 0.0, 1.0]);
+            let b = make_musa_f64(&[2], &[7.0, 9.0]);
+            let x = solve(&a, &b).unwrap();
+            assert_eq!(x.shape(), &vec![2]);
+            assert_eq!(read_f64(&x), vec![7.0, 9.0]);
+
+            // 2D rhs
+            let b2 = make_musa_f64(&[2, 2], &[1.0, 2.0, 3.0, 4.0]);
+            let x2 = solve(&a, &b2).unwrap();
+            assert_eq!(x2.shape(), &vec![2, 2]);
+            assert_eq!(read_f64(&x2), vec![1.0, 2.0, 3.0, 4.0]);
+        }
+
+        #[test]
+        fn cpu_input_rejected() {
+            // v0.3 GPU-only 策略：CPU 设备输入 → DeviceError（require_musa）
+            let a = make_musa_f64(&[2, 2], &[0.0; 4]);
+            let b_cpu = creation::zeros(&[2, 2], Some(Dtype::Float64), Some(Device::Cpu)).unwrap();
+
+            // 跨设备混合输入：device mismatch 先报
+            assert!(matches!(
+                matmul(&a, &b_cpu, None).unwrap_err(),
+                musapy_core::MusapyError::Device(DeviceError::Mismatch(_))
+            ));
+            assert!(dot(&a, &b_cpu, None).is_err());
+            assert!(solve(&a, &b_cpu).is_err());
+
+            // 同设备 CPU 输入：require_musa 拒绝
+            let a_cpu = creation::zeros(&[2, 2], Some(Dtype::Float64), Some(Device::Cpu)).unwrap();
+            let err = matmul(&a_cpu, &b_cpu, None).unwrap_err();
+            assert!(matches!(
+                err,
+                musapy_core::MusapyError::Device(DeviceError::Mismatch(msg))
+                    if msg.contains("GPU-only")
+            ));
+            assert!(dot(&a_cpu, &b_cpu, None).is_err());
+            assert!(solve(&a_cpu, &b_cpu).is_err());
+        }
+
+        #[test]
+        fn matmul_mock_k_zero() {
+            // k=0 退化：输出全零（fill_zeros 路径）
+            let a = make_musa_f64(&[2, 0], &[]);
+            let b = make_musa_f64(&[0, 3], &[]);
+            let c = matmul(&a, &b, None).unwrap();
+            assert_eq!(c.shape(), &vec![2, 3]);
+            assert_eq!(read_f64(&c), vec![0.0; 6]);
+        }
+    }
 }

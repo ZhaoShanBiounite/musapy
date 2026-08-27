@@ -18,8 +18,8 @@ use crate::stream::{Event, Stream};
 use parking_lot::Mutex;
 use std::fmt;
 use std::ptr::NonNull;
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 // ============================================================
 // 1. Buffer（ADR L1-10, L3-9, L3-10）
@@ -272,7 +272,8 @@ impl Buffer {
                     return;
                 }
                 *self.last_write_event.lock() = Some(event);
-                self.last_write_stream_id.store(cur_stream_id, Ordering::Relaxed);
+                self.last_write_stream_id
+                    .store(cur_stream_id, Ordering::Relaxed);
                 // 策略 b：更新释放流为最后使用的流
                 *self.dealloc_stream.lock() = Some(writer_stream.clone());
             }
@@ -355,10 +356,10 @@ impl Drop for Buffer {
                     }
                     // 取出 last_write_event（pool 需要存储它）
                     let write_event = self.last_write_event.lock().take();
-                    if let Some(ref ev) = write_event {
-                        if let Err(e) = stream.wait_event(ev) {
-                            eprintln!("warn: free wait write_event failed: {}", e);
-                        }
+                    if let Some(ref ev) = write_event
+                        && let Err(e) = stream.wait_event(ev)
+                    {
+                        eprintln!("warn: free wait write_event failed: {}", e);
                     }
 
                     // 路径分流
@@ -397,7 +398,7 @@ impl Drop for Buffer {
                                     unsafe {
                                         if let Err(e) = musa_ffi::check_musa(
                                             musa_ffi::musaFree(
-                                                ptr.as_ptr() as *mut std::ffi::c_void,
+                                                ptr.as_ptr() as *mut std::ffi::c_void
                                             ),
                                             "musaFree(large)",
                                         ) {

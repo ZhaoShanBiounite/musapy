@@ -69,6 +69,10 @@ pub enum KernelError {
 pub enum InteropError {
     #[error("DLPack export failed: {0}")]
     DlpackExport(String),
+    // v0.4 Phase 1（ADR-004 004-D5）：与 DlpackExport 对称，
+    // 覆盖 capsule 格式错/未知 dtype/接管失败等导入路径。
+    #[error("DLPack import failed: {0}")]
+    DlpackImport(String),
     #[error("unsupported protocol: {0}")]
     UnsupportedProtocol(String),
 }
@@ -201,7 +205,7 @@ mod tests {
     #[test]
     fn test_result_alias() {
         let ok: Result<i32> = Ok(42);
-        assert_eq!(ok.unwrap(), 42);
+        assert_eq!(ok, Ok(42));
 
         let err: Result<i32> = Err(MusapyError::Memory(MemoryError::OutOfMemory(
             "24GB requested".into(),
@@ -226,6 +230,7 @@ mod tests {
         let _ = MusapyError::Kernel(KernelError::LaunchFailed("x".into()));
         let _ = MusapyError::Kernel(KernelError::ExecutionFailed("x".into()));
         let _ = MusapyError::Interop(InteropError::DlpackExport("x".into()));
+        let _ = MusapyError::Interop(InteropError::DlpackImport("x".into()));
         let _ = MusapyError::Interop(InteropError::UnsupportedProtocol("x".into()));
         let _ = MusapyError::LinAlg(LinAlgError::Singular("x".into()));
         let _ = MusapyError::Index(IndexError::OutOfBounds("x".into()));

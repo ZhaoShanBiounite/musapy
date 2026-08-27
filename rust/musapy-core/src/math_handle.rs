@@ -23,7 +23,7 @@ use crate::device::Device;
 use crate::error::{DeviceError, MusapyError, Result};
 use crate::musa_ffi;
 use crate::musa_x_ffi::{
-    self, mufftHandle, mufftType, mublasHandle_t, murandGenerator_t, musparseHandle_t,
+    self, mublasHandle_t, mufftHandle, mufftType, murandGenerator_t, musparseHandle_t,
     musparseSpMatDescr_t,
 };
 use crate::stream::Stream;
@@ -40,9 +40,22 @@ use std::sync::OnceLock;
 /// mufft plan 池的键(plan 与方向无关,方向在 Exec 时传入)。
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub enum MufftPlanSpec {
-    OneD { nx: i32, ftype: mufftType, batch: i32 },
-    TwoD { nx: i32, ny: i32, ftype: mufftType },
-    ThreeD { nx: i32, ny: i32, nz: i32, ftype: mufftType },
+    OneD {
+        nx: i32,
+        ftype: mufftType,
+        batch: i32,
+    },
+    TwoD {
+        nx: i32,
+        ny: i32,
+        ftype: mufftType,
+    },
+    ThreeD {
+        nx: i32,
+        ny: i32,
+        nz: i32,
+        ftype: mufftType,
+    },
     Many {
         rank: i32,
         n: Vec<i32>,
@@ -235,7 +248,10 @@ pub fn with_mublas_handle<T>(
             Some(h) => h,
             None => {
                 let mut h: mublasHandle_t = std::ptr::null_mut();
-                musa_x_ffi::check_mublas(unsafe { musa_x_ffi::mublasCreate(&mut h) }, "mublasCreate")?;
+                musa_x_ffi::check_mublas(
+                    unsafe { musa_x_ffi::mublasCreate(&mut h) },
+                    "mublasCreate",
+                )?;
                 // HOST pointer mode:alpha/beta 以 host 标量传入(Phase 2 约定);
                 // 创建时一次性设置,避免每次计算前重复调用。
                 musa_x_ffi::check_mublas(
@@ -377,10 +393,18 @@ pub fn with_mufft_plan<T>(
                                     &mut p,
                                     *rank,
                                     n.as_ptr() as *mut c_int,
-                                    if inembed.is_empty() { std::ptr::null_mut() } else { inembed.as_ptr() as *mut c_int },
+                                    if inembed.is_empty() {
+                                        std::ptr::null_mut()
+                                    } else {
+                                        inembed.as_ptr() as *mut c_int
+                                    },
                                     *istride,
                                     *idist,
-                                    if onembed.is_empty() { std::ptr::null_mut() } else { onembed.as_ptr() as *mut c_int },
+                                    if onembed.is_empty() {
+                                        std::ptr::null_mut()
+                                    } else {
+                                        onembed.as_ptr() as *mut c_int
+                                    },
                                     *ostride,
                                     *odist,
                                     *ftype,
@@ -413,6 +437,9 @@ pub fn with_mufft_plan<T>(
 /// `data_ptr/indices_ptr/indptr_ptr` 为 device buffer 裸指针；调用方须保证
 /// buffer 在描述符使用期间保活（CsrMatrix 的 BufferRef Arc 已满足）。
 #[allow(clippy::too_many_arguments)]
+// 裸指针仅在下方 unsafe 块的 musparseCreateCsr FFI 调用内被 SDK 解引用；
+// 保活契约已在上方文档注明（调用方持 BufferRef Arc），故保持 safe 签名。
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
 pub fn with_musparse_csr<T>(
     device: &Device,
     stream: &Stream,
@@ -602,7 +629,10 @@ pub fn get_workspace(device: &Device, required: usize) -> Result<WorkspaceLease>
     // 未命中:musaMalloc(绑定当前设备,先 set_device —— 同 Buffer::alloc 纪律)
     musa_ffi::set_device(id as i32)?;
     let mut dev_ptr: *mut std::ffi::c_void = std::ptr::null_mut();
-    musa_ffi::check_musa(unsafe { musa_ffi::musaMalloc(&mut dev_ptr, bucket) }, "musaMalloc")?;
+    musa_ffi::check_musa(
+        unsafe { musa_ffi::musaMalloc(&mut dev_ptr, bucket) },
+        "musaMalloc",
+    )?;
     let ptr = NonNull::new(dev_ptr as *mut u8).ok_or_else(|| {
         MusapyError::Device(DeviceError::MathLibCallFailed(
             "musaMalloc returned null workspace pointer".into(),
@@ -727,12 +757,20 @@ mod tests {
         let s2 = with_musparse_handle(&dev, &stream, |h| Ok(h as usize)).unwrap();
         assert_eq!(s1, s2);
 
-        let spec = MufftPlanSpec::OneD { nx: 64, ftype: musa_x_ffi::MUFFT_C2C, batch: 1 };
+        let spec = MufftPlanSpec::OneD {
+            nx: 64,
+            ftype: musa_x_ffi::MUFFT_C2C,
+            batch: 1,
+        };
         let p1 = with_mufft_plan(&dev, &stream, &spec, |p| Ok(p as usize)).unwrap();
         let p2 = with_mufft_plan(&dev, &stream, &spec, |p| Ok(p as usize)).unwrap();
         assert_eq!(p1, p2, "plan 池应复用同规格 plan");
 
-        let spec2 = MufftPlanSpec::OneD { nx: 128, ftype: musa_x_ffi::MUFFT_C2C, batch: 1 };
+        let spec2 = MufftPlanSpec::OneD {
+            nx: 128,
+            ftype: musa_x_ffi::MUFFT_C2C,
+            batch: 1,
+        };
         let p3 = with_mufft_plan(&dev, &stream, &spec2, |p| Ok(p as usize)).unwrap();
         assert_ne!(p1, p3, "不同规格应创建新 plan");
 
@@ -760,7 +798,11 @@ mod tests {
         with_mublas_handle(&dev, &stream, |_| Ok(())).unwrap();
         with_murand_generator(&dev, &stream, |_| Ok(())).unwrap();
         with_musparse_handle(&dev, &stream, |_| Ok(())).unwrap();
-        let spec = MufftPlanSpec::TwoD { nx: 4, ny: 4, ftype: musa_x_ffi::MUFFT_Z2Z };
+        let spec = MufftPlanSpec::TwoD {
+            nx: 4,
+            ny: 4,
+            ftype: musa_x_ffi::MUFFT_Z2Z,
+        };
         with_mufft_plan(&dev, &stream, &spec, |_| Ok(())).unwrap();
         // P-A3：musparse CSR 描述符缓存（mock 下 buffer 为 host 内存，任意非空指针）
         let p = NonNull::new(0x1000usize as *mut u8).unwrap();
@@ -830,7 +872,10 @@ mod tests {
         // evict → workspace 转 deferred_free(或 stream-ordered 直释)
         evict_device(&dev);
         let mid = crate::mem_stats::snapshot();
-        assert_eq!(mid.allocated_bytes, before.allocated_bytes, "evict 后 allocated 应归零");
+        assert_eq!(
+            mid.allocated_bytes, before.allocated_bytes,
+            "evict 后 allocated 应归零"
+        );
 
         #[cfg(not(feature = "stream-ordered"))]
         {

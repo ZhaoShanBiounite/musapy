@@ -105,10 +105,10 @@ pub fn array(
 #[pyo3(signature = (a, b, out=None))]
 pub fn add(py: Python<'_>, a: &PyArray, b: &PyArray, out: Option<&PyArray>) -> PyResult<PyArray> {
     // Debug 模式：捕获 Python 调用帧（ADR L3-26）
-    if debug::is_debug() {
-        if let Some(frame) = extract_caller_frame(py) {
-            debug::set_debug_frame(Some(frame));
-        }
+    if debug::is_debug()
+        && let Some(frame) = extract_caller_frame(py)
+    {
+        debug::set_debug_frame(Some(frame));
     }
 
     let result =
@@ -123,7 +123,12 @@ macro_rules! py_binary_op {
         #[pyfunction]
         #[pyo3(signature = (a, b, out=None))]
         #[doc = $doc]
-        pub fn $name(py: Python<'_>, a: &PyArray, b: &PyArray, out: Option<&PyArray>) -> PyResult<PyArray> {
+        pub fn $name(
+            py: Python<'_>,
+            a: &PyArray,
+            b: &PyArray,
+            out: Option<&PyArray>,
+        ) -> PyResult<PyArray> {
             if debug::is_debug() {
                 if let Some(frame) = extract_caller_frame(py) {
                     debug::set_debug_frame(Some(frame));
@@ -154,8 +159,8 @@ macro_rules! py_unary_op {
                     debug::set_debug_frame(Some(frame));
                 }
             }
-            let result = musapy_ops::$name(&a.inner, out.map(|o| &o.inner))
-                .map_err(error::to_pyerr)?;
+            let result =
+                musapy_ops::$name(&a.inner, out.map(|o| &o.inner)).map_err(error::to_pyerr)?;
             Ok(PyArray::from_array(result))
         }
     };
@@ -176,14 +181,19 @@ macro_rules! py_compare_op {
         #[pyfunction]
         #[pyo3(signature = (a, b, out=None))]
         #[doc = $doc]
-        pub fn $name(py: Python<'_>, a: &PyArray, b: &PyArray, out: Option<&PyArray>) -> PyResult<PyArray> {
+        pub fn $name(
+            py: Python<'_>,
+            a: &PyArray,
+            b: &PyArray,
+            out: Option<&PyArray>,
+        ) -> PyResult<PyArray> {
             if debug::is_debug() {
                 if let Some(frame) = extract_caller_frame(py) {
                     debug::set_debug_frame(Some(frame));
                 }
             }
-            let result =
-                musapy_ops::$name(&a.inner, &b.inner, out.map(|o| &o.inner)).map_err(error::to_pyerr)?;
+            let result = musapy_ops::$name(&a.inner, &b.inner, out.map(|o| &o.inner))
+                .map_err(error::to_pyerr)?;
             Ok(PyArray::from_array(result))
         }
     };
@@ -208,10 +218,10 @@ pub fn clamp(
     hi: f64,
     out: Option<&PyArray>,
 ) -> PyResult<PyArray> {
-    if debug::is_debug() {
-        if let Some(frame) = extract_caller_frame(py) {
-            debug::set_debug_frame(Some(frame));
-        }
+    if debug::is_debug()
+        && let Some(frame) = extract_caller_frame(py)
+    {
+        debug::set_debug_frame(Some(frame));
     }
     let result =
         musapy_ops::clamp(&a.inner, lo, hi, out.map(|o| &o.inner)).map_err(error::to_pyerr)?;
@@ -232,7 +242,7 @@ fn parse_axes_opt(axis: &Option<&Bound<'_, PyAny>>) -> PyResult<Option<Vec<isize
     // tuple/list → 多轴
     if let Ok(seq) = ax.downcast::<pyo3::types::PySequence>() {
         let mut out = Vec::with_capacity(seq.len()?);
-        for item in seq.iter()? {
+        for item in seq.try_iter()? {
             out.push(item?.extract::<isize>()?);
         }
         return Ok(Some(out));
@@ -261,8 +271,9 @@ macro_rules! py_reduce_op {
                 }
             }
             let axes = parse_axes_opt(&axis)?;
-            let result = musapy_ops::$name(&a.inner, axes.as_deref(), keepdims, out.map(|o| &o.inner))
-                .map_err(error::to_pyerr)?;
+            let result =
+                musapy_ops::$name(&a.inner, axes.as_deref(), keepdims, out.map(|o| &o.inner))
+                    .map_err(error::to_pyerr)?;
             Ok(PyArray::from_array(result))
         }
     };
@@ -287,20 +298,42 @@ macro_rules! py_argreduce_op {
                 }
             }
             let axes = parse_axes_opt(&axis)?;
-            let result = musapy_ops::$name(&a.inner, axes.as_deref(), keepdims, out.map(|o| &o.inner))
-                .map_err(error::to_pyerr)?;
+            let result =
+                musapy_ops::$name(&a.inner, axes.as_deref(), keepdims, out.map(|o| &o.inner))
+                    .map_err(error::to_pyerr)?;
             Ok(PyArray::from_array(result))
         }
     };
 }
 
-py_reduce_op!(sum, "ms.sum(a, axis=None, keepdims=False, out=None) — 沿轴求和");
-py_reduce_op!(prod, "ms.prod(a, axis=None, keepdims=False, out=None) — 沿轴求积");
-py_reduce_op!(max, "ms.max(a, axis=None, keepdims=False, out=None) — 沿轴最大值");
-py_reduce_op!(min, "ms.min(a, axis=None, keepdims=False, out=None) — 沿轴最小值");
-py_reduce_op!(mean, "ms.mean(a, axis=None, keepdims=False, out=None) — 沿轴均值");
-py_argreduce_op!(argmax, "ms.argmax(a, axis=None, keepdims=False, out=None) — 沿轴最大值索引");
-py_argreduce_op!(argmin, "ms.argmin(a, axis=None, keepdims=False, out=None) — 沿轴最小值索引");
+py_reduce_op!(
+    sum,
+    "ms.sum(a, axis=None, keepdims=False, out=None) — 沿轴求和"
+);
+py_reduce_op!(
+    prod,
+    "ms.prod(a, axis=None, keepdims=False, out=None) — 沿轴求积"
+);
+py_reduce_op!(
+    max,
+    "ms.max(a, axis=None, keepdims=False, out=None) — 沿轴最大值"
+);
+py_reduce_op!(
+    min,
+    "ms.min(a, axis=None, keepdims=False, out=None) — 沿轴最小值"
+);
+py_reduce_op!(
+    mean,
+    "ms.mean(a, axis=None, keepdims=False, out=None) — 沿轴均值"
+);
+py_argreduce_op!(
+    argmax,
+    "ms.argmax(a, axis=None, keepdims=False, out=None) — 沿轴最大值索引"
+);
+py_argreduce_op!(
+    argmin,
+    "ms.argmin(a, axis=None, keepdims=False, out=None) — 沿轴最小值索引"
+);
 
 /// Cumsum pyfunction（axis 单轴 int，无 keepdims）。
 macro_rules! py_cumsum_op {
@@ -362,7 +395,7 @@ fn extract_data(data: &Bound<PyAny>, dtype: Dtype) -> PyResult<(Vec<u8>, Vec<usi
         // 检查第一个元素：如果也是序列 → 多维
         let first = seq.get_item(0)?;
         if first.downcast::<pyo3::types::PySequence>().is_ok()
-            && !first.downcast::<pyo3::types::PyString>().is_ok()
+            && first.downcast::<pyo3::types::PyString>().is_err()
         {
             // 多维：递归提取每个子数组，验证矩形
             return extract_nested(seq, dtype);
@@ -386,7 +419,7 @@ trait PyComplexExt {
 impl PyComplexExt for Bound<'_, pyo3::types::PyComplex> {
     fn to_re_im(&self) -> PyResult<(f64, f64)> {
         use pyo3::types::PyComplexMethods;
-        Ok((self.real() as f64, self.imag() as f64))
+        Ok((self.real(), self.imag()))
     }
 }
 
@@ -400,10 +433,10 @@ fn data_contains_complex(data: &Bound<PyAny>) -> bool {
             return false;
         };
         for i in 0..len {
-            if let Ok(item) = seq.get_item(i) {
-                if data_contains_complex(&item) {
-                    return true;
-                }
+            if let Ok(item) = seq.get_item(i)
+                && data_contains_complex(&item)
+            {
+                return true;
             }
         }
     }
@@ -431,10 +464,10 @@ fn extract_nested(
                 .get_item(0)?
                 .downcast::<pyo3::types::PySequence>()
                 .is_ok()
-            && !item_seq
+            && item_seq
                 .get_item(0)?
                 .downcast::<pyo3::types::PyString>()
-                .is_ok()
+                .is_err()
         {
             extract_nested(item_seq, dtype)?
         } else {
@@ -499,9 +532,7 @@ fn extract_flat(data: &Bound<PyAny>, dtype: Dtype) -> PyResult<(Vec<u8>, Vec<usi
 }
 
 /// 提取 1D complex flat 序列（interleaved re/im 字节序；T=f32→c64 / f64→c128）。
-fn extract_cplx_flat<T: CplxComponent>(
-    data: &Bound<PyAny>,
-) -> PyResult<(Vec<u8>, Vec<usize>)> {
+fn extract_cplx_flat<T: CplxComponent>(data: &Bound<PyAny>) -> PyResult<(Vec<u8>, Vec<usize>)> {
     let seq = data.downcast::<pyo3::types::PySequence>()?;
     let len = seq.len()?;
     let mut bytes: Vec<u8> = Vec::with_capacity(len * T::ELEM_SIZE * 2);
@@ -646,7 +677,10 @@ pub(crate) fn parse_device_obj(obj: &Bound<'_, PyAny>) -> PyResult<Device> {
 }
 
 /// 从 Python 可选参数解析 Device（None → None）。
-pub(crate) fn parse_device_opt(py: Python<'_>, device: &Option<PyObject>) -> PyResult<Option<Device>> {
+pub(crate) fn parse_device_opt(
+    py: Python<'_>,
+    device: &Option<PyObject>,
+) -> PyResult<Option<Device>> {
     match device {
         None => Ok(None),
         Some(obj) => parse_device_obj(obj.bind(py)).map(Some),
@@ -711,7 +745,8 @@ pub fn full(
     let shape = parse_shape(shape)?;
     let dtype_arg = dtype.map(|d| d.0);
     let device_arg = parse_device_opt(py, &device)?;
-    let result = musapy_ops::full(&shape, fill_value, dtype_arg, device_arg).map_err(error::to_pyerr)?;
+    let result =
+        musapy_ops::full(&shape, fill_value, dtype_arg, device_arg).map_err(error::to_pyerr)?;
     Ok(PyArray::from_array(result))
 }
 
@@ -751,12 +786,12 @@ pub fn arange(
 ) -> PyResult<PyArray> {
     // 检测 Python 参数类型（int vs float）用于 dtype 推断
     let start_is_float = start.is_instance_of::<pyo3::types::PyFloat>();
-    let stop_is_float = stop.map_or(false, |s| s.is_instance_of::<pyo3::types::PyFloat>());
-    let step_is_float = step.map_or(false, |s| s.is_instance_of::<pyo3::types::PyFloat>());
+    let stop_is_float = stop.is_some_and(|s| s.is_instance_of::<pyo3::types::PyFloat>());
+    let step_is_float = step.is_some_and(|s| s.is_instance_of::<pyo3::types::PyFloat>());
 
-    let start_val: f64 = start.extract().map_err(|_| {
-        pyo3::exceptions::PyTypeError::new_err("arange: start must be a number")
-    })?;
+    let start_val: f64 = start
+        .extract()
+        .map_err(|_| pyo3::exceptions::PyTypeError::new_err("arange: start must be a number"))?;
     let stop_val: Option<f64> = match stop {
         Some(s) => Some(s.extract().map_err(|_| {
             pyo3::exceptions::PyTypeError::new_err("arange: stop must be a number")
@@ -764,9 +799,9 @@ pub fn arange(
         None => None,
     };
     let step_val: f64 = match step {
-        Some(s) => s.extract().map_err(|_| {
-            pyo3::exceptions::PyTypeError::new_err("arange: step must be a number")
-        })?,
+        Some(s) => s
+            .extract()
+            .map_err(|_| pyo3::exceptions::PyTypeError::new_err("arange: step must be a number"))?,
         None => 1.0,
     };
 
@@ -787,7 +822,8 @@ pub fn arange(
     };
 
     let device_arg = parse_device_opt(py, &device)?;
-    let result = musapy_ops::arange(start_val, stop_val, step_val, dtype_arg, device_arg).map_err(error::to_pyerr)?;
+    let result = musapy_ops::arange(start_val, stop_val, step_val, dtype_arg, device_arg)
+        .map_err(error::to_pyerr)?;
     Ok(PyArray::from_array(result))
 }
 
@@ -804,7 +840,8 @@ pub fn linspace(
 ) -> PyResult<PyArray> {
     let dtype_arg = dtype.map(|d| d.0);
     let device_arg = parse_device_opt(py, &device)?;
-    let result = musapy_ops::linspace(start, stop, num, dtype_arg, device_arg).map_err(error::to_pyerr)?;
+    let result =
+        musapy_ops::linspace(start, stop, num, dtype_arg, device_arg).map_err(error::to_pyerr)?;
     Ok(PyArray::from_array(result))
 }
 
@@ -921,8 +958,8 @@ pub fn gather(a: &PyArray, indices: &PyArray, axis: usize) -> PyResult<PyArray> 
 #[pyfunction]
 #[pyo3(signature = (a, indices, values, axis=0))]
 pub fn scatter(a: &PyArray, indices: &PyArray, values: &PyArray, axis: usize) -> PyResult<PyArray> {
-    let result =
-        musapy_ops::scatter(&a.inner, &indices.inner, &values.inner, axis).map_err(error::to_pyerr)?;
+    let result = musapy_ops::scatter(&a.inner, &indices.inner, &values.inner, axis)
+        .map_err(error::to_pyerr)?;
     Ok(PyArray::from_array(result))
 }
 
@@ -935,12 +972,17 @@ pub fn scatter(a: &PyArray, indices: &PyArray, values: &PyArray, axis: usize) ->
 /// OpenBLAS/朴素实现。
 #[pyfunction]
 #[pyo3(signature = (a, b, out=None))]
-pub fn matmul(py: Python<'_>, a: &PyArray, b: &PyArray, out: Option<&PyArray>) -> PyResult<PyArray> {
+pub fn matmul(
+    py: Python<'_>,
+    a: &PyArray,
+    b: &PyArray,
+    out: Option<&PyArray>,
+) -> PyResult<PyArray> {
     // Debug 模式：捕获 Python 调用帧（ADR L3-26）
-    if debug::is_debug() {
-        if let Some(frame) = extract_caller_frame(py) {
-            debug::set_debug_frame(Some(frame));
-        }
+    if debug::is_debug()
+        && let Some(frame) = extract_caller_frame(py)
+    {
+        debug::set_debug_frame(Some(frame));
     }
 
     let result =
@@ -954,10 +996,10 @@ pub fn matmul(py: Python<'_>, a: &PyArray, b: &PyArray, out: Option<&PyArray>) -
 #[pyfunction]
 #[pyo3(signature = (a, b, out=None))]
 pub fn dot(py: Python<'_>, a: &PyArray, b: &PyArray, out: Option<&PyArray>) -> PyResult<PyArray> {
-    if debug::is_debug() {
-        if let Some(frame) = extract_caller_frame(py) {
-            debug::set_debug_frame(Some(frame));
-        }
+    if debug::is_debug()
+        && let Some(frame) = extract_caller_frame(py)
+    {
+        debug::set_debug_frame(Some(frame));
     }
 
     let result =
@@ -972,10 +1014,10 @@ pub fn dot(py: Python<'_>, a: &PyArray, b: &PyArray, out: Option<&PyArray>) -> P
 #[pyfunction]
 #[pyo3(signature = (a, b))]
 pub fn solve(py: Python<'_>, a: &PyArray, b: &PyArray) -> PyResult<PyArray> {
-    if debug::is_debug() {
-        if let Some(frame) = extract_caller_frame(py) {
-            debug::set_debug_frame(Some(frame));
-        }
+    if debug::is_debug()
+        && let Some(frame) = extract_caller_frame(py)
+    {
+        debug::set_debug_frame(Some(frame));
     }
 
     let result = musapy_ops::solve(&a.inner, &b.inner).map_err(error::to_pyerr)?;
@@ -992,10 +1034,10 @@ pub fn solve(py: Python<'_>, a: &PyArray, b: &PyArray) -> PyResult<PyArray> {
 #[pyfunction]
 #[pyo3(signature = (a))]
 pub fn lu(py: Python<'_>, a: &PyArray) -> PyResult<(PyArray, PyArray)> {
-    if debug::is_debug() {
-        if let Some(frame) = extract_caller_frame(py) {
-            debug::set_debug_frame(Some(frame));
-        }
+    if debug::is_debug()
+        && let Some(frame) = extract_caller_frame(py)
+    {
+        debug::set_debug_frame(Some(frame));
     }
 
     let (lu_arr, piv) = musapy_ops::lu(&a.inner).map_err(error::to_pyerr)?;
@@ -1009,10 +1051,10 @@ pub fn lu(py: Python<'_>, a: &PyArray) -> PyResult<(PyArray, PyArray)> {
 #[pyfunction]
 #[pyo3(signature = (a, mode="reduced"))]
 pub fn qr(py: Python<'_>, a: &PyArray, mode: &str) -> PyResult<(PyArray, PyArray)> {
-    if debug::is_debug() {
-        if let Some(frame) = extract_caller_frame(py) {
-            debug::set_debug_frame(Some(frame));
-        }
+    if debug::is_debug()
+        && let Some(frame) = extract_caller_frame(py)
+    {
+        debug::set_debug_frame(Some(frame));
     }
 
     let (q_arr, r_arr) = musapy_ops::qr(&a.inner, mode).map_err(error::to_pyerr)?;
@@ -1033,18 +1075,25 @@ pub fn svd(
     full_matrices: bool,
     compute_uv: bool,
 ) -> PyResult<PyObject> {
-    if debug::is_debug() {
-        if let Some(frame) = extract_caller_frame(py) {
-            debug::set_debug_frame(Some(frame));
-        }
+    if debug::is_debug()
+        && let Some(frame) = extract_caller_frame(py)
+    {
+        debug::set_debug_frame(Some(frame));
     }
 
-    let (u, s, vh) = musapy_ops::svd(&a.inner, full_matrices, compute_uv).map_err(error::to_pyerr)?;
-    let s_py = PyArray::from_array(s);
+    let (u, s, vh) =
+        musapy_ops::svd(&a.inner, full_matrices, compute_uv).map_err(error::to_pyerr)?;
+    let s_obj = Py::new(py, PyArray::from_array(s))?.into_any();
     if !compute_uv {
-        return Ok(s_py.into_py(py));
+        return Ok(s_obj);
     }
-    let u_py = u.map(PyArray::from_array);
-    let vh_py = vh.map(PyArray::from_array);
-    Ok((u_py, s_py, vh_py).into_py(py))
+    let u_obj = u
+        .map(|arr| Py::new(py, PyArray::from_array(arr)).map(|p| p.into_any()))
+        .transpose()?;
+    let vh_obj = vh
+        .map(|arr| Py::new(py, PyArray::from_array(arr)).map(|p| p.into_any()))
+        .transpose()?;
+    Ok(pyo3::types::PyTuple::new(py, [u_obj, Some(s_obj), vh_obj])?
+        .unbind()
+        .into())
 }

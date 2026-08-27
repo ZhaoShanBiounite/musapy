@@ -17,21 +17,21 @@ pub mod fft;
 pub mod indexing;
 pub mod kernels;
 pub mod linalg;
+pub mod op_builder;
 pub mod random;
 pub mod reduction;
 pub mod sparse;
-pub mod op_builder;
 
 // 公开 API 在 elementwise 模块；根级再导出保持 `musapy_ops::add` 兼容。
-pub use elementwise::*;
 pub use comparison::*;
-pub use reduction::*;
-pub use creation::{zeros, ones, full, eye, arange, linspace, zeros_like, ones_like};
+pub use creation::{arange, eye, full, linspace, ones, ones_like, zeros, zeros_like};
+pub use elementwise::*;
+pub use fft::{FftNorm, fft, ifft, rfft};
 pub use indexing::{
-    adv_index, boolean_mask, contiguous, flip, gather, index_select, permute, scatter, slice,
-    transpose, SliceSpec,
+    SliceSpec, adv_index, boolean_mask, contiguous, flip, gather, index_select, permute, scatter,
+    slice, transpose,
 };
 pub use linalg::{dot, lu, matmul, qr, solve, svd};
 pub use random::{bernoulli, normal, rand, randn, uniform};
-pub use fft::{FftNorm, fft, ifft, rfft};
+pub use reduction::*;
 pub use sparse::{CsrMatrix, csr_from_arrays, csr_from_host, spmm, spmv, toarray};

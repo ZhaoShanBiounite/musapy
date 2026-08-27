@@ -106,15 +106,15 @@ impl Layout {
             .into());
         }
         let mut off = self.offset as isize;
-        for i in 0..indices.len() {
-            if indices[i] >= self.shape[i] {
+        for (i, &idx) in indices.iter().enumerate() {
+            if idx >= self.shape[i] {
                 return Err(ShapeError::Mismatch(format!(
                     "index {} out of bounds for dimension {} (size {})",
-                    indices[i], i, self.shape[i]
+                    idx, i, self.shape[i]
                 ))
                 .into());
             }
-            off += indices[i] as isize * self.strides[i];
+            off += idx as isize * self.strides[i];
         }
         Ok(off as usize)
     }
@@ -227,8 +227,7 @@ impl Layout {
         let mut new_strides = Vec::with_capacity(ndim);
         let mut new_offset = self.offset as isize;
 
-        for i in 0..ndim {
-            let (start, stop, step) = ranges[i];
+        for (i, &(start, stop, step)) in ranges.iter().enumerate() {
             if step == 0 {
                 return Err(ShapeError::Mismatch("slice step cannot be zero".into()).into());
             }
@@ -241,7 +240,7 @@ impl Layout {
             }
 
             let dim_size = if stop > start {
-                (stop - start + step - 1) / step // ceil division
+                (stop - start).div_ceil(step)
             } else {
                 0
             };

@@ -100,12 +100,11 @@ pub fn try_reuse(
     drop(guard); // 释放锁后再做 stream wait（避免持锁调 driver）
 
     // 跨 stream 复用：等待上次写操作完成
-    if entry.last_stream_id != stream_id {
-        if let Some(event) = &entry.last_event {
-            if let Err(e) = stream.wait_event(event) {
-                eprintln!("warn: buffer_pool reuse wait_event failed: {}", e);
-            }
-        }
+    if entry.last_stream_id != stream_id
+        && let Some(event) = &entry.last_event
+        && let Err(e) = stream.wait_event(event)
+    {
+        eprintln!("warn: buffer_pool reuse wait_event failed: {}", e);
     }
 
     Some((entry.ptr, entry.actual_size))

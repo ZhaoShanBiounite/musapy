@@ -19,9 +19,7 @@
 
 use musapy_core::math_handle;
 use musapy_core::resolution;
-use musapy_core::{
-    Array, Buffer, BufferRef, Device, Dtype, Layout, Result, Stream, musa_x_ffi,
-};
+use musapy_core::{Array, Buffer, BufferRef, Device, Dtype, Layout, Result, Stream, musa_x_ffi};
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, OnceLock};
 
@@ -112,11 +110,7 @@ fn generate_skeleton(
             }
             let status = match (dtype, kind) {
                 (Dtype::Float32, GenerateKind::Uniform) => unsafe {
-                    musa_x_ffi::murandGenerateUniform(
-                        generator,
-                        out_ptr.as_ptr() as *mut f32,
-                        n,
-                    )
+                    musa_x_ffi::murandGenerateUniform(generator, out_ptr.as_ptr() as *mut f32, n)
                 },
                 (Dtype::Float64, GenerateKind::Uniform) => unsafe {
                     musa_x_ffi::murandGenerateUniformDouble(
@@ -153,7 +147,9 @@ fn generate_skeleton(
     // ── Phase C: 后处理 ──
 
     data_ref.buffer().record_write(&stream);
-    Ok(Array::new(data_ref, layout, dtype, stream, dev_res, dtype_res))
+    Ok(Array::new(
+        data_ref, layout, dtype, stream, dev_res, dtype_res,
+    ))
 }
 
 // ── 公开 API ─────────────────────────────────────────────────

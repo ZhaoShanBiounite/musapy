@@ -154,23 +154,20 @@ mod tests {
     }
 
     fn f32_array(vals: &[f32], shape: Vec<usize>) -> Array {
-        let bytes = unsafe {
-            std::slice::from_raw_parts(vals.as_ptr() as *const u8, vals.len() * 4)
-        };
+        let bytes =
+            unsafe { std::slice::from_raw_parts(vals.as_ptr() as *const u8, vals.len() * 4) };
         cpu_array_with_layout(bytes, Layout::from_shape(shape), Dtype::Float32)
     }
 
     fn f64_array(vals: &[f64], shape: Vec<usize>) -> Array {
-        let bytes = unsafe {
-            std::slice::from_raw_parts(vals.as_ptr() as *const u8, vals.len() * 8)
-        };
+        let bytes =
+            unsafe { std::slice::from_raw_parts(vals.as_ptr() as *const u8, vals.len() * 8) };
         cpu_array_with_layout(bytes, Layout::from_shape(shape), Dtype::Float64)
     }
 
     fn i64_array(vals: &[i64], shape: Vec<usize>) -> Array {
-        let bytes = unsafe {
-            std::slice::from_raw_parts(vals.as_ptr() as *const u8, vals.len() * 8)
-        };
+        let bytes =
+            unsafe { std::slice::from_raw_parts(vals.as_ptr() as *const u8, vals.len() * 8) };
         cpu_array_with_layout(bytes, Layout::from_shape(shape), Dtype::Int64)
     }
 
@@ -238,7 +235,9 @@ mod tests {
         assert_eq!(r.shape(), &vec![3, 4]);
         assert_eq!(
             read_f32(&r),
-            vec![11.0, 21.0, 31.0, 41.0, 12.0, 22.0, 32.0, 42.0, 13.0, 23.0, 33.0, 43.0]
+            vec![
+                11.0, 21.0, 31.0, 41.0, 12.0, 22.0, 32.0, 42.0, 13.0, 23.0, 33.0, 43.0
+            ]
         );
     }
 
@@ -264,9 +263,7 @@ mod tests {
     #[test]
     fn binary_promotion_i32_plus_f32_cpu() {
         // i32 + f32 → f32（JAX：exact + float，float 至少 f32）
-        let bytes = unsafe {
-            std::slice::from_raw_parts([1i32, 2, 3].as_ptr() as *const u8, 12)
-        };
+        let bytes = unsafe { std::slice::from_raw_parts([1i32, 2, 3].as_ptr() as *const u8, 12) };
         let a = cpu_array_with_layout(bytes, Layout::from_shape(vec![3]), Dtype::Int32);
         let b = f32_array(&[0.5, 0.5, 0.5], vec![3]);
         let r = add(&a, &b, None).unwrap();
@@ -288,9 +285,7 @@ mod tests {
     #[test]
     fn binary_int_only_rejected_by_whitelist() {
         // i32 + i32 → i32，不在计算白名单（f32/f64）→ 报错
-        let bytes = unsafe {
-            std::slice::from_raw_parts([1i32, 2].as_ptr() as *const u8, 8)
-        };
+        let bytes = unsafe { std::slice::from_raw_parts([1i32, 2].as_ptr() as *const u8, 8) };
         let a = cpu_array_with_layout(bytes, Layout::from_shape(vec![2]), Dtype::Int32);
         let b = cpu_array_with_layout(bytes, Layout::from_shape(vec![2]), Dtype::Int32);
         assert!(add(&a, &b, None).is_err());
@@ -381,9 +376,8 @@ mod tests {
         // 非连续视图：底层 [1, 99, -2, 99, 3, 99]，shape [3]，strides [2]
         let layout = Layout::from_shape_and_strides(vec![3], vec![2]).unwrap();
         let vals = [1.0f32, 99.0, -2.0, 99.0, 3.0, 99.0];
-        let bytes = unsafe {
-            std::slice::from_raw_parts(vals.as_ptr() as *const u8, vals.len() * 4)
-        };
+        let bytes =
+            unsafe { std::slice::from_raw_parts(vals.as_ptr() as *const u8, vals.len() * 4) };
         let a = cpu_array_with_layout(bytes, layout, Dtype::Float32);
         let r = abs(&a, None).unwrap();
         assert_eq!(r.shape(), &vec![3]);

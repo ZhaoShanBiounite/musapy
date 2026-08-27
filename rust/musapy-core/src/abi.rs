@@ -330,7 +330,9 @@ mod tests {
 
     #[test]
     fn abi_version_is_positive() {
-        assert!(ABI_VERSION >= 1, "ABI_VERSION should be >= 1");
+        // ABI_VERSION 是编译期常量（env! 注入），直接断言会被 clippy
+        // 判为常量值断言；改断言运行时访问器（取值一致性见下方测试）。
+        assert!(musapy_abi_version() >= 1, "ABI_VERSION should be >= 1");
     }
 
     #[test]

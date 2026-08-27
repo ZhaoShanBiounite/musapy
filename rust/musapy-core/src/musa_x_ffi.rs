@@ -456,14 +456,26 @@ mod real {
         // ── muSOLVER Phase 3（musolver_functions.h;lu/qr/svd 分解）──
         // 注意：geqrf 的 ipiv 参数实为 tau（Householder 反射系数，设备指针）；
         // gesvd 为 muSOLVER 私有签名（mublasSvect 枚举 + E 输出 + fast_alg）。
-        pub fn musolverSgeqrf_bufferSize(m: c_int, n: c_int, buffersize: *mut c_int)
-            -> mublasStatus_t;
-        pub fn musolverDgeqrf_bufferSize(m: c_int, n: c_int, buffersize: *mut c_int)
-            -> mublasStatus_t;
-        pub fn musolverCgeqrf_bufferSize(m: c_int, n: c_int, buffersize: *mut c_int)
-            -> mublasStatus_t;
-        pub fn musolverZgeqrf_bufferSize(m: c_int, n: c_int, buffersize: *mut c_int)
-            -> mublasStatus_t;
+        pub fn musolverSgeqrf_bufferSize(
+            m: c_int,
+            n: c_int,
+            buffersize: *mut c_int,
+        ) -> mublasStatus_t;
+        pub fn musolverDgeqrf_bufferSize(
+            m: c_int,
+            n: c_int,
+            buffersize: *mut c_int,
+        ) -> mublasStatus_t;
+        pub fn musolverCgeqrf_bufferSize(
+            m: c_int,
+            n: c_int,
+            buffersize: *mut c_int,
+        ) -> mublasStatus_t;
+        pub fn musolverZgeqrf_bufferSize(
+            m: c_int,
+            n: c_int,
+            buffersize: *mut c_int,
+        ) -> mublasStatus_t;
         pub fn musolverSgeqrf(
             handle: mublasHandle_t,
             m: c_int,
@@ -1411,27 +1423,57 @@ mod mock {
     }
 
     impl MockNum for f32 {
-        fn zero() -> Self { 0.0 }
-        fn one() -> Self { 1.0 }
-        fn from_usize(n: usize) -> Self { n as f32 }
+        fn zero() -> Self {
+            0.0
+        }
+        fn one() -> Self {
+            1.0
+        }
+        fn from_usize(n: usize) -> Self {
+            n as f32
+        }
     }
 
     impl MockNum for f64 {
-        fn zero() -> Self { 0.0 }
-        fn one() -> Self { 1.0 }
-        fn from_usize(n: usize) -> Self { n as f64 }
+        fn zero() -> Self {
+            0.0
+        }
+        fn one() -> Self {
+            1.0
+        }
+        fn from_usize(n: usize) -> Self {
+            n as f64
+        }
     }
 
     impl MockNum for muComplex {
-        fn zero() -> Self { muComplex { re: 0.0, im: 0.0 } }
-        fn one() -> Self { muComplex { re: 1.0, im: 0.0 } }
-        fn from_usize(n: usize) -> Self { muComplex { re: n as f32, im: 0.0 } }
+        fn zero() -> Self {
+            muComplex { re: 0.0, im: 0.0 }
+        }
+        fn one() -> Self {
+            muComplex { re: 1.0, im: 0.0 }
+        }
+        fn from_usize(n: usize) -> Self {
+            muComplex {
+                re: n as f32,
+                im: 0.0,
+            }
+        }
     }
 
     impl MockNum for muDoubleComplex {
-        fn zero() -> Self { muDoubleComplex { re: 0.0, im: 0.0 } }
-        fn one() -> Self { muDoubleComplex { re: 1.0, im: 0.0 } }
-        fn from_usize(n: usize) -> Self { muDoubleComplex { re: n as f64, im: 0.0 } }
+        fn zero() -> Self {
+            muDoubleComplex { re: 0.0, im: 0.0 }
+        }
+        fn one() -> Self {
+            muDoubleComplex { re: 1.0, im: 0.0 }
+        }
+        fn from_usize(n: usize) -> Self {
+            muDoubleComplex {
+                re: n as f64,
+                im: 0.0,
+            }
+        }
     }
 
     pub unsafe fn musolverSgeqrf_bufferSize(
@@ -1783,18 +1825,34 @@ mod mock {
             }
             // U/V 单位阵（left/right_svect 决定列数；NONE 时指针可为 null）
             if !u.is_null() {
-                let u_cols = if left_svect == super::MUBLAS_SVECT_ALL { m as usize } else { k };
+                let u_cols = if left_svect == super::MUBLAS_SVECT_ALL {
+                    m as usize
+                } else {
+                    k
+                };
                 for j in 0..u_cols {
                     for i in 0..m as usize {
-                        *u.add(i + j * ldu as usize) = if i == j { MockNum::one() } else { MockNum::zero() };
+                        *u.add(i + j * ldu as usize) = if i == j {
+                            MockNum::one()
+                        } else {
+                            MockNum::zero()
+                        };
                     }
                 }
             }
             if !v.is_null() {
-                let v_cols = if right_svect == super::MUBLAS_SVECT_ALL { n as usize } else { k };
+                let v_cols = if right_svect == super::MUBLAS_SVECT_ALL {
+                    n as usize
+                } else {
+                    k
+                };
                 for j in 0..v_cols {
                     for i in 0..n as usize {
-                        *v.add(i + j * ldv as usize) = if i == j { MockNum::one() } else { MockNum::zero() };
+                        *v.add(i + j * ldv as usize) = if i == j {
+                            MockNum::one()
+                        } else {
+                            MockNum::zero()
+                        };
                     }
                 }
             }
@@ -1832,18 +1890,34 @@ mod mock {
             }
             // U/V 单位阵（left/right_svect 决定列数；NONE 时指针可为 null）
             if !u.is_null() {
-                let u_cols = if left_svect == super::MUBLAS_SVECT_ALL { m as usize } else { k };
+                let u_cols = if left_svect == super::MUBLAS_SVECT_ALL {
+                    m as usize
+                } else {
+                    k
+                };
                 for j in 0..u_cols {
                     for i in 0..m as usize {
-                        *u.add(i + j * ldu as usize) = if i == j { MockNum::one() } else { MockNum::zero() };
+                        *u.add(i + j * ldu as usize) = if i == j {
+                            MockNum::one()
+                        } else {
+                            MockNum::zero()
+                        };
                     }
                 }
             }
             if !v.is_null() {
-                let v_cols = if right_svect == super::MUBLAS_SVECT_ALL { n as usize } else { k };
+                let v_cols = if right_svect == super::MUBLAS_SVECT_ALL {
+                    n as usize
+                } else {
+                    k
+                };
                 for j in 0..v_cols {
                     for i in 0..n as usize {
-                        *v.add(i + j * ldv as usize) = if i == j { MockNum::one() } else { MockNum::zero() };
+                        *v.add(i + j * ldv as usize) = if i == j {
+                            MockNum::one()
+                        } else {
+                            MockNum::zero()
+                        };
                     }
                 }
             }
@@ -1881,18 +1955,34 @@ mod mock {
             }
             // U/V 单位阵（left/right_svect 决定列数；NONE 时指针可为 null）
             if !u.is_null() {
-                let u_cols = if left_svect == super::MUBLAS_SVECT_ALL { m as usize } else { k };
+                let u_cols = if left_svect == super::MUBLAS_SVECT_ALL {
+                    m as usize
+                } else {
+                    k
+                };
                 for j in 0..u_cols {
                     for i in 0..m as usize {
-                        *u.add(i + j * ldu as usize) = if i == j { MockNum::one() } else { MockNum::zero() };
+                        *u.add(i + j * ldu as usize) = if i == j {
+                            MockNum::one()
+                        } else {
+                            MockNum::zero()
+                        };
                     }
                 }
             }
             if !v.is_null() {
-                let v_cols = if right_svect == super::MUBLAS_SVECT_ALL { n as usize } else { k };
+                let v_cols = if right_svect == super::MUBLAS_SVECT_ALL {
+                    n as usize
+                } else {
+                    k
+                };
                 for j in 0..v_cols {
                     for i in 0..n as usize {
-                        *v.add(i + j * ldv as usize) = if i == j { MockNum::one() } else { MockNum::zero() };
+                        *v.add(i + j * ldv as usize) = if i == j {
+                            MockNum::one()
+                        } else {
+                            MockNum::zero()
+                        };
                     }
                 }
             }
@@ -1930,18 +2020,34 @@ mod mock {
             }
             // U/V 单位阵（left/right_svect 决定列数；NONE 时指针可为 null）
             if !u.is_null() {
-                let u_cols = if left_svect == super::MUBLAS_SVECT_ALL { m as usize } else { k };
+                let u_cols = if left_svect == super::MUBLAS_SVECT_ALL {
+                    m as usize
+                } else {
+                    k
+                };
                 for j in 0..u_cols {
                     for i in 0..m as usize {
-                        *u.add(i + j * ldu as usize) = if i == j { MockNum::one() } else { MockNum::zero() };
+                        *u.add(i + j * ldu as usize) = if i == j {
+                            MockNum::one()
+                        } else {
+                            MockNum::zero()
+                        };
                     }
                 }
             }
             if !v.is_null() {
-                let v_cols = if right_svect == super::MUBLAS_SVECT_ALL { n as usize } else { k };
+                let v_cols = if right_svect == super::MUBLAS_SVECT_ALL {
+                    n as usize
+                } else {
+                    k
+                };
                 for j in 0..v_cols {
                     for i in 0..n as usize {
-                        *v.add(i + j * ldv as usize) = if i == j { MockNum::one() } else { MockNum::zero() };
+                        *v.add(i + j * ldv as usize) = if i == j {
+                            MockNum::one()
+                        } else {
+                            MockNum::zero()
+                        };
                     }
                 }
             }
@@ -1991,8 +2097,10 @@ mod mock {
     // Phase 4:计算/配置 stub——状态化确定性伪随机(seed 重置/计数器推进),
     // 统计保真(uniform = splitmix64 归一化;normal = mean + stddev·(Σ12u − 6)),
     // 使 mock 模式下 pytest 的形状/复现性/分布统计用例均可运行(无 GPU CI)。
-    static MOCK_RNG_STATE: std::sync::Mutex<MockRngState> =
-        std::sync::Mutex::new(MockRngState { seed: 0, counter: 0 });
+    static MOCK_RNG_STATE: std::sync::Mutex<MockRngState> = std::sync::Mutex::new(MockRngState {
+        seed: 0,
+        counter: 0,
+    });
 
     struct MockRngState {
         seed: u64,
@@ -2096,7 +2204,8 @@ mod mock {
         let base = st.counter;
         unsafe {
             for i in 0..n {
-                *output_data.add(i) = (mean as f64 + stddev as f64 * mock_rng_normal(&st, i)) as f32;
+                *output_data.add(i) =
+                    (mean as f64 + stddev as f64 * mock_rng_normal(&st, i)) as f32;
             }
         }
         st.counter = base.wrapping_add(1);
@@ -2159,20 +2268,16 @@ mod mock {
 
     fn register_plan(plan: *mut mufftHandle, nx: i32, ftype: mufftType) {
         unsafe { *plan = next_handle() };
-        MOCK_MUFFT_PLANS.lock().insert(
-            unsafe { *plan },
-            MockFftPlan::new(nx, ftype),
-        );
+        MOCK_MUFFT_PLANS
+            .lock()
+            .insert(unsafe { *plan }, MockFftPlan::new(nx, ftype));
     }
 
     /// naive O(N²) real DFT（R2C/D2Z 用；forward，输出 N//2+1）。
     fn naive_dft_real(input: &[f64]) -> Vec<muDoubleComplex> {
         let n = input.len();
         let out_len = n / 2 + 1;
-        let mut out = vec![
-            muDoubleComplex { re: 0.0, im: 0.0 };
-            out_len
-        ];
+        let mut out = vec![muDoubleComplex { re: 0.0, im: 0.0 }; out_len];
         for (k, o) in out.iter_mut().enumerate() {
             let mut re = 0.0f64;
             let mut im = 0.0f64;
@@ -2190,10 +2295,7 @@ mod mock {
     fn naive_dft_cplx(input: &[muDoubleComplex], inverse: bool) -> Vec<muDoubleComplex> {
         let n = input.len();
         let sign = if inverse { 1.0 } else { -1.0 };
-        let mut out = vec![
-            muDoubleComplex { re: 0.0, im: 0.0 };
-            n
-        ];
+        let mut out = vec![muDoubleComplex { re: 0.0, im: 0.0 }; n];
         for (k, o) in out.iter_mut().enumerate() {
             let mut re = 0.0f64;
             let mut im = 0.0f64;
@@ -2295,7 +2397,11 @@ mod mock {
         if plan.is_null() {
             return 1;
         }
-        let nx = if rank > 0 && !n.is_null() { unsafe { *n } } else { 0 };
+        let nx = if rank > 0 && !n.is_null() {
+            unsafe { *n }
+        } else {
+            0
+        };
         unsafe { *plan = next_handle() };
         MOCK_MUFFT_PLANS.lock().insert(
             *plan,
@@ -2409,9 +2515,8 @@ mod mock {
         for row in 0..batch {
             let in_row = unsafe { idata.add(row * idist) };
             let out_row = unsafe { odata.add(row * odist) };
-            let input: Vec<muDoubleComplex> = (0..n)
-                .map(|i| unsafe { *in_row.add(i * stride) })
-                .collect();
+            let input: Vec<muDoubleComplex> =
+                (0..n).map(|i| unsafe { *in_row.add(i * stride) }).collect();
             let vals = naive_dft_cplx(&input, inverse);
             for (i, v) in vals.iter().enumerate() {
                 unsafe { *out_row.add(i) = *v };
@@ -2434,9 +2539,7 @@ mod mock {
         for row in 0..batch {
             let in_row = unsafe { idata.add(row * idist) };
             let out_row = unsafe { odata.add(row * odist) };
-            let input: Vec<f64> = (0..n)
-                .map(|i| unsafe { *in_row.add(i * stride) })
-                .collect();
+            let input: Vec<f64> = (0..n).map(|i| unsafe { *in_row.add(i * stride) }).collect();
             let vals = naive_dft_real(&input);
             for (i, v) in vals.iter().enumerate() {
                 unsafe { *out_row.add(i) = *v };
@@ -2789,7 +2892,8 @@ mod mock {
                 let end = unsafe { *row_ptr.add(i + 1) } as usize;
                 for k in start..end {
                     let j = unsafe { *col_ind.add(k) } as usize;
-                    acc += unsafe { *vals.add(k) }.to_f64() * unsafe { *bv.add(j * bcols + jj) }.to_f64();
+                    acc += unsafe { *vals.add(k) }.to_f64()
+                        * unsafe { *bv.add(j * bcols + jj) }.to_f64();
                 }
                 let ci = unsafe { &mut *cv.add(i * bcols + jj) };
                 *ci = T::from_f64(alpha_v * acc + beta_v * ci.to_f64());
@@ -3132,7 +3236,10 @@ mod tests {
             unsafe { murandSetPseudoRandomGeneratorSeed(g, 42) },
             MURAND_STATUS_SUCCESS
         );
-        assert_eq!(unsafe { murandSetGeneratorOffset(g, 7) }, MURAND_STATUS_SUCCESS);
+        assert_eq!(
+            unsafe { murandSetGeneratorOffset(g, 7) },
+            MURAND_STATUS_SUCCESS
+        );
 
         // seed 重置 + 计数器推进：同 seed 紧邻两次调用逐元素相等
         let mut d1 = [0.0f32; 4];
@@ -3281,11 +3388,27 @@ mod tests {
 
         // bufferSize：无 handle 参数，返回 4096
         let mut bs: c_int = 0;
-        assert_eq!(unsafe { musolverDgeqrf_bufferSize(4, 3, &mut bs) }, MUBLAS_STATUS_SUCCESS);
-        assert_eq!(bs, 4096);
-        assert_eq!(unsafe { musolverDorgqr_bufferSize(4, 3, 3, &mut bs) }, MUBLAS_STATUS_SUCCESS);
         assert_eq!(
-            unsafe { musolverDgesvd_bufferSize(MUBLAS_SVECT_ALL, MUBLAS_SVECT_ALL, 4, 3, 1, MUBLAS_OUTOFPLACE, &mut bs) },
+            unsafe { musolverDgeqrf_bufferSize(4, 3, &mut bs) },
+            MUBLAS_STATUS_SUCCESS
+        );
+        assert_eq!(bs, 4096);
+        assert_eq!(
+            unsafe { musolverDorgqr_bufferSize(4, 3, 3, &mut bs) },
+            MUBLAS_STATUS_SUCCESS
+        );
+        assert_eq!(
+            unsafe {
+                musolverDgesvd_bufferSize(
+                    MUBLAS_SVECT_ALL,
+                    MUBLAS_SVECT_ALL,
+                    4,
+                    3,
+                    1,
+                    MUBLAS_OUTOFPLACE,
+                    &mut bs,
+                )
+            },
             MUBLAS_STATUS_SUCCESS
         );
         assert_eq!(bs, 4096);
@@ -3294,7 +3417,17 @@ mod tests {
         let mut a = [1.0f64; 12];
         let mut tau = [9.9f64; 3];
         assert_eq!(
-            unsafe { musolverDgeqrf(h, 4, 3, a.as_mut_ptr(), 4, tau.as_mut_ptr(), std::ptr::null_mut()) },
+            unsafe {
+                musolverDgeqrf(
+                    h,
+                    4,
+                    3,
+                    a.as_mut_ptr(),
+                    4,
+                    tau.as_mut_ptr(),
+                    std::ptr::null_mut(),
+                )
+            },
             MUBLAS_STATUS_SUCCESS
         );
         assert_eq!(a, [1.0; 12]);
@@ -3302,7 +3435,18 @@ mod tests {
 
         // orgqr：缓冲原样返回
         assert_eq!(
-            unsafe { musolverDorgqr(h, 4, 3, 3, a.as_mut_ptr(), 4, tau.as_ptr(), std::ptr::null_mut()) },
+            unsafe {
+                musolverDorgqr(
+                    h,
+                    4,
+                    3,
+                    3,
+                    a.as_mut_ptr(),
+                    4,
+                    tau.as_ptr(),
+                    std::ptr::null_mut(),
+                )
+            },
             MUBLAS_STATUS_SUCCESS
         );
 
